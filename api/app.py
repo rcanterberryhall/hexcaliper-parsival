@@ -1,7 +1,7 @@
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
@@ -29,12 +29,18 @@ app.add_middleware(
 # Ensure data directory exists before TinyDB opens the file
 os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
 
-db        = TinyDB(config.DB_PATH)
-analyses  = db.table("analyses")
-todos     = db.table("todos")
-scan_logs = db.table("scan_logs")
-Q         = Query()
-db_lock   = threading.Lock()
+db           = TinyDB(config.DB_PATH)
+analyses     = db.table("analyses")
+todos        = db.table("todos")
+scan_logs    = db.table("scan_logs")
+settings_tbl = db.table("settings")
+Q            = Query()
+db_lock      = threading.Lock()
+
+# Hot-load any previously saved settings on startup
+_saved_settings = settings_tbl.get(doc_id=1)
+if _saved_settings:
+    config.apply_overrides(_saved_settings)
 
 CONNECTORS = {
     "slack":   connector_slack,
@@ -52,7 +58,7 @@ def get_user(request: Request) -> str:
 
 
 def now_iso() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ── Scan state ────────────────────────────────────────────────────────────────
@@ -170,9 +176,60 @@ def _run_scan(sources: list[str]) -> None:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+_MASK = "•"
+
+def _mask(val: str) -> str:
+    if not val:
+        return ""
+    visible = min(4, len(val))
+    return val[:visible] + _MASK * max(0, len(val) - visible)
+
+
 @app.get("/health")
 def health():
     """Service health check — mirrors hexcaliper's /health response shape."""
+    return {"ok": True, "warnings": config.validate()}
+
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+
+@app.get("/settings")
+def get_settings():
+    return {
+        "ollama_url":       config.OLLAMA_URL,
+        "ollama_model":     config.OLLAMA_MODEL,
+        "cf_client_id":     _mask(config.CF_CLIENT_ID),
+        "cf_client_secret": _mask(config.CF_CLIENT_SECRET),
+        "slack_bot_token":  _mask(config.SLACK_BOT_TOKEN),
+        "slack_channels":   ",".join(config.SLACK_CHANNELS),
+        "github_pat":       _mask(config.GITHUB_PAT),
+        "github_username":  config.GITHUB_USERNAME,
+        "jira_email":       config.JIRA_EMAIL,
+        "jira_token":       _mask(config.JIRA_TOKEN),
+        "jira_domain":      config.JIRA_DOMAIN,
+        "jira_jql":         config.JIRA_JQL,
+        "lookback_hours":   config.LOOKBACK_HOURS,
+        "warnings":         config.validate(),
+    }
+
+
+@app.post("/settings")
+def save_settings(body: dict):
+    """Persist settings and hot-reload config. Fields containing • are ignored (masked placeholders)."""
+    with db_lock:
+        existing = settings_tbl.get(doc_id=1) or {}
+
+    for k, v in body.items():
+        if v is not None and _MASK not in str(v):
+            existing[k] = v
+
+    with db_lock:
+        if settings_tbl.get(doc_id=1):
+            settings_tbl.update(existing, doc_ids=[1])
+        else:
+            settings_tbl.insert(existing)
+
+    config.apply_overrides(existing)
     return {"ok": True, "warnings": config.validate()}
 
 

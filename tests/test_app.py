@@ -234,6 +234,60 @@ def test_scan_starts_and_returns_sources(client):
     assert "github" in body["sources"]
 
 
+# ── /settings ─────────────────────────────────────────────────────────────────
+
+def test_get_settings_returns_expected_keys(client):
+    r = client.get("/settings")
+    assert r.status_code == 200
+    body = r.json()
+    for key in ["ollama_url", "ollama_model", "slack_bot_token", "github_pat",
+                "jira_token", "jira_domain", "lookback_hours", "warnings"]:
+        assert key in body
+
+
+def test_get_settings_masks_secrets(client):
+    import config as cfg
+    cfg.SLACK_BOT_TOKEN = "xoxb-realtoken123"
+    cfg.GITHUB_PAT      = "ghp_realpat456"
+    r = client.get("/settings")
+    body = r.json()
+    assert "•" in body["slack_bot_token"]
+    assert "xoxb" in body["slack_bot_token"]   # prefix visible
+    assert "realtoken123" not in body["slack_bot_token"]
+    assert "•" in body["github_pat"]
+
+
+def test_post_settings_saves_and_applies(client):
+    r = client.post("/settings", json={
+        "ollama_model":    "mistral:7b",
+        "github_username": "testuser",
+        "lookback_hours":  24,
+    })
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    import config as cfg
+    assert cfg.OLLAMA_MODEL   == "mistral:7b"
+    assert cfg.GITHUB_USERNAME == "testuser"
+    assert cfg.LOOKBACK_HOURS  == 24
+
+
+def test_post_settings_ignores_masked_values(client):
+    import config as cfg
+    cfg.SLACK_BOT_TOKEN = "xoxb-original"
+    # POST a masked value — server should leave original intact
+    client.post("/settings", json={"slack_bot_token": "xoxb•••••••••"})
+    assert cfg.SLACK_BOT_TOKEN == "xoxb-original"
+
+
+def test_post_settings_persists_across_get(client):
+    client.post("/settings", json={"github_username": "persisteduser"})
+    r = client.get("/settings")
+    assert r.json()["github_username"] == "persisteduser"
+
+
+# ── /scan (continued) ─────────────────────────────────────────────────────────
+
 def test_scan_rejects_concurrent_scan(client):
     scan_state["running"] = True
     try:

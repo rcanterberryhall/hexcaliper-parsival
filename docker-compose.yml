@@ -17,9 +17,9 @@ services:
     build: ./api
     environment:
       OLLAMA_URL:       "https://ollama.hexcaliper.com/api/generate"
-      OLLAMA_MODEL:     "llama3.2"
-      CF_CLIENT_ID:     "your-client-id.access"
-      CF_CLIENT_SECRET: "your-client-secret"
+      OLLAMA_MODEL:     "llama3:8b"
+      CF_CLIENT_ID:     ""
+      CF_CLIENT_SECRET: ""
       SLACK_BOT_TOKEN:  "xoxb-your-token"
       SLACK_CHANNELS:   ""
       GITHUB_PAT:       "ghp_your-token"

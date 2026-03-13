@@ -11,7 +11,7 @@ os.environ["DB_PATH"] = os.path.join(_tmp, "test.db")
 
 import pytest
 from fastapi.testclient import TestClient
-from app import app, analyses, todos, scan_logs
+from app import app, analyses, todos, scan_logs, settings_tbl
 
 
 @pytest.fixture(scope="session")
@@ -25,4 +25,5 @@ def clear_db():
     analyses.truncate()
     todos.truncate()
     scan_logs.truncate()
+    settings_tbl.truncate()
     yield

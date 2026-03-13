@@ -7,36 +7,47 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg:      #0a0c0b;
-  --surface: #0f1210;
-  --border:  #171d18;
-  --border2: #202820;
-  --text:    #b8ccba;
-  --muted:   #4a5e4c;
-  --accent:  #3dff70;
+  --bg:      #0d0908;
+  --surface: #130c0a;
+  --border:  #3a1510;
+  --border2: #241008;
+  --text:    #f0e4e0;
+  --muted:   #6e5050;
+  --accent:  #d4a017;
+  --gold:    #d4a017;
   --amber:   #ffb020;
   --red:     #ff4040;
   --blue:    #40b8ff;
-  --purple:  #a060ff;
+  --purple:  #cc3300;
   --mono:    'JetBrains Mono', monospace;
   --display: 'Syne', sans-serif;
-  --r:       2px;
+  --r:       8px;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
 body { background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 13px; }
 
-.shell { display: grid; grid-template-rows: 48px 2px 1fr 26px; height: 100vh; }
+.shell { display: grid; grid-template-rows: 52px 2px 1fr 26px; height: 100vh; }
 
 /* ── Topbar ── */
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 20px; border-bottom: 1px solid var(--border2); background: var(--surface);
+  border-top: 3px solid var(--gold);
 }
 .wordmark {
-  font-family: var(--display); font-size: 13px; font-weight: 800;
-  letter-spacing: .18em; color: var(--accent); display: flex; align-items: center; gap: 9px;
+  font-family: var(--display); font-weight: 800;
+  letter-spacing: .18em; color: var(--accent);
+  display: flex; align-items: center; gap: 11px;
 }
+.brand-icon {
+  width: 38px; height: 38px;
+  filter: drop-shadow(0 0 10px rgba(212,160,23,0.55));
+  flex-shrink: 0;
+}
+.wordmark-text { display: flex; flex-direction: column; gap: 1px; }
+.wordmark-main { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.wordmark-sub  { font-size: 8px; letter-spacing: .32em; color: var(--muted); font-weight: 600; }
 .hb {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--accent); box-shadow: 0 0 10px var(--accent);
@@ -52,8 +63,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
   color: var(--muted); transition: all .15s;
 }
 .src-btn.on-outlook { border-color: var(--blue);   color: var(--blue);   background: rgba(64,184,255,.08); }
-.src-btn.on-slack   { border-color: var(--purple); color: var(--purple); background: rgba(160,96,255,.08); }
-.src-btn.on-github  { border-color: var(--text);   color: var(--text);   background: rgba(184,204,186,.06); }
+.src-btn.on-slack   { border-color: var(--purple); color: var(--purple); background: rgba(204,51,0,.08); }
+.src-btn.on-github  { border-color: var(--text);   color: var(--text);   background: rgba(240,228,224,.06); }
 .src-btn.on-jira    { border-color: var(--amber);  color: var(--amber);  background: rgba(255,176,32,.08); }
 .scan-btn {
   font-family: var(--display); font-size: 11px; font-weight: 700; letter-spacing: .12em;
@@ -90,7 +101,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
   padding: 6px 14px; cursor: pointer; border-left: 2px solid transparent; transition: all .1s;
 }
 .frow:hover  { background: var(--border); color: var(--text); }
-.frow.active { border-left-color: var(--accent); background: rgba(61,255,112,.04); color: var(--accent); }
+.frow.active { border-left-color: var(--accent); background: rgba(212,160,23,.06); color: var(--accent); }
 .frow .fl { font-size: 12px; }
 .frow .fc { font-size: 10px; background: var(--border2); padding: 1px 6px; border-radius: 8px; color: var(--muted); }
 .frow.active .fc { color: var(--accent); }
@@ -131,8 +142,20 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .show-done input { accent-color: var(--accent); }
 
 /* ── Views ── */
-#todo-view  { flex: 1; overflow-y: auto; padding: 12px 18px; }
-#items-view { flex: 1; overflow-y: auto; padding: 12px 18px; display: none; }
+#todo-view  { flex: 1; overflow-y: auto; padding: 12px 18px; position: relative; }
+#items-view { flex: 1; overflow-y: auto; padding: 12px 18px; display: none; position: relative; }
+
+/* Watermark crest */
+#todo-view::before, #items-view::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  background: url('squire-crest.svg') no-repeat center center;
+  background-size: min(55%, 280px);
+  opacity: 0.09;
+  pointer-events: none;
+  z-index: 0;
+}
+#todo-view > *, #items-view > * { position: relative; z-index: 1; }
 
 /* ── Todo groups ── */
 .group-label {
@@ -191,16 +214,16 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .item-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .item-table tr:hover td { background: var(--surface); }
 .badge { font-size: 9px; padding: 2px 6px; border-radius: var(--r); letter-spacing: .05em; text-transform: uppercase; display: inline-block; }
-.b-outlook       { background: rgba(64,184,255,.1);  color: var(--blue);   border: 1px solid rgba(64,184,255,.2); }
-.b-slack         { background: rgba(160,96,255,.1);  color: var(--purple); border: 1px solid rgba(160,96,255,.2); }
-.b-github        { background: rgba(184,204,186,.07);color: var(--text);   border: 1px solid var(--border2); }
-.b-jira          { background: rgba(255,176,32,.08); color: var(--amber);  border: 1px solid rgba(255,176,32,.2); }
-.b-reply_needed  { color: var(--red);    background: rgba(255,64,64,.1);   border: 1px solid rgba(255,64,64,.2); }
-.b-task          { color: var(--accent); background: rgba(61,255,112,.07); border: 1px solid rgba(61,255,112,.15); }
-.b-deadline      { color: var(--amber);  background: rgba(255,176,32,.07); border: 1px solid rgba(255,176,32,.15); }
-.b-review        { color: var(--blue);   background: rgba(64,184,255,.07); border: 1px solid rgba(64,184,255,.15); }
-.b-approval      { color: var(--purple); background: rgba(160,96,255,.07); border: 1px solid rgba(160,96,255,.15); }
-.b-fyi, .b-noise { color: var(--muted);  background: rgba(74,94,76,.12);   border: 1px solid var(--border); }
+.b-outlook       { background: rgba(64,184,255,.1);   color: var(--blue);   border: 1px solid rgba(64,184,255,.2); }
+.b-slack         { background: rgba(204,51,0,.1);     color: var(--purple); border: 1px solid rgba(204,51,0,.2); }
+.b-github        { background: rgba(240,228,224,.07); color: var(--text);   border: 1px solid var(--border2); }
+.b-jira          { background: rgba(255,176,32,.08);  color: var(--amber);  border: 1px solid rgba(255,176,32,.2); }
+.b-reply_needed  { color: var(--red);    background: rgba(255,64,64,.1);    border: 1px solid rgba(255,64,64,.2); }
+.b-task          { color: var(--accent); background: rgba(212,160,23,.08);  border: 1px solid rgba(212,160,23,.18); }
+.b-deadline      { color: var(--amber);  background: rgba(255,176,32,.07);  border: 1px solid rgba(255,176,32,.15); }
+.b-review        { color: var(--blue);   background: rgba(64,184,255,.07);  border: 1px solid rgba(64,184,255,.15); }
+.b-approval      { color: var(--purple); background: rgba(204,51,0,.08);    border: 1px solid rgba(204,51,0,.18); }
+.b-fyi, .b-noise { color: var(--muted);  background: rgba(110,80,80,.12);   border: 1px solid var(--border); }
 .pri-high   { color: var(--red);   font-size: 10px; }
 .pri-medium { color: var(--amber); font-size: 10px; }
 .pri-low    { color: var(--muted); font-size: 10px; }
@@ -215,6 +238,70 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .empty      { text-align: center; padding: 60px 20px; color: var(--muted); }
 .empty-icon { font-size: 32px; opacity: .2; margin-bottom: 10px; }
 .empty-msg  { font-size: 11px; line-height: 2.2; letter-spacing: .04em; white-space: pre-line; }
+
+/* ── Settings button ── */
+.gear-btn {
+  background: none; border: 1px solid var(--border2); color: var(--muted);
+  cursor: pointer; padding: 5px 9px; border-radius: var(--r); font-size: 14px;
+  transition: all .15s; line-height: 1;
+}
+.gear-btn:hover { border-color: var(--text); color: var(--text); }
+
+/* ── Settings modal ── */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.65);
+  display: none; z-index: 100;
+}
+.modal-backdrop.open { display: block; }
+.modal {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  width: 540px; max-height: 82vh; background: var(--surface);
+  border: 1px solid var(--border2); border-radius: var(--r);
+  display: none; flex-direction: column; z-index: 101;
+  box-shadow: 0 24px 64px rgba(0,0,0,.7);
+}
+.modal.open { display: flex; }
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px; border-bottom: 1px solid var(--border2); flex-shrink: 0;
+  border-top: 2px solid var(--gold);
+}
+.modal-head-title { font-family: var(--display); font-size: 12px; font-weight: 700; letter-spacing: .18em; color: var(--accent); }
+.modal-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 2px 6px; transition: color .1s; }
+.modal-close:hover { color: var(--text); }
+.modal-body { overflow-y: auto; padding: 18px 20px; flex: 1; }
+.modal-foot {
+  padding: 12px 20px; border-top: 1px solid var(--border2);
+  display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+}
+.settings-section { margin-bottom: 22px; }
+.section-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted);
+  margin-bottom: 12px; padding-bottom: 7px; border-bottom: 1px solid var(--border);
+}
+.sdot2 { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--border2); transition: all .3s; }
+.sdot2.ok   { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.sdot2.warn { background: var(--amber); }
+.field { margin-bottom: 8px; }
+.field label { display: block; font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+.field input {
+  width: 100%; background: var(--bg); border: 1px solid var(--border2);
+  color: var(--text); font-family: var(--mono); font-size: 12px;
+  padding: 6px 10px; border-radius: var(--r); outline: none; transition: border-color .15s;
+}
+.field input:focus { border-color: var(--accent); }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.field-hint { font-size: 10px; color: var(--muted); margin-top: 3px; }
+.save-btn {
+  font-family: var(--display); font-size: 11px; font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; padding: 6px 22px; border: 1px solid var(--accent);
+  background: transparent; color: var(--accent); cursor: pointer; border-radius: var(--r); transition: all .15s;
+}
+.save-btn:hover { background: var(--accent); color: var(--bg); }
+.settings-msg { font-size: 11px; }
+.settings-msg.ok  { color: var(--accent); }
+.settings-msg.err { color: var(--red); }
 
 /* ── Status bar ── */
 .statusbar {
@@ -238,7 +325,13 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 <div class="shell">
 
   <div class="topbar">
-    <div class="wordmark"><div class="hb"></div>HEXCALIPER SQUIRE</div>
+    <div class="wordmark">
+      <img src="squire-crest.svg" class="brand-icon" alt="Squire crest">
+      <div class="wordmark-text">
+        <div class="wordmark-main"><div class="hb"></div>HEXCALIPER SQUIRE</div>
+        <div class="wordmark-sub">OPS DASHBOARD</div>
+      </div>
+    </div>
     <div class="topbar-right">
       <div class="src-toggles">
         <button class="src-btn on-outlook" data-src="outlook" onclick="toggleSrc(this)">Outlook</button>
@@ -246,6 +339,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
         <button class="src-btn on-github"  data-src="github"  onclick="toggleSrc(this)">GitHub</button>
         <button class="src-btn on-jira"    data-src="jira"    onclick="toggleSrc(this)">Jira</button>
       </div>
+      <button class="gear-btn" onclick="openSettings()" title="Settings">⚙</button>
       <button class="scan-btn" id="scanBtn" onclick="startScan()">▶ Scan</button>
     </div>
   </div>
@@ -299,10 +393,67 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 
   <div class="statusbar">
     <div class="spinner" id="spin"></div>
-    <span id="statusMsg">Ready — configure docker-compose.yml then click Scan</span>
+    <span id="statusMsg">Ready</span>
   </div>
 
 </div>
+<!-- Settings Modal -->
+<div class="modal-backdrop" id="settingsBackdrop" onclick="closeSettings()"></div>
+<div class="modal" id="settingsModal">
+  <div class="modal-head">
+    <span class="modal-head-title">SETTINGS</span>
+    <button class="modal-close" onclick="closeSettings()">✕</button>
+  </div>
+  <div class="modal-body">
+
+    <div class="settings-section">
+      <div class="section-head"><div class="sdot2" id="dot-ollama"></div>Ollama</div>
+      <div class="field"><label>URL</label><input type="text" id="s-ollama_url" placeholder="https://ollama.hexcaliper.com/api/generate"></div>
+      <div class="field-row">
+        <div class="field"><label>Model</label><input type="text" id="s-ollama_model" placeholder="llama3:8b"></div>
+        <div class="field"><label>Lookback Hours</label><input type="number" id="s-lookback_hours" placeholder="48"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>CF Client ID</label><input type="password" id="s-cf_client_id" placeholder="leave blank if no Access policy"></div>
+        <div class="field"><label>CF Client Secret</label><input type="password" id="s-cf_client_secret" placeholder="leave blank if no Access policy"></div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-head"><div class="sdot2" id="dot-slack"></div>Slack</div>
+      <div class="field">
+        <label>Bot Token</label>
+        <input type="password" id="s-slack_bot_token" placeholder="xoxb-…">
+        <div class="field-hint">Requires: channels:history, channels:read, groups:history, groups:read, im:history, im:read, users:read</div>
+      </div>
+      <div class="field"><label>Channels (optional — comma-separated, leave blank for all)</label><input type="text" id="s-slack_channels" placeholder="general, ops, alerts"></div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-head"><div class="sdot2" id="dot-github"></div>GitHub</div>
+      <div class="field-row">
+        <div class="field"><label>Personal Access Token</label><input type="password" id="s-github_pat" placeholder="ghp_…"></div>
+        <div class="field"><label>Username</label><input type="text" id="s-github_username" placeholder="your-github-username"></div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-head"><div class="sdot2" id="dot-jira"></div>Jira Cloud</div>
+      <div class="field-row">
+        <div class="field"><label>Email</label><input type="text" id="s-jira_email" placeholder="you@yourcompany.com"></div>
+        <div class="field"><label>Domain</label><input type="text" id="s-jira_domain" placeholder="yourcompany.atlassian.net"></div>
+      </div>
+      <div class="field"><label>API Token</label><input type="password" id="s-jira_token" placeholder="your-jira-api-token"></div>
+      <div class="field"><label>JQL (optional)</label><input type="text" id="s-jira_jql"></div>
+    </div>
+
+  </div>
+  <div class="modal-foot">
+    <span class="settings-msg" id="settings-msg"></span>
+    <button class="save-btn" onclick="saveSettings()">Save</button>
+  </div>
+</div>
+
 <script>
 const API = '/page/api';
 let activeSrcs = new Set(['outlook','slack','github','jira']);
@@ -503,6 +654,59 @@ function setView(v, el) {
   $('todo-view').style.display  = v === 'todos' ? 'block' : 'none';
   $('items-view').style.display = v === 'items' ? 'block' : 'none';
   if (v === 'items') loadItems();
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+const SETTINGS_FIELDS = [
+  'ollama_url','ollama_model','cf_client_id','cf_client_secret',
+  'slack_bot_token','slack_channels','github_pat','github_username',
+  'jira_email','jira_token','jira_domain','jira_jql','lookback_hours',
+];
+
+function openSettings() {
+  $('settingsBackdrop').classList.add('open');
+  $('settingsModal').classList.add('open');
+  loadSettings();
+}
+
+function closeSettings() {
+  $('settingsBackdrop').classList.remove('open');
+  $('settingsModal').classList.remove('open');
+}
+
+async function loadSettings() {
+  try {
+    const s = await api('/settings');
+    SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el) el.value = s[f] ?? ''; });
+    updateSectionDots(s.warnings || []);
+  } catch(e) { console.warn('loadSettings:', e); }
+}
+
+function updateSectionDots(warnings) {
+  const has = kw => warnings.some(w => w.includes(kw));
+  $('dot-ollama').className = 'sdot2' + (has('CF_CLIENT') ? ' warn' : ' ok');
+  $('dot-slack').className  = 'sdot2' + (has('SLACK')    ? ' warn' : ' ok');
+  $('dot-github').className = 'sdot2' + (has('GITHUB')   ? ' warn' : ' ok');
+  $('dot-jira').className   = 'sdot2' + (has('JIRA')     ? ' warn' : ' ok');
+}
+
+async function saveSettings() {
+  const body = {};
+  SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el) body[f] = el.value; });
+  const msg = $('settings-msg');
+  try {
+    const r = await api('/settings', 'POST', body);
+    msg.className   = 'settings-msg ok';
+    msg.textContent = r.warnings.length
+      ? `Saved — ${r.warnings.length} integration(s) still unconfigured`
+      : 'All integrations configured';
+    updateSectionDots(r.warnings);
+    setTimeout(() => { msg.textContent = ''; }, 4000);
+  } catch(e) {
+    msg.className   = 'settings-msg err';
+    msg.textContent = 'Save failed: ' + e.message;
+  }
 }
 
 loadStats();

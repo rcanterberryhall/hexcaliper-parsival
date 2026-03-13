@@ -36,6 +36,33 @@ DB_PATH        = _get("DB_PATH", "/app/data/page.db")
 LOOKBACK_HOURS = int(_get("LOOKBACK_HOURS", "48"))
 
 
+def apply_overrides(d: dict) -> None:
+    """Hot-reload config from a saved-settings dict (e.g. loaded from DB on startup or POST /settings)."""
+    import sys
+    mod = sys.modules[__name__]
+    str_fields = {
+        "ollama_url":       "OLLAMA_URL",
+        "ollama_model":     "OLLAMA_MODEL",
+        "cf_client_id":     "CF_CLIENT_ID",
+        "cf_client_secret": "CF_CLIENT_SECRET",
+        "slack_bot_token":  "SLACK_BOT_TOKEN",
+        "github_pat":       "GITHUB_PAT",
+        "github_username":  "GITHUB_USERNAME",
+        "jira_email":       "JIRA_EMAIL",
+        "jira_token":       "JIRA_TOKEN",
+        "jira_domain":      "JIRA_DOMAIN",
+        "jira_jql":         "JIRA_JQL",
+    }
+    for key, var in str_fields.items():
+        if key in d and d[key] is not None:
+            setattr(mod, var, str(d[key]))
+    if "slack_channels" in d:
+        sc = d["slack_channels"] or ""
+        setattr(mod, "SLACK_CHANNELS", [c.strip() for c in sc.split(",") if c.strip()])
+    if "lookback_hours" in d and d["lookback_hours"] is not None:
+        setattr(mod, "LOOKBACK_HOURS", int(d["lookback_hours"]))
+
+
 def ollama_headers() -> dict:
     """Cloudflare Access service token headers for every Ollama request."""
     h = {"Content-Type": "application/json"}

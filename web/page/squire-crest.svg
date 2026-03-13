@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" fill="none">
+
+  <!-- Outer decorative gold ring -->
+  <circle cx="100" cy="100" r="89" stroke="#d4a017" stroke-width="1.2" fill="none" opacity="0.55"/>
+
+  <!-- Main red leather belt ring -->
+  <circle cx="100" cy="100" r="70" stroke="#c01800" stroke-width="20" fill="none"/>
+
+  <!-- Gold outer edge of belt -->
+  <circle cx="100" cy="100" r="80.5" stroke="#e8c04a" stroke-width="1.8" fill="none"/>
+  <!-- Gold inner edge of belt -->
+  <circle cx="100" cy="100" r="59.5" stroke="#e8c04a" stroke-width="1.8" fill="none"/>
+
+  <!-- Stitching — outer dashed line -->
+  <circle cx="100" cy="100" r="76.5" stroke="#d4a017" stroke-width="0.7" fill="none"
+          stroke-dasharray="2.8 3.8" opacity="0.42"/>
+  <!-- Stitching — inner dashed line -->
+  <circle cx="100" cy="100" r="63.5" stroke="#d4a017" stroke-width="0.7" fill="none"
+          stroke-dasharray="2.8 3.8" opacity="0.42"/>
+
+  <!-- ── Rivets at 12, 9, 3 o'clock ── -->
+
+  <!-- 12 o'clock (100, 30) -->
+  <circle cx="100" cy="30" r="5.5" fill="#0c0000"/>
+  <circle cx="100" cy="30" r="5.5" stroke="#e8c04a" stroke-width="1.2" fill="none"/>
+  <circle cx="100" cy="30" r="3.5" fill="#d4a017"/>
+  <circle cx="100" cy="30" r="1.4" fill="#e8c04a"/>
+
+  <!-- 9 o'clock (30, 100) -->
+  <circle cx="30" cy="100" r="5.5" fill="#0c0000"/>
+  <circle cx="30" cy="100" r="5.5" stroke="#e8c04a" stroke-width="1.2" fill="none"/>
+  <circle cx="30" cy="100" r="3.5" fill="#d4a017"/>
+  <circle cx="30" cy="100" r="1.4" fill="#e8c04a"/>
+
+  <!-- 3 o'clock (170, 100) -->
+  <circle cx="170" cy="100" r="5.5" fill="#0c0000"/>
+  <circle cx="170" cy="100" r="5.5" stroke="#e8c04a" stroke-width="1.2" fill="none"/>
+  <circle cx="170" cy="100" r="3.5" fill="#d4a017"/>
+  <circle cx="170" cy="100" r="1.4" fill="#e8c04a"/>
+
+  <!-- ── Buckle at 6 o'clock (100, 170) — strap runs horizontally ── -->
+
+  <!-- Mask belt behind buckle body -->
+  <rect x="86" y="161" width="28" height="18" fill="#0c0000"/>
+
+  <!-- Red strap visible on left of center bar -->
+  <rect x="87.5" y="162.5" width="10" height="15" fill="#c01800"/>
+  <!-- Red strap visible on right of center bar -->
+  <rect x="102.5" y="162.5" width="10" height="15" fill="#c01800"/>
+
+  <!-- Buckle outer frame -->
+  <rect x="86" y="161" width="28" height="18" rx="2.5"
+        stroke="#e8c04a" stroke-width="1.8" fill="none"/>
+
+  <!-- Center bar (vertical rod) -->
+  <rect x="99.2" y="161" width="1.6" height="18" rx="0.8" fill="#d4a017"/>
+
+  <!-- Prong — points upward toward belt center -->
+  <line x1="100" y1="164" x2="100" y2="154"
+        stroke="#d4a017" stroke-width="1.6" stroke-linecap="round"/>
+  <circle cx="100" cy="154" r="1.4" fill="#e8c04a"/>
+
+  <!-- Belt gold edges restored over buckle rect edges -->
+  <line x1="86" y1="161" x2="114" y2="161" stroke="#e8c04a" stroke-width="1" opacity="0.5"/>
+  <line x1="86" y1="179" x2="114" y2="179" stroke="#e8c04a" stroke-width="1" opacity="0.5"/>
+
+  <!-- ── Central heraldic lozenge / diamond ── -->
+
+  <!-- Outer diamond fill -->
+  <polygon points="100,75 121,100 100,125 79,100" fill="#d4a017" opacity="0.88"/>
+
+  <!-- Inner diamond border ring -->
+  <polygon points="100,81 115,100 100,119 85,100"
+           fill="none" stroke="#e8c04a" stroke-width="1.1"/>
+
+  <!-- Dark center of diamond -->
+  <polygon points="100,89 110,100 100,111 90,100" fill="#0c0000"/>
+
+  <!-- Center bright dot -->
+  <circle cx="100" cy="100" r="3.2" fill="#e8c04a"/>
+  <circle cx="100" cy="100" r="1.4" fill="#ffffff" opacity="0.7"/>
+
+</svg>
