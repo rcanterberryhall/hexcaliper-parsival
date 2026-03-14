@@ -16,10 +16,11 @@ import sys
 import requests
 from datetime import datetime, timedelta
 
-PAGE_API_URL   = "https://squire.hexcaliper.com/page/api"
-INGEST_KEY     = "your-secret-key-here"
-LOOKBACK_HOURS = 48
-MAX_EMAILS     = 75
+PAGE_API_URL          = "https://squire.hexcaliper.com/page/api"
+CF_CLIENT_ID          = "your-cf-client-id"
+CF_CLIENT_SECRET      = "your-cf-client-secret"
+LOOKBACK_HOURS        = 48
+MAX_EMAILS            = 75
 
 
 def fetch() -> list[dict]:
@@ -103,7 +104,10 @@ def post(items: list[dict]) -> None:
         r = requests.post(
             f"{PAGE_API_URL}/ingest",
             json={"items": items},
-            headers={"X-Ingest-Key": INGEST_KEY},
+            headers={
+                "CF-Access-Client-Id":     CF_CLIENT_ID,
+                "CF-Access-Client-Secret": CF_CLIENT_SECRET,
+            },
             timeout=30,
         )
         r.raise_for_status()

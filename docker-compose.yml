@@ -31,7 +31,6 @@ services:
       PAGE_API_PORT:    "8001"
       DB_PATH:          "/app/data/page.db"
       LOOKBACK_HOURS:   "48"
-      INGEST_KEY:       "your-secret-key-here"
     volumes:
       - ./data:/app/data
     restart: unless-stopped

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import requests as http_requests
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from tinydb import TinyDB, Query
@@ -242,13 +242,11 @@ class IngestRequest(BaseModel):
 
 
 @app.post("/ingest")
-def ingest(body: IngestRequest, background_tasks: BackgroundTasks, x_ingest_key: Optional[str] = Header(default=None)):
+def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
     """
     Receive raw items from the Outlook or Thunderbird sidecar scripts.
     Deduplicates by item_id, then queues new items for AI analysis in the background.
     """
-    if config.INGEST_KEY and x_ingest_key != config.INGEST_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-Ingest-Key header.")
     raw: list[RawItem] = []
     for i in body.items:
         iid = i.get("item_id", "")
