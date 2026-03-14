@@ -5,13 +5,13 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import requests as http_requests
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from tinydb import TinyDB, Query
 
 import config
-from agent import analyze_batch
+from agent import analyze_batch, analyze
 from models import RawItem, Analysis
 import connector_slack
 import connector_github
@@ -71,6 +71,7 @@ scan_state: dict = {
     "current_source": "",
     "current_item":   "",
     "message":        "idle",
+    "ingest_pending": 0,
 }
 
 
@@ -241,11 +242,13 @@ class IngestRequest(BaseModel):
 
 
 @app.post("/ingest")
-def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
+def ingest(body: IngestRequest, background_tasks: BackgroundTasks, x_ingest_key: Optional[str] = Header(default=None)):
     """
     Receive raw items from the Outlook or Thunderbird sidecar scripts.
     Deduplicates by item_id, then queues new items for AI analysis in the background.
     """
+    if config.INGEST_KEY and x_ingest_key != config.INGEST_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Ingest-Key header.")
     raw: list[RawItem] = []
     for i in body.items:
         iid = i.get("item_id", "")
@@ -266,8 +269,15 @@ def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         ))
 
     def process() -> None:
-        for r in analyze_batch(raw):
-            _save_analysis(r)
+        with db_lock:
+            scan_state["ingest_pending"] += len(raw)
+        for item in raw:
+            try:
+                _save_analysis(analyze(item))
+            except Exception as e:
+                print(f"[ingest] {item.item_id}: {e}")
+            with db_lock:
+                scan_state["ingest_pending"] = max(0, scan_state["ingest_pending"] - 1)
 
     if raw:
         background_tasks.add_task(process)

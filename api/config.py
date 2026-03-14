@@ -38,6 +38,7 @@ JIRA_JQL    = _get(
 PAGE_API_PORT  = int(_get("PAGE_API_PORT", "8001"))
 DB_PATH        = _get("DB_PATH", "/app/data/page.db")
 LOOKBACK_HOURS = int(_get("LOOKBACK_HOURS", "48"))
+INGEST_KEY     = _get("INGEST_KEY")
 
 
 def apply_overrides(d: dict) -> None:
@@ -59,6 +60,7 @@ def apply_overrides(d: dict) -> None:
         "jira_domain":          "JIRA_DOMAIN",
         "jira_jql":             "JIRA_JQL",
     }
+    str_fields["ingest_key"] = "INGEST_KEY"
     for key, var in str_fields.items():
         if key in d and d[key] is not None:
             setattr(mod, var, str(d[key]))

@@ -483,11 +483,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 
 <script>
 const API = '/page/api';
-let activeSrcs = new Set(['outlook','slack','github','jira']);
-let priFilter  = 'all';
-let srcFilter  = 'all';
-let scanTimer  = null;
-let allTodos   = [];
+let activeSrcs      = new Set(['outlook','slack','github','jira']);
+let priFilter       = 'all';
+let srcFilter       = 'all';
+let scanTimer       = null;
+let allTodos        = [];
+let ingestWasActive = false;
 
 const $   = id => document.getElementById(id);
 
@@ -775,6 +776,27 @@ async function saveSettings() {
     msg.textContent = 'Save failed: ' + e.message;
   }
 }
+
+async function pollStatus() {
+  if (scanTimer) return; // scan already polling at 1s
+  try {
+    const s       = await api('/scan/status');
+    const pending = s.ingest_pending || 0;
+    if (pending > 0) {
+      $('spin').classList.add('on');
+      $('statusMsg').textContent = `Analyzing ${pending} item${pending !== 1 ? 's' : ''}…`;
+      setStatus('scanning');
+      ingestWasActive = true;
+    } else if (ingestWasActive) {
+      ingestWasActive = false;
+      $('spin').classList.remove('on');
+      setStatus('ready');
+      $('statusMsg').textContent = 'Ready';
+      await Promise.all([loadStats(), loadTodos(), loadItems()]);
+    }
+  } catch (e) { /* ignore */ }
+}
+setInterval(pollStatus, 3000);
 
 loadStats();
 loadTodos();

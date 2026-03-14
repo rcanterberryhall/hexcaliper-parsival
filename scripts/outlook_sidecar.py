@@ -16,7 +16,8 @@ import sys
 import requests
 from datetime import datetime, timedelta
 
-PAGE_API_URL   = "http://localhost:8082/page/api"
+PAGE_API_URL   = "https://squire.hexcaliper.com/page/api"
+INGEST_KEY     = "your-secret-key-here"
 LOOKBACK_HOURS = 48
 MAX_EMAILS     = 75
 
@@ -99,7 +100,12 @@ def post(items: list[dict]) -> None:
         print("No emails found in lookback window.")
         return
     try:
-        r = requests.post(f"{PAGE_API_URL}/ingest", json={"items": items}, timeout=30)
+        r = requests.post(
+            f"{PAGE_API_URL}/ingest",
+            json={"items": items},
+            headers={"X-Ingest-Key": INGEST_KEY},
+            timeout=30,
+        )
         r.raise_for_status()
         result = r.json()
         print(f"Sent {len(items)} → accepted {result.get('received','?')}, skipped {result.get('skipped','?')}")
