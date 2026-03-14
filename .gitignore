@@ -16,6 +16,7 @@ env/
 # IDE
 .idea/
 .vscode/
+.claude/
 
 # TinyDB / data
 db.json
