@@ -58,11 +58,12 @@ app.add_middleware(
 # Ensure data directory exists before TinyDB opens the file
 os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
 
-db           = TinyDB(config.DB_PATH)
-analyses     = db.table("analyses")
-todos        = db.table("todos")
-scan_logs    = db.table("scan_logs")
-settings_tbl = db.table("settings")
+db             = TinyDB(config.DB_PATH)
+analyses       = db.table("analyses")
+todos          = db.table("todos")
+scan_logs      = db.table("scan_logs")
+settings_tbl   = db.table("settings")
+embeddings_tbl = db.table("embeddings")
 Q            = Query()
 db_lock      = threading.Lock()
 
@@ -260,17 +261,20 @@ def health():
 
 @app.post("/reset")
 def reset_db():
-    """Drop all analyses, todos, and scan logs. Settings are preserved."""
+    """Drop all analyses, todos, scan logs, and embeddings. Settings are preserved."""
     with db_lock:
         analyses.truncate()
         todos.truncate()
         scan_logs.truncate()
+        embeddings_tbl.truncate()
     return {"ok": True}
 
 
 @app.get("/projects")
 def get_projects():
-    """Return configured projects with learned keyword and sender counts."""
+    """Return configured projects with learned keyword, sender, and embedding counts."""
+    from embedder import get_project_stats
+    stats = get_project_stats()
     return [
         {
             "name":               p.get("name", ""),
@@ -280,6 +284,8 @@ def get_projects():
             "learned_count":      len(p.get("learned_keywords", [])),
             "learned_senders":    p.get("learned_senders", []),
             "sender_count":       len(p.get("learned_senders", [])),
+            "embedding_items":    stats.get(p.get("name", ""), {}).get("total_items", 0),
+            "embedding_subs":     stats.get(p.get("name", ""), {}).get("subdivisions", []),
         }
         for p in config.PROJECTS
     ]
@@ -290,7 +296,7 @@ class TagRequest(BaseModel):
 
 
 @app.patch("/analyses/{item_id}")
-def patch_analysis(item_id: str, body: dict):
+def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
     """Update priority and/or category on a stored analysis. Also syncs priority to todos."""
     allowed_priorities = {"high", "medium", "low"}
     allowed_categories = {"reply_needed", "task", "deadline", "review", "approval", "fyi", "noise"}
@@ -306,11 +312,50 @@ def patch_analysis(item_id: str, body: dict):
     if not updates:
         raise HTTPException(status_code=400, detail="No valid fields to update.")
     with db_lock:
-        if not analyses.get(Q.item_id == item_id):
+        old_record = analyses.get(Q.item_id == item_id)
+        if not old_record:
             raise HTTPException(status_code=404, detail="Item not found")
         analyses.update(updates, Q.item_id == item_id)
         if "priority" in updates:
             todos.update({"priority": updates["priority"]}, Q.item_id == item_id)
+
+    old_project  = old_record.get("project_tag")
+    old_category = old_record.get("category")
+    new_project  = updates.get("project_tag", old_project)
+    new_category = updates.get("category", old_category)
+    project_changed  = "project_tag" in updates and new_project != old_project
+    category_changed = "category" in updates and new_category != old_category
+
+    if (project_changed or category_changed) and (new_project or old_project):
+        def relearn() -> None:
+            with db_lock:
+                record = analyses.get(Q.item_id == item_id)
+            if not record:
+                return
+            body_text = record.get("body_preview", "") or record.get("summary", "")
+            if not body_text:
+                return
+            try:
+                from embedder import embed, update_project, remove_item
+                vector = embed(body_text)
+                if new_project:
+                    update_project(
+                        project_name = new_project,
+                        item_id      = item_id,
+                        vector       = vector,
+                        category     = new_category,
+                        hierarchy    = record.get("hierarchy", "general"),
+                        source       = record.get("source", ""),
+                        priority     = record.get("priority", "medium"),
+                        old_project  = old_project if project_changed else None,
+                        old_category = old_category if category_changed else None,
+                    )
+                elif old_project:
+                    remove_item(item_id, old_project)
+            except Exception as e:
+                print(f"[patch] embedding update failed: {e}")
+        background_tasks.add_task(relearn)
+
     return {"ok": True, **updates}
 
 
@@ -380,6 +425,26 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
         sr_total = len(p.get("learned_senders", []))
         print(f"[learn] {project_name}: +{len(keywords)} keywords ({kw_total} total), "
               f"+{len(senders)} senders ({sr_total} total)")
+
+        # Embedding update
+        body_text = record.get("body_preview", "") or record.get("summary", "")
+        if body_text:
+            try:
+                from embedder import embed, update_project
+                vector = embed(body_text)
+                update_project(
+                    project_name = project_name,
+                    item_id      = item_id,
+                    vector       = vector,
+                    category     = record.get("category", "fyi"),
+                    hierarchy    = record.get("hierarchy", "general"),
+                    source       = record.get("source", ""),
+                    priority     = record.get("priority", "medium"),
+                    old_project  = None,
+                    old_category = None,
+                )
+            except Exception as e:
+                print(f"[learn] embedding update failed: {e}")
 
     background_tasks.add_task(learn)
     return {"ok": True, "project": project_name}

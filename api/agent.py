@@ -42,7 +42,7 @@ User context:
 - Active projects: {projects_ctx}
 - Watch topics: {topics_ctx}
 - Noise/irrelevant topics: {noise_ctx} — if content is primarily about these with no direct relevance to {user_name}, set category="noise", priority="low", has_action=false
-{sender_hint}{replied_hint}
+{sender_hint}{replied_hint}{embedding_hint}
 Analyze this item and extract structured information.
 
 Source: {source}
@@ -342,6 +342,32 @@ def analyze(item: RawItem) -> Analysis:
     else:
         replied_hint = ""
 
+    embedding_hint = ""
+    body_text = item.body[:2000] or item.title
+    if body_text:
+        try:
+            from embedder import embed, score_item
+            vector  = embed(body_text)
+            matches = score_item(vector, min_count=3)
+            if matches:
+                top = matches[0]
+                if top["score"] > 0.75:
+                    embedding_hint = (
+                        f"\n- Embedding classifier hint: this item is semantically similar to "
+                        f"past items tagged to project \"{top['project']}\" "
+                        f"(category: {top['category']}, confidence: {top['score']:.2f}, "
+                        f"based on {top['count']} training items). "
+                        f"Use this as a strong signal but verify against content."
+                    )
+                elif top["score"] > 0.55:
+                    embedding_hint = (
+                        f"\n- Embedding classifier hint: weak similarity to project "
+                        f"\"{top['project']}\" (score: {top['score']:.2f}). "
+                        f"Consider but do not rely on this signal."
+                    )
+        except Exception as e:
+            print(f"[agent] embedding score failed: {e}")
+
     response = requests.post(
         config.OLLAMA_URL,
         headers=config.ollama_headers(),
@@ -360,8 +386,9 @@ def analyze(item: RawItem) -> Analysis:
                 noise_ctx    = _noise_ctx(),
                 to_field     = to_field,
                 cc_field     = cc_field,
-                sender_hint  = sender_hint,
-                replied_hint = replied_hint,
+                sender_hint    = sender_hint,
+                replied_hint   = replied_hint,
+                embedding_hint = embedding_hint,
             ),
             "stream":  False,
             "format":  "json",

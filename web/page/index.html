@@ -1614,9 +1614,11 @@ function addProjectRow(p = {}) {
   row.className = 'project-row';
   row.dataset.learned        = JSON.stringify(p.learned_keywords || []);
   row.dataset.learnedSenders = JSON.stringify(p.learned_senders  || []);
-  const lcount = (p.learned_keywords || []).length;
-  const scount = (p.learned_senders  || []).length;
-  const total  = lcount + scount;
+  const lcount   = (p.learned_keywords || []).length;
+  const scount   = (p.learned_senders  || []).length;
+  const total    = lcount + scount;
+  const embCount = p.embedding_items || 0;
+  const embSubs  = (p.embedding_subs  || []).join(', ') || 'none';
   const metaLabel = total === 0 ? '0 learned'
     : [lcount > 0 ? `${lcount} kw` : '', scount > 0 ? `${scount} senders` : ''].filter(Boolean).join(' · ');
   row.innerHTML = `
@@ -1624,6 +1626,7 @@ function addProjectRow(p = {}) {
       <input type="text" placeholder="Project Alpha" value="${esc(p.name || '')}">
       <div style="font-size:9px;color:var(--muted);margin-top:3px;display:flex;align-items:center;gap:6px">
         <span class="learned-count">${metaLabel}</span>
+        ${embCount > 0 ? `<span class="learned-count">${embCount} embedded (${esc(embSubs)})</span>` : ''}
         ${total > 0 ? `<button class="ia" style="font-size:9px;padding:1px 4px" onclick="toggleLearnedPanel(this)">inspect</button>` : ''}
         ${total > 0 ? `<button class="ia" style="font-size:9px;padding:1px 4px" onclick="clearLearned(this)" title="Clear all learned data">clear</button>` : ''}
       </div>

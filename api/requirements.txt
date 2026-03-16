@@ -5,3 +5,5 @@ pydantic==2.10.4
 python-dotenv==1.0.1
 requests==2.32.3
 tinydb==4.8.0
+sentence-transformers==3.4.1
+numpy==2.2.3
