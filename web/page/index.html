@@ -374,8 +374,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .learned-panel-section { margin-bottom: 10px; }
 .learned-panel-section:last-child { margin-bottom: 0; }
 .learned-panel-label { font-size: 9px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
-.chip {
-  display: inline-flex; align-items: center; gap: 3px;
+.learned-panel .chip {
   background: var(--border); border: 1px solid var(--border2);
   border-radius: 4px; padding: 2px 6px 2px 7px; font-size: 10px; color: var(--text); margin: 2px;
 }
@@ -1799,6 +1798,7 @@ async function pollStatus() {
 }
 setInterval(pollStatus, 3000);
 
+$('searchInput').value = '';
 loadStats();
 loadTodos();
 loadItems();
