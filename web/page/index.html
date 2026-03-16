@@ -132,7 +132,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .sc           { font-size: 11px; margin-left: auto; color: var(--muted); }
 
 /* ── Main ── */
-.main { display: flex; flex-direction: column; overflow: hidden; }
+.main { display: flex; flex-direction: column; overflow: hidden; transition: margin-right .22s cubic-bezier(.4,0,.2,1); }
+body.detail-open .main { margin-right: 47%; }
 .main-toolbar {
   padding: 9px 18px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
@@ -512,6 +513,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
   /* Detail panel: full screen */
   .detail-panel { width: 100%; right: -100%; }
   .detail-panel.open { right: 0; }
+  body.detail-open .main { margin-right: 0; }
 
   /* Settings modal: full screen */
   .modal {
@@ -1397,6 +1399,7 @@ function openDetail(item) {
     : '<span style="font-size:11px;color:var(--muted)">No source link</span>';
 
   $('detailPanel').classList.add('open');
+  document.body.classList.add('detail-open');
 }
 
 function showAssignPicker(docId, itemId, anchorEl) {
@@ -1479,6 +1482,7 @@ async function saveDetailEdits(itemId) {
 
 function closeDetail() {
   $('detailPanel').classList.remove('open');
+  document.body.classList.remove('detail-open');
 }
 
 document.addEventListener('keydown', e => {
