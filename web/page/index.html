@@ -132,8 +132,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .sc           { font-size: 11px; margin-left: auto; color: var(--muted); }
 
 /* ── Main ── */
-.main { display: flex; flex-direction: column; overflow: hidden; transition: margin-right .22s cubic-bezier(.4,0,.2,1); }
-body.detail-open .main { margin-right: 47%; }
+.main { display: flex; flex-direction: column; overflow: hidden; }
 .main-toolbar {
   padding: 9px 18px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
@@ -513,7 +512,6 @@ body.detail-open .main { margin-right: 47%; }
   /* Detail panel: full screen */
   .detail-panel { width: 100%; right: -100%; }
   .detail-panel.open { right: 0; }
-  body.detail-open .main { margin-right: 0; }
 
   /* Settings modal: full screen */
   .modal {
@@ -650,7 +648,7 @@ body.detail-open .main { margin-right: 47%; }
           <button class="vtab"        onclick="setView('items',this)">All Items</button>
         </div>
         <div class="toolbar-filters">
-          <input type="text"   class="search-input" id="searchInput" placeholder="Search…" oninput="onSearch(this.value)">
+          <input type="text"   class="search-input" id="searchInput" placeholder="Search…" oninput="onSearch(this.value)" autocomplete="off">
           <select class="detail-select" id="dateFilterSel" onchange="onDateFilter(this.value)" title="Date range">
             <option value="all">All time</option>
             <option value="7">7 days</option>
@@ -1399,7 +1397,6 @@ function openDetail(item) {
     : '<span style="font-size:11px;color:var(--muted)">No source link</span>';
 
   $('detailPanel').classList.add('open');
-  document.body.classList.add('detail-open');
 }
 
 function showAssignPicker(docId, itemId, anchorEl) {
@@ -1482,7 +1479,6 @@ async function saveDetailEdits(itemId) {
 
 function closeDetail() {
   $('detailPanel').classList.remove('open');
-  document.body.classList.remove('detail-open');
 }
 
 document.addEventListener('keydown', e => {
