@@ -730,8 +730,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
         <div class="field"><label>Lookback Hours</label><input type="number" id="s-lookback_hours" placeholder="48"></div>
       </div>
       <div class="field-row">
-        <div class="field"><label>CF Client ID</label><input type="password" id="s-cf_client_id" placeholder="leave blank if no Access policy"></div>
-        <div class="field"><label>CF Client Secret</label><input type="password" id="s-cf_client_secret" placeholder="leave blank if no Access policy"></div>
+        <div class="field"><label>CF Client ID</label><input type="password" id="s-cf_client_id" placeholder="leave blank if no Access policy" autocomplete="off"></div>
+        <div class="field"><label>CF Client Secret</label><input type="password" id="s-cf_client_secret" placeholder="leave blank if no Access policy" autocomplete="off"></div>
       </div>
     </div>
 
@@ -739,7 +739,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
       <div class="section-head"><div class="sdot2" id="dot-slack"></div>Slack</div>
       <div class="field-row">
         <div class="field"><label>Client ID</label><input type="text" id="s-slack_client_id" placeholder="your-app-client-id"></div>
-        <div class="field"><label>Client Secret</label><input type="password" id="s-slack_client_secret" placeholder="your-app-client-secret"></div>
+        <div class="field"><label>Client Secret</label><input type="password" id="s-slack_client_secret" placeholder="your-app-client-secret" autocomplete="off"></div>
       </div>
       <div class="field-hint" style="margin-bottom:10px">Create a private Slack app at api.slack.com, add user token scopes, set redirect URL to https://squire.hexcaliper.com/page/api/slack/callback, then connect each workspace below.</div>
       <div id="slack-workspaces"></div>
@@ -749,7 +749,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
     <div class="settings-section">
       <div class="section-head"><div class="sdot2" id="dot-github"></div>GitHub</div>
       <div class="field-row">
-        <div class="field"><label>Personal Access Token</label><input type="password" id="s-github_pat" placeholder="ghp_…"></div>
+        <div class="field"><label>Personal Access Token</label><input type="password" id="s-github_pat" placeholder="ghp_…" autocomplete="off"></div>
         <div class="field"><label>Username</label><input type="text" id="s-github_username" placeholder="your-github-username"></div>
       </div>
     </div>
@@ -760,7 +760,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
         <div class="field"><label>Email</label><input type="text" id="s-jira_email" placeholder="you@yourcompany.com"></div>
         <div class="field"><label>Domain</label><input type="text" id="s-jira_domain" placeholder="yourcompany.atlassian.net"></div>
       </div>
-      <div class="field"><label>API Token</label><input type="password" id="s-jira_token" placeholder="your-jira-api-token"></div>
+      <div class="field"><label>API Token</label><input type="password" id="s-jira_token" placeholder="your-jira-api-token" autocomplete="off"></div>
       <div class="field"><label>JQL (optional)</label><input type="text" id="s-jira_jql"></div>
     </div>
 
@@ -1532,6 +1532,7 @@ const SETTINGS_FIELDS = [
   'jira_email','jira_token','jira_domain','jira_jql','lookback_hours',
   'user_name','user_email','focus_topics',
 ];
+const SECRET_FIELDS = new Set(['cf_client_id','cf_client_secret','slack_client_secret','github_pat','jira_token']);
 
 function openSettings() {
   $('settingsBackdrop').classList.add('open');
@@ -1548,7 +1549,16 @@ function closeSettings() {
 async function loadSettings() {
   try {
     const s = await api('/settings');
-    SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el) el.value = s[f] ?? ''; });
+    SETTINGS_FIELDS.forEach(f => {
+      const el = $('s-' + f);
+      if (!el) return;
+      if (SECRET_FIELDS.has(f)) {
+        el.value = '';
+        el.placeholder = s[f] ? '(saved — enter new value to change)' : el.placeholder;
+      } else {
+        el.value = s[f] ?? '';
+      }
+    });
     loadProjects(s.projects);
     const nc = (s.noise_keywords || []).length;
     $('noise-count').textContent = `${nc} keyword${nc !== 1 ? 's' : ''}`;
@@ -1582,7 +1592,7 @@ async function disconnectSlack(teamId) {
 async function connectSlack() {
   // Persist settings first so the callback endpoint can use them
   const body = {};
-  SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el) body[f] = el.value; });
+  SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el && (!SECRET_FIELDS.has(f) || el.value)) body[f] = el.value; });
   body.projects = readProjects();
   try { await api('/settings', 'POST', body); } catch(e) {}
   window.location.href = '/page/api/slack/connect';
@@ -1761,7 +1771,7 @@ async function clearDb() {
 
 async function saveSettings() {
   const body = {};
-  SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el) body[f] = el.value; });
+  SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el && (!SECRET_FIELDS.has(f) || el.value)) body[f] = el.value; });
   body.projects = readProjects();
   const msg = $('settings-msg');
   try {
@@ -1799,7 +1809,10 @@ async function pollStatus() {
 }
 setInterval(pollStatus, 3000);
 
-setTimeout(() => { $('searchInput').value = ''; }, 200);
+function clearSearch() { $('searchInput').value = ''; searchQuery = ''; }
+clearSearch();
+setTimeout(clearSearch, 500);
+window.addEventListener('pageshow', clearSearch);
 loadStats();
 loadTodos();
 loadItems();
