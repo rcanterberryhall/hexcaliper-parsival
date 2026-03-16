@@ -232,6 +232,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .b-review        { color: var(--blue);   background: rgba(64,184,255,.07);  border: 1px solid rgba(64,184,255,.15); }
 .b-approval      { color: var(--purple); background: rgba(204,51,0,.08);    border: 1px solid rgba(204,51,0,.18); }
 .b-fyi, .b-noise { color: var(--muted);  background: rgba(110,80,80,.12);   border: 1px solid var(--border); }
+.b-passdown      { color: var(--gold);   background: rgba(212,160,23,.07);  border: 1px solid rgba(212,160,23,.18); }
+.b-project       { color: var(--blue);   background: rgba(64,184,255,.06);  border: 1px solid rgba(64,184,255,.14); font-size:9px; }
 .pri-high   { color: var(--red);   font-size: 10px; }
 .pri-medium { color: var(--amber); font-size: 10px; }
 .pri-low    { color: var(--muted); font-size: 10px; }
@@ -322,6 +324,34 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
   border-radius: var(--r); font-size: 11px;
 }
 .workspace-name { color: var(--text); }
+.project-picker {
+  background: var(--surface); border: 1px solid var(--accent);
+  border-radius: var(--r); padding: 4px; min-width: 130px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.6); position: fixed; z-index: 200;
+}
+.project-picker button {
+  display: block; width: 100%; text-align: left;
+  background: none; border: none; color: var(--text);
+  font-family: var(--mono); font-size: 11px; padding: 5px 9px;
+  cursor: pointer; border-radius: 4px; transition: all .1s;
+}
+.project-picker button:hover { background: var(--border); color: var(--accent); }
+.project-picker .no-projects { font-size: 10px; color: var(--muted); padding: 5px 9px; }
+.project-row {
+  display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 6px; align-items: start;
+  margin-bottom: 8px;
+}
+.project-row input {
+  width: 100%; background: var(--bg); border: 1px solid var(--border2);
+  color: var(--text); font-family: var(--mono); font-size: 11px;
+  padding: 5px 8px; border-radius: var(--r); outline: none; transition: border-color .15s;
+}
+.project-row input:focus { border-color: var(--accent); }
+.project-row-head {
+  display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 6px;
+  margin-bottom: 4px;
+}
+.project-row-head span { font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); padding: 0 2px; }
 
 /* ── Status bar ── */
 .statusbar {
@@ -402,6 +432,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
         <div class="srow"            onclick="setSrc('jira',this)">   <div class="sdot sdot-jira"></div>   <span style="font-size:12px">Jira</span>   <span class="sc" id="sc-jira">0</span></div>
       </div>
 
+      <div class="sb-block">
+        <div class="sb-label">Type</div>
+        <div class="frow active" id="type-all"      onclick="setType('all',this)">     <span class="fl">All</span>       <span class="fc" id="tc-all">0</span></div>
+        <div class="frow"        id="type-passdown" onclick="setType('passdown',this)"><span class="fl">⇣ Passdowns</span><span class="fc" id="tc-passdown">0</span></div>
+      </div>
+
     </aside>
 
     <div class="main">
@@ -431,6 +467,38 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
     <button class="modal-close" onclick="closeSettings()">✕</button>
   </div>
   <div class="modal-body">
+
+    <div class="settings-section">
+      <div class="section-head"><div class="sdot2 ok" id="dot-context"></div>Context</div>
+      <div class="field-row">
+        <div class="field"><label>Your Name</label><input type="text" id="s-user_name" placeholder="Jane Smith"></div>
+        <div class="field"><label>Your Email</label><input type="text" id="s-user_email" placeholder="jane@company.com"></div>
+      </div>
+      <div class="field">
+        <label>Watch Topics</label>
+        <input type="text" id="s-focus_topics" placeholder="security, deployment, on-call">
+        <div class="field-hint">Comma-separated keywords. Slack channels with matching messages will be included.</div>
+      </div>
+      <div class="field">
+        <label>Projects</label>
+        <div class="project-row-head" id="project-list-head" style="display:none">
+          <span>Name</span><span>Keywords (comma-sep)</span><span>Slack Channels (comma-sep)</span><span></span>
+        </div>
+        <div id="project-list"></div>
+        <button class="connect-btn" style="margin-top:6px" onclick="addProjectRow()">+ Add Project</button>
+        <div class="field-hint">Keywords are matched in Slack/email content. Channels are Slack channel names to prioritize.</div>
+      </div>
+      <div class="field" style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <label style="margin-bottom:0">Noise Filter</label>
+          <div class="field-hint" style="margin-top:2px">Keywords learned from items you marked irrelevant.</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="noise-count" style="font-size:11px;color:var(--muted)">0 keywords</span>
+          <button class="ia del" id="noise-clear-btn" onclick="clearNoiseFilter()" title="Clear noise filter" style="display:none">clear</button>
+        </div>
+      </div>
+    </div>
 
     <div class="settings-section">
       <div class="section-head"><div class="sdot2" id="dot-ollama"></div>Ollama</div>
@@ -477,7 +545,10 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
   </div>
   <div class="modal-foot">
     <span class="settings-msg" id="settings-msg"></span>
-    <button class="save-btn" onclick="saveSettings()">Save</button>
+    <div style="display:flex;gap:8px">
+      <button class="save-btn" style="border-color:var(--red);color:var(--red)" onclick="clearDb()">Clear DB</button>
+      <button class="save-btn" onclick="saveSettings()">Save</button>
+    </div>
   </div>
 </div>
 
@@ -486,9 +557,64 @@ const API = '/page/api';
 let activeSrcs      = new Set(['outlook','slack','github','jira']);
 let priFilter       = 'all';
 let srcFilter       = 'all';
+let typeFilter      = 'all';
 let scanTimer       = null;
 let allTodos        = [];
+let allAnalyses     = [];
 let ingestWasActive = false;
+let allProjects = [];
+
+async function loadProjectList() {
+  try { allProjects = await api('/projects'); } catch(e) { allProjects = []; }
+}
+
+function showProjectPicker(itemId, anchorEl) {
+  const existing = document.querySelector('.project-picker');
+  if (existing) { existing.remove(); if (existing.dataset.itemId === String(itemId)) return; }
+  const picker = document.createElement('div');
+  picker.className = 'project-picker';
+  picker.dataset.itemId = String(itemId);
+  if (!allProjects.length) {
+    picker.innerHTML = '<div class="no-projects">No projects configured</div>';
+  } else {
+    picker.innerHTML = allProjects.map(p =>
+      `<button onclick="tagToProject('${esc(p.name)}','${esc(String(itemId))}',event)">${esc(p.name)}</button>`
+    ).join('');
+  }
+  const rect = anchorEl.getBoundingClientRect();
+  picker.style.top  = (rect.bottom + 4) + 'px';
+  picker.style.left = Math.max(4, rect.right - 130) + 'px';
+  document.body.appendChild(picker);
+  setTimeout(() => document.addEventListener('click', dismissPicker, { once: true }), 0);
+}
+
+function dismissPicker() {
+  const p = document.querySelector('.project-picker');
+  if (p) p.remove();
+}
+
+async function tagToProject(projectName, itemId, evt) {
+  evt.stopPropagation();
+  dismissPicker();
+  try {
+    await api(`/analyses/${encodeURIComponent(itemId)}/tag`, 'POST', { project: projectName });
+    $('statusMsg').textContent = `Tagged to ${projectName} — learning keywords in background…`;
+    await Promise.all([loadTodos(), loadItems()]);
+  } catch(e) {
+    $('statusMsg').textContent = 'Tag failed: ' + e.message;
+  }
+}
+
+async function markNoise(itemId) {
+  if (!confirm('Mark as irrelevant? This will train the noise filter with keywords from this item.')) return;
+  try {
+    await api(`/analyses/${encodeURIComponent(itemId)}/noise`, 'POST');
+    $('statusMsg').textContent = 'Marked irrelevant — noise filter updating in background…';
+    await Promise.all([loadTodos(), loadItems()]);
+  } catch(e) {
+    $('statusMsg').textContent = 'Failed: ' + e.message;
+  }
+}
 
 const $   = id => document.getElementById(id);
 
@@ -541,6 +667,7 @@ async function pollScan() {
       setStatus('ready');
       setTimeout(() => { $('pbar').style.width = '0'; }, 2000);
       await Promise.all([loadStats(), loadTodos(), loadItems()]);
+      updateTypeCounts(allAnalyses);
     }
   } catch (e) { /* keep polling */ }
 }
@@ -611,7 +738,9 @@ function makeTodo(t) {
   const did  = t.doc_id || 0;
   const dl   = t.deadline ? `<span class="chip chip-deadline">⚑ ${fmtDate(t.deadline)}</span>` : '';
   const own  = t.owner && t.owner !== 'me' ? `<span class="chip">→ ${esc(t.owner)}</span>` : '';
-  const link = t.url ? `<button class="ia open" onclick="window.open('${esc(t.url)}','_blank')" title="Open source">↗</button>` : '';
+  const link    = t.url ? `<button class="ia open" onclick="window.open('${esc(t.url)}','_blank')" title="Open source">↗</button>` : '';
+  const tagBtn  = allProjects.length ? `<button class="ia" onclick="showProjectPicker('${esc(t.item_id || String(t.doc_id))}',this)" title="Tag to project">◈</button>` : '';
+  const proj = t.project_tag ? `<span class="chip"><span class="badge b-project">${esc(t.project_tag)}</span></span>` : '';
   el.innerHTML = `
     <button class="cb" onclick="toggleDone(${did}, ${!t.done})">✓</button>
     <div>
@@ -619,10 +748,10 @@ function makeTodo(t) {
       <div class="todo-meta">
         <span class="chip chip-${t.source}">${srcIcon[t.source] || '·'} ${t.source}</span>
         <span class="chip" style="color:var(--muted)">${esc(trunc(t.title || '', 42))}</span>
-        ${dl}${own}
+        ${proj}${dl}${own}
       </div>
     </div>
-    <div class="todo-actions">${link}<button class="ia del" onclick="deleteTodo(${did})" title="Delete">✕</button></div>`;
+    <div class="todo-actions">${tagBtn}${link}<button class="ia del" onclick="deleteTodo(${did})" title="Delete">✕</button></div>`;
   return el;
 }
 
@@ -638,36 +767,57 @@ async function deleteTodo(id) {
 
 async function loadItems() {
   try {
-    const items = await api('/analyses');
-    const el    = $('items-view');
-    if (!items.length) {
-      el.innerHTML = `<div class="empty"><div class="empty-icon">◻</div><div class="empty-msg">No items scanned yet.</div></div>`;
-      return;
-    }
-    el.innerHTML = `
-      <table class="item-table">
-        <thead><tr>
-          <th>Source</th><th>Category</th><th>Title</th>
-          <th>From</th><th>Summary</th><th>Pri</th><th>Time</th><th>Link</th>
-        </tr></thead>
-        <tbody>${items.map(itemRow).join('')}</tbody>
-      </table>`;
+    allAnalyses = await api('/analyses');
+    updateTypeCounts(allAnalyses);
+    renderItems(allAnalyses);
   } catch (e) { console.warn('items:', e); }
+}
+
+function updateTypeCounts(items) {
+  $('tc-all').textContent      = items.length;
+  $('tc-passdown').textContent = items.filter(i => i.is_passdown).length;
+}
+
+function renderItems(items) {
+  const el = $('items-view');
+  let filtered = items;
+  if (typeFilter === 'passdown') filtered = items.filter(i => i.is_passdown);
+  if (!filtered.length) {
+    el.innerHTML = `<div class="empty"><div class="empty-icon">◻</div><div class="empty-msg">${
+      items.length === 0 ? 'No items scanned yet.' : 'Nothing matches this filter.'
+    }</div></div>`;
+    return;
+  }
+  el.innerHTML = `
+    <table class="item-table">
+      <thead><tr>
+        <th>Source</th><th>Category</th><th>Title</th>
+        <th>From</th><th>Summary</th><th>Pri</th><th>Time</th><th>Link</th><th></th>
+      </tr></thead>
+      <tbody>${filtered.map(itemRow).join('')}</tbody>
+    </table>`;
 }
 
 function itemRow(i) {
   const t    = i.timestamp ? new Date(i.timestamp).toLocaleDateString([], {month:'short', day:'numeric'}) : '';
   const link = i.url ? `<a href="${esc(i.url)}" target="_blank">↗</a>` : '—';
   const cat  = (i.category || 'fyi').replace('_', ' ');
+  const pd      = i.is_passdown ? `<span class="badge b-passdown" style="margin-left:4px">passdown</span>` : '';
+  const proj    = i.project_tag ? `<span class="badge b-project" style="margin-left:4px">${esc(i.project_tag)}</span>` : '';
+  const tagCell = `<td style="white-space:nowrap">
+    ${allProjects.length ? `<button class="ia" onclick="showProjectPicker('${esc(i.item_id)}',this)" title="Tag to project">◈</button>` : ''}
+    <button class="ia del" onclick="markNoise('${esc(i.item_id)}')" title="Mark irrelevant">✕</button>
+  </td>`;
   return `<tr>
-    <td><span class="badge b-${i.source}">${i.source}</span></td>
-    <td><span class="badge b-${i.category || 'fyi'}">${cat}</span></td>
+    <td><span class="badge b-${i.source}">${i.source}</span>${pd}</td>
+    <td><span class="badge b-${i.category || 'fyi'}">${cat}</span>${proj}</td>
     <td class="t-title">${esc(i.title || '')}</td>
     <td class="t-author">${esc(i.author || '')}</td>
     <td class="t-sum">${esc(i.summary || '')}</td>
     <td class="pri-${i.priority || 'low'}">${i.priority || 'low'}</td>
     <td class="t-time">${t}</td>
     <td class="t-link">${link}</td>
+    ${tagCell}
   </tr>`;
 }
 
@@ -685,6 +835,22 @@ function setSrc(s, el) {
   loadTodos();
 }
 
+function setType(t, el) {
+  typeFilter = t;
+  document.querySelectorAll('#type-all,#type-passdown').forEach(e => e.classList.remove('active'));
+  el.classList.add('active');
+  renderItems(allAnalyses);
+  if ($('items-view').style.display !== 'none') return;
+  // Switch to items view to show passdowns
+  if (t === 'passdown') {
+    document.querySelectorAll('.vtab').forEach(e => e.classList.remove('active'));
+    document.querySelectorAll('.vtab')[1].classList.add('active');
+    $('todo-view').style.display  = 'none';
+    $('items-view').style.display = 'block';
+    loadItems();
+  }
+}
+
 function setView(v, el) {
   document.querySelectorAll('.vtab').forEach(e => e.classList.remove('active'));
   el.classList.add('active');
@@ -700,12 +866,14 @@ const SETTINGS_FIELDS = [
   'slack_client_id','slack_client_secret',
   'github_pat','github_username',
   'jira_email','jira_token','jira_domain','jira_jql','lookback_hours',
+  'user_name','user_email','focus_topics',
 ];
 
 function openSettings() {
   $('settingsBackdrop').classList.add('open');
   $('settingsModal').classList.add('open');
   loadSettings();
+  loadProjectList();
 }
 
 function closeSettings() {
@@ -717,6 +885,10 @@ async function loadSettings() {
   try {
     const s = await api('/settings');
     SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el) el.value = s[f] ?? ''; });
+    loadProjects(s.projects);
+    const nc = (s.noise_keywords || []).length;
+    $('noise-count').textContent = `${nc} keyword${nc !== 1 ? 's' : ''}`;
+    $('noise-clear-btn').style.display = nc > 0 ? '' : 'none';
     updateSectionDots(s.warnings || []);
     loadSlackWorkspaces();
   } catch(e) { console.warn('loadSettings:', e); }
@@ -744,9 +916,10 @@ async function disconnectSlack(teamId) {
 }
 
 async function connectSlack() {
-  // Persist client ID/secret first so the callback endpoint can use them
+  // Persist settings first so the callback endpoint can use them
   const body = {};
   SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el) body[f] = el.value; });
+  body.projects = readProjects();
   try { await api('/settings', 'POST', body); } catch(e) {}
   window.location.href = '/page/api/slack/connect';
 }
@@ -759,9 +932,95 @@ function updateSectionDots(warnings) {
   $('dot-jira').className   = 'sdot2' + (has('JIRA')     ? ' warn' : ' ok');
 }
 
+function addProjectRow(p = {}) {
+  const list = $('project-list');
+  const head = $('project-list-head');
+  head.style.display = '';
+  const row = document.createElement('div');
+  row.className = 'project-row';
+  row.dataset.learned = JSON.stringify(p.learned_keywords || []);
+  const lcount = (p.learned_keywords || []).length;
+  row.innerHTML = `
+    <div>
+      <input type="text" placeholder="Project Alpha" value="${esc(p.name || '')}">
+      <div style="font-size:9px;color:var(--muted);margin-top:3px;display:flex;align-items:center;gap:6px">
+        <span class="learned-count">${lcount} learned</span>
+        ${lcount > 0 ? `<button class="ia" style="font-size:9px;padding:1px 4px" onclick="clearLearned(this)" title="Clear learned keywords">clear</button>` : ''}
+      </div>
+    </div>
+    <input type="text" placeholder="alpha, PA-" value="${esc((p.keywords || []).join(', '))}">
+    <input type="text" placeholder="proj-alpha, alpha-eng" value="${esc((p.channels || []).join(', '))}">
+    <button class="ia del" onclick="removeProjectRow(this)" title="Remove">✕</button>`;
+  list.appendChild(row);
+}
+
+function removeProjectRow(btn) {
+  btn.closest('.project-row').remove();
+  if (!$('project-list').children.length) $('project-list-head').style.display = 'none';
+}
+
+function clearLearned(btn) {
+  const row = btn.closest('.project-row');
+  row.dataset.learned = '[]';
+  const meta = row.querySelector('.learned-count').parentElement;
+  meta.innerHTML = '<span class="learned-count">0 learned</span>';
+}
+
+function readProjects() {
+  return Array.from($('project-list').querySelectorAll('.project-row')).map(row => {
+    const inputs = row.querySelectorAll('input');
+    return {
+      name:              inputs[0].value.trim(),
+      keywords:          inputs[1].value.split(',').map(s => s.trim()).filter(Boolean),
+      channels:          inputs[2].value.split(',').map(s => s.trim()).filter(Boolean),
+      learned_keywords:  JSON.parse(row.dataset.learned || '[]'),
+    };
+  }).filter(p => p.name);
+}
+
+function loadProjects(projects) {
+  $('project-list').innerHTML = '';
+  $('project-list-head').style.display = 'none';
+  (projects || []).forEach(p => addProjectRow(p));
+}
+
+async function clearNoiseFilter() {
+  if (!confirm('Clear all learned noise keywords?')) return;
+  try {
+    const body = { noise_keywords: [] };
+    await api('/settings', 'POST', body);
+    $('noise-count').textContent = '0 keywords';
+    $('noise-clear-btn').style.display = 'none';
+  } catch(e) {
+    console.warn('clearNoiseFilter:', e);
+  }
+}
+
+async function clearDb() {
+  if (!confirm('Clear all analyses, todos, and scan logs? Settings will be kept.')) return;
+  const msg = $('settings-msg');
+  try {
+    await api('/reset', 'POST');
+    allTodos    = [];
+    allAnalyses = [];
+    renderTodos([]);
+    renderItems([]);
+    updateCounts([]);
+    updateTypeCounts([]);
+    await loadStats();
+    msg.className   = 'settings-msg ok';
+    msg.textContent = 'Database cleared.';
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+  } catch(e) {
+    msg.className   = 'settings-msg err';
+    msg.textContent = 'Clear failed: ' + e.message;
+  }
+}
+
 async function saveSettings() {
   const body = {};
   SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el) body[f] = el.value; });
+  body.projects = readProjects();
   const msg = $('settings-msg');
   try {
     const r = await api('/settings', 'POST', body);
@@ -800,6 +1059,7 @@ setInterval(pollStatus, 3000);
 
 loadStats();
 loadTodos();
+loadProjectList();
 
 // Handle Slack OAuth redirect result
 (function() {

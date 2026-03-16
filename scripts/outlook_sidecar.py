@@ -100,6 +100,12 @@ def fetch() -> list[dict]:
     messages from the default Inbox.  Messages are filtered to the lookback
     window defined by ``LOOKBACK_HOURS`` and capped at ``MAX_EMAILS``.
 
+    Recipient addresses are read from ``msg.Recipients`` (iterating the COM
+    collection and inspecting ``Type``: 1 = To, 2 = CC), with a fallback to
+    the plain ``msg.To`` / ``msg.CC`` string properties if the collection is
+    inaccessible.  Both ``to`` and ``cc`` are included as semicolon-separated
+    strings in ``metadata`` so the LLM can apply recipient-based hierarchy rules.
+
     :return: List of normalised email dicts ready for ``POST /ingest``.
     :rtype: list[dict]
     :raises SystemExit: If ``pywin32`` is not installed or Outlook is not running.
@@ -157,6 +163,21 @@ def fetch() -> list[dict]:
                 sender_name  = getattr(msg, "SenderName", "")  or ""
                 sender_email = getattr(msg, "SenderEmailAddress", "") or ""
 
+                to_list, cc_list = [], []
+                try:
+                    for r in msg.Recipients:
+                        addr  = getattr(r, "Address", "") or ""
+                        name  = getattr(r, "Name", "")    or ""
+                        entry = f"{name} <{addr}>" if name and addr else (name or addr)
+                        rtype = getattr(r, "Type", 1)
+                        if rtype == 1:    # olTo
+                            to_list.append(entry)
+                        elif rtype == 2:  # olCC
+                            cc_list.append(entry)
+                except Exception:
+                    to_list = [getattr(msg, "To", "") or ""]
+                    cc_list = [getattr(msg, "CC", "") or ""]
+
                 items.append({
                     "source":    "outlook",
                     "item_id":   str(getattr(msg, "EntryID", "")),
@@ -165,7 +186,11 @@ def fetch() -> list[dict]:
                     "url":       "",
                     "author":    f"{sender_name} <{sender_email}>".strip(),
                     "timestamp": dt.isoformat(),
-                    "metadata":  {"is_read": getattr(msg, "UnRead", True) is False},
+                    "metadata":  {
+                        "is_read": getattr(msg, "UnRead", True) is False,
+                        "to":      "; ".join(to_list),
+                        "cc":      "; ".join(cc_list),
+                    },
                 })
             except Exception:
                 continue

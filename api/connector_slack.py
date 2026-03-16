@@ -5,6 +5,18 @@ Fetches @mentions, direct messages, and active channel threads for all
 connected workspaces using per-user OAuth tokens.  Falls back to a legacy
 bot token if no user tokens are configured.
 
+When ``config.PROJECTS`` or ``config.FOCUS_TOPICS`` are configured, channel
+messages are pre-filtered by ``_relevance()`` before being turned into
+``RawItem`` objects.  ``_relevance()`` checks (in priority order):
+
+1. Slack ``<@uid>`` mention or user name/email text patterns → ``"user"``
+2. Project keywords (manual + learned) → ``"project"``
+3. Watch-topic keywords → ``"topic"``
+4. Noise keywords (only reached if no positive match) → skip
+
+The resulting ``hierarchy`` and ``project_tag`` values are stored in
+``RawItem.metadata`` so the LLM prompt can use them as hints.
+
 Each call to ``fetch()`` returns a deduplicated list of ``RawItem`` objects
 covering the lookback window defined in ``config.LOOKBACK_HOURS``.
 """
@@ -71,6 +83,67 @@ def _username(token: str, uid: str, cache: dict) -> str:
     return name
 
 
+def _user_identifiers() -> list[str]:
+    """
+    Build a list of text patterns that identify the configured user in message bodies.
+
+    Covers: Slack @uid (added separately), full name, full email, and the
+    @username prefix form extracted from the email (e.g. "@john.smith" from
+    "john.smith@company.com").
+    """
+    ids = []
+    if config.USER_NAME:
+        ids.append(config.USER_NAME.lower())
+    if config.USER_EMAIL:
+        email = config.USER_EMAIL.lower()
+        ids.append(email)
+        username = email.split("@")[0]
+        if username:
+            ids.append("@" + username)
+    return ids
+
+
+def _relevance(text: str, my_uid: str) -> tuple[bool, str, str | None]:
+    """
+    Determine whether a message is relevant to the configured user context.
+
+    Checks in priority order:
+    1. Slack @uid mention or text-form name/email → user
+    2. Project keywords (manual + learned) → project
+    3. Topic keywords → topic
+    4. Noise keywords (learned irrelevant) → explicitly skip
+
+    :return: ``(relevant, hierarchy, project_tag)``
+    """
+    lower = text.lower()
+
+    # ── User-level: Slack mention or name/email in text ───────────────────────
+    if f"<@{my_uid}>" in text:
+        return True, "user", None
+    for ident in _user_identifiers():
+        if ident in lower:
+            return True, "user", None
+
+    # ── Project keywords ──────────────────────────────────────────────────────
+    for p in config.PROJECTS:
+        all_kw = list(p.get("keywords", [])) + list(p.get("learned_keywords", []))
+        for kw in all_kw:
+            if kw.lower() in lower:
+                return True, "project", p["name"]
+
+    # ── Topic keywords ────────────────────────────────────────────────────────
+    for t in config.FOCUS_TOPICS:
+        if t.lower() in lower:
+            return True, "topic", None
+
+    # ── Noise: explicitly irrelevant (only reached if no positive match) ──────
+    for kw in config.NOISE_KEYWORDS:
+        if kw.lower() in lower:
+            return False, "noise", None
+
+    return False, "general", None
+
+
 def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
     """
     Fetch @mentions, DMs, and active channel threads for one user token.
@@ -80,6 +153,10 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
     1. ``search.messages`` to surface messages that mention the authenticated user.
     2. ``conversations.list`` (IM/MPIM types) to capture recent DM threads.
     3. ``conversations.list`` (channels) to capture channel activity since cutoff.
+       When projects or topics are configured, up to 100 messages per channel are
+       fetched and filtered through ``_relevance()``; only matching messages are
+       included.  The resulting ``hierarchy`` and ``project_tag`` are stored in
+       the item's metadata for use by the LLM prompt.
 
     :param token: Slack user OAuth token (``xoxp-``).
     :type token: str
@@ -192,6 +269,8 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
         }).get("channels", [])
         print(f"[slack:{team}] channel memberships: {len(channels)}")
 
+        filtering = bool(config.PROJECTS or config.FOCUS_TOPICS)
+
         for ch in channels:
             ch_id   = ch["id"]
             ch_name = ch.get("name", ch_id)
@@ -200,13 +279,36 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 msgs = _get(token, "conversations.history", {
                     "channel": ch_id,
                     "oldest":  str(cutoff_ts),
-                    "limit":   40,
+                    "limit":   100 if filtering else 40,
                 }).get("messages", [])
             except Exception:
                 continue
 
             if not msgs:
                 continue
+
+            # When context is configured, filter to messages the user sent,
+            # was mentioned in, or that match a project/topic keyword.
+            ch_hierarchy = "general"
+            ch_project   = None
+            if filtering:
+                relevant = []
+                for msg in msgs:
+                    text = msg.get("text", "")
+                    if msg.get("user") == my_uid:
+                        relevant.append(msg)
+                        ch_hierarchy = "user"
+                        continue
+                    ok, h, pt = _relevance(text, my_uid)
+                    if ok:
+                        relevant.append(msg)
+                        if h == "user" or ch_hierarchy == "general":
+                            ch_hierarchy = h
+                        if pt and not ch_project:
+                            ch_project = pt
+                msgs = relevant
+                if not msgs:
+                    continue
 
             print(f"[slack:{team}] #{ch_name}: {len(msgs)} msgs — including")
 
@@ -228,7 +330,13 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 url       = f"https://slack.com/app_redirect?channel={ch_id}",
                 author    = f"#{ch_name}",
                 timestamp = datetime.fromtimestamp(first_ts, tz=timezone.utc).isoformat(),
-                metadata  = {"channel": ch_name, "workspace": team, "type": "channel"},
+                metadata  = {
+                    "channel":     ch_name,
+                    "workspace":   team,
+                    "type":        "channel",
+                    "hierarchy":   ch_hierarchy,
+                    "project_tag": ch_project,
+                },
             ))
     except Exception as e:
         print(f"[slack:{team}] channels: {e}")

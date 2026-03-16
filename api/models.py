@@ -7,7 +7,9 @@ Defines the two-stage data flow:
    item (email, Slack message, GitHub notification, Jira issue) before AI
    processing.
 2. ``Analysis`` — the structured result produced by the LLM for a single
-   ``RawItem``, including priority, category, action items, and a summary.
+   ``RawItem``, including priority, category, action items, summary, and
+   context-aware enrichment fields (hierarchy, passdown flag, project tag,
+   extracted goals, key dates, and a body preview for keyword learning).
 """
 from dataclasses import dataclass, field
 from typing import Optional
@@ -72,6 +74,28 @@ class Analysis:
     :ivar action_items: List of concrete actions extracted by the LLM.
     :ivar summary: One-sentence summary of the item and required action.
     :ivar urgency_reason: Brief explanation of the assigned priority, or ``None``.
+    :ivar hierarchy: Relevance tier — ``"user"`` (directly addressed to the
+                     configured user), ``"project"`` (related to an active
+                     project), ``"topic"`` (matches a watch topic), or
+                     ``"general"`` (everything else). Defaults to ``"general"``.
+    :ivar is_passdown: ``True`` when the item is a shift handoff/passdown note.
+                       Set deterministically by ``_detect_passdown`` and can
+                       also be set by the LLM. Defaults to ``False``.
+    :ivar project_tag: Name of the configured project this item belongs to, or
+                       ``None`` if untagged. Can be set by the LLM or manually
+                       via ``POST /analyses/{item_id}/tag``.
+    :ivar goals: Project goals or objectives extracted from the content by the
+                 LLM (not individual tasks). Defaults to an empty list.
+    :ivar key_dates: Deadlines, release dates, or other time references
+                     extracted from the content, each a dict with ``"date"``
+                     and ``"description"`` keys. Defaults to an empty list.
+    :ivar body_preview: First 500 characters of the item body, stored for
+                        post-hoc keyword learning without re-fetching content.
+                        Defaults to an empty string.
+    :ivar to_field: Raw ``To`` header value carried forward from item metadata.
+                    Used for post-hoc sender/group learning. Defaults to ``""``.
+    :ivar cc_field: Raw ``CC`` header value carried forward from item metadata.
+                    Used for post-hoc sender/group learning. Defaults to ``""``.
     """
     item_id:        str
     source:         str
@@ -85,3 +109,12 @@ class Analysis:
     action_items:   list[ActionItem]
     summary:        str
     urgency_reason: Optional[str]
+    # Context-aware enrichment fields
+    hierarchy:      str            = "general"   # "user" | "project" | "topic" | "general"
+    is_passdown:    bool           = False
+    project_tag:    Optional[str]  = None
+    goals:          list[str]      = field(default_factory=list)
+    key_dates:      list[dict]     = field(default_factory=list)
+    body_preview:   str            = ""
+    to_field:       str            = ""
+    cc_field:       str            = ""

@@ -1,20 +1,29 @@
 """
-Hexcaliper Squire — Thunderbird Sidecar (Ubuntu / Linux)
-=======================================================
-Reads recent emails from Thunderbird's local mbox/Maildir cache on disk
-and POSTs them to the Squire API. No API tokens or IT involvement required.
+thunderbird_sidecar.py — Thunderbird email ingestion sidecar (Ubuntu / Linux).
 
-Usage:
+Reads recent emails from Thunderbird's local mbox/Maildir cache on disk
+and POSTs them to the Squire ``/ingest`` endpoint.  No API tokens or IT
+involvement required — Thunderbird must be configured to keep a local copy
+of messages.
+
+The ``To`` and ``CC`` RFC email headers are decoded via ``decode_header_val``
+and included in ``metadata`` so the LLM can apply recipient-based hierarchy
+rules.  Items are submitted with ``source="outlook"`` so they appear alongside
+Outlook emails in the frontend.
+
+Usage::
+
     pip install requests
     python thunderbird_sidecar.py
 
-Crontab (every 30 minutes):
+Crontab (every 30 minutes)::
+
     */30 * * * * python3 /path/to/thunderbird_sidecar.py >> /tmp/page-sidecar.log 2>&1
 
 Requirements:
-    - Thunderbird installed and configured with your M365 IMAP account
+    - Thunderbird installed and configured with your M365 IMAP account.
     - Account Settings → Synchronization & Storage →
-      "Keep messages for this account on this computer" must be checked
+      "Keep messages for this account on this computer" must be checked.
 """
 import email
 import email.header
@@ -226,6 +235,8 @@ def fetch() -> list[dict]:
     for msg in raw_msgs:
         subject  = decode_header_val(msg.get("Subject", "(no subject)"))
         sender   = decode_header_val(msg.get("From", ""))
+        to_field = decode_header_val(msg.get("To", ""))
+        cc_field = decode_header_val(msg.get("CC", ""))
         body     = extract_body(msg)
         dt       = parse_date(msg) or datetime.now(timezone.utc)
         msg_id   = msg.get("Message-ID", "").strip("<>")
@@ -241,7 +252,7 @@ def fetch() -> list[dict]:
             "url":       "",
             "author":    sender,
             "timestamp": dt.isoformat(),
-            "metadata":  {"via": "thunderbird"},
+            "metadata":  {"via": "thunderbird", "to": to_field, "cc": cc_field},
         })
 
     return items

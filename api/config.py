@@ -4,6 +4,36 @@ config.py — Runtime configuration for the Squire API.
 All values are read from environment variables on startup.  The
 ``apply_overrides`` function allows settings saved via the ``/settings``
 endpoint to hot-reload config without restarting the container.
+
+Module-level variables (populated at import and updated by ``apply_overrides``):
+
+Ollama / Hexcaliper:
+    ``OLLAMA_URL``, ``OLLAMA_MODEL``, ``CF_CLIENT_ID``, ``CF_CLIENT_SECRET``
+
+Slack:
+    ``SLACK_CLIENT_ID``, ``SLACK_CLIENT_SECRET``, ``SLACK_USER_TOKENS``,
+    ``SLACK_BOT_TOKEN``, ``SLACK_CHANNELS``
+
+GitHub:
+    ``GITHUB_PAT``, ``GITHUB_USERNAME``
+
+Jira:
+    ``JIRA_EMAIL``, ``JIRA_TOKEN``, ``JIRA_DOMAIN``, ``JIRA_JQL``
+
+User / project / topic context:
+    ``USER_NAME`` — display name used in LLM prompts and Slack pre-filtering.
+    ``USER_EMAIL`` — email address used in LLM prompts and Slack pre-filtering.
+    ``FOCUS_TOPICS`` — list of general watch-topic keywords (populated from a
+    comma-separated ``FOCUS_TOPICS`` env var).
+    ``PROJECTS`` — list of project dicts, each with ``name``, ``keywords``,
+    ``channels``, ``learned_keywords``, and ``learned_senders`` keys
+    (populated from a JSON-encoded ``PROJECTS`` env var; ``learned_keywords``
+    and ``learned_senders`` are grown at runtime via the tagging workflow).
+    ``NOISE_KEYWORDS`` — list of keyword strings learned from items that have
+    been marked as irrelevant; not set via env var, only via ``apply_overrides``.
+
+App:
+    ``PAGE_API_PORT``, ``DB_PATH``, ``LOOKBACK_HOURS``
 """
 import os
 
@@ -59,6 +89,22 @@ JIRA_JQL    = _get(
     "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
 )
 
+# ── User / Project / Topic context ───────────────────────────────────────────
+
+USER_NAME  = _get("USER_NAME", "")
+USER_EMAIL = _get("USER_EMAIL", "")
+
+_ft          = _get("FOCUS_TOPICS", "")
+FOCUS_TOPICS: list[str] = [t.strip() for t in _ft.split(",") if t.strip()] if _ft else []
+
+import json as _json
+try:
+    PROJECTS: list[dict] = _json.loads(_get("PROJECTS", "[]"))
+except Exception:
+    PROJECTS: list[dict] = []
+
+NOISE_KEYWORDS: list[str] = []
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 PAGE_API_PORT  = int(_get("PAGE_API_PORT", "8001"))
@@ -71,7 +117,9 @@ def apply_overrides(d: dict) -> None:
     Hot-reload config from a saved-settings dict without restarting the container.
 
     Called on startup (if saved settings exist in the DB) and after every
-    successful ``POST /settings`` request.
+    successful ``POST /settings`` request.  Handles all string credential
+    fields, ``slack_user_tokens``, ``slack_channels``, ``focus_topics``,
+    ``projects``, ``noise_keywords``, and ``lookback_hours``.
 
     :param d: Dict of setting key/value pairs, as stored in the ``settings``
               TinyDB table or posted by the frontend.
@@ -93,6 +141,8 @@ def apply_overrides(d: dict) -> None:
         "jira_token":           "JIRA_TOKEN",
         "jira_domain":          "JIRA_DOMAIN",
         "jira_jql":             "JIRA_JQL",
+        "user_name":            "USER_NAME",
+        "user_email":           "USER_EMAIL",
     }
     for key, var in str_fields.items():
         if key in d and d[key] is not None:
@@ -102,6 +152,13 @@ def apply_overrides(d: dict) -> None:
     if "slack_channels" in d:
         sc = d["slack_channels"] or ""
         setattr(mod, "SLACK_CHANNELS", [c.strip() for c in sc.split(",") if c.strip()])
+    if "focus_topics" in d:
+        ft = d["focus_topics"] or ""
+        setattr(mod, "FOCUS_TOPICS", [t.strip() for t in ft.split(",") if t.strip()])
+    if "projects" in d and isinstance(d["projects"], list):
+        setattr(mod, "PROJECTS", d["projects"])
+    if "noise_keywords" in d and isinstance(d["noise_keywords"], list):
+        setattr(mod, "NOISE_KEYWORDS", d["noise_keywords"])
     if "lookback_hours" in d and d["lookback_hours"] is not None:
         setattr(mod, "LOOKBACK_HOURS", int(d["lookback_hours"]))
 

@@ -6,8 +6,22 @@ Key responsibilities:
 
 - Receiving and deduplicating raw items via ``POST /ingest`` (sidecar path).
 - Orchestrating multi-source scans via ``POST /scan`` (frontend path).
-- Persisting ``Analysis`` and ``Todo`` records to TinyDB.
+- Persisting ``Analysis`` and ``Todo`` records to TinyDB, including the
+  context-aware enrichment fields: ``hierarchy``, ``is_passdown``,
+  ``project_tag``, ``goals``, ``key_dates``, and ``body_preview``.
 - Serving settings, stats, and Slack OAuth endpoints to the frontend.
+- Project and noise learning:
+    - ``POST /analyses/{item_id}/tag`` — tags an item to a project and
+      triggers background LLM keyword extraction and sender/group address
+      extraction, merging results into the project's ``learned_keywords``
+      and ``learned_senders`` lists in settings.
+    - ``POST /analyses/{item_id}/noise`` — marks an item as irrelevant and
+      triggers background keyword extraction into ``config.NOISE_KEYWORDS``.
+- ``POST /reset`` — truncates the analyses, todos, and scan_logs tables while
+  preserving saved settings.
+- ``GET /projects`` — returns configured projects with learned keyword counts.
+- ``GET /settings`` now returns ``user_name``, ``user_email``, ``focus_topics``,
+  ``projects``, and ``noise_keywords`` in addition to all credential fields.
 
 All AI analysis is performed asynchronously via ``agent.analyze`` so that
 HTTP responses are returned immediately and the UI polls for results.
@@ -25,7 +39,7 @@ from pydantic import BaseModel
 from tinydb import TinyDB, Query
 
 import config
-from agent import analyze_batch, analyze
+from agent import analyze_batch, analyze, extract_keywords, extract_emails
 from models import RawItem, Analysis
 import connector_slack
 import connector_github
@@ -90,7 +104,15 @@ scan_state: dict = {
 
 
 def _save_analysis(a: Analysis) -> None:
-    """Upsert an Analysis into TinyDB and create todo rows for action items."""
+    """
+    Upsert an ``Analysis`` into TinyDB and create todo rows for action items.
+
+    Stores all base fields plus the context-aware enrichment fields:
+    ``hierarchy``, ``is_passdown``, ``project_tag``, ``goals`` (JSON),
+    ``key_dates`` (JSON), and ``body_preview``.  Todo rows are only inserted
+    for action items that do not already exist for the same ``item_id`` and
+    ``description`` pair.
+    """
     with db_lock:
         analyses.upsert(
             {
@@ -109,6 +131,14 @@ def _save_analysis(a: Analysis) -> None:
                     {"description": x.description, "deadline": x.deadline, "owner": x.owner}
                     for x in a.action_items
                 ]),
+                "hierarchy":    a.hierarchy,
+                "is_passdown":  a.is_passdown,
+                "project_tag":  a.project_tag,
+                "goals":        json.dumps(a.goals),
+                "key_dates":    json.dumps(a.key_dates),
+                "body_preview": a.body_preview,
+                "to_field":     a.to_field,
+                "cc_field":     a.cc_field,
                 "processed_at": now_iso(),
             },
             Q.item_id == a.item_id,
@@ -207,6 +237,151 @@ def health():
     return {"ok": True, "warnings": config.validate()}
 
 
+@app.post("/reset")
+def reset_db():
+    """Drop all analyses, todos, and scan logs. Settings are preserved."""
+    with db_lock:
+        analyses.truncate()
+        todos.truncate()
+        scan_logs.truncate()
+    return {"ok": True}
+
+
+@app.get("/projects")
+def get_projects():
+    """Return configured projects with learned keyword and sender counts."""
+    return [
+        {
+            "name":               p.get("name", ""),
+            "keywords":           p.get("keywords", []),
+            "channels":           p.get("channels", []),
+            "learned_keywords":   p.get("learned_keywords", []),
+            "learned_count":      len(p.get("learned_keywords", [])),
+            "learned_senders":    p.get("learned_senders", []),
+            "sender_count":       len(p.get("learned_senders", [])),
+        }
+        for p in config.PROJECTS
+    ]
+
+
+class TagRequest(BaseModel):
+    project: str
+
+
+@app.post("/analyses/{item_id}/tag")
+def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
+    """
+    Tag an analysis item to a project and trigger background keyword learning.
+    Updates the item's project_tag immediately; keyword extraction runs async.
+    """
+    with db_lock:
+        record = analyses.get(Q.item_id == item_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    project_name = body.project
+    if not any(p.get("name") == project_name for p in config.PROJECTS):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Update the stored analysis immediately
+    with db_lock:
+        analyses.update({"project_tag": project_name}, Q.item_id == item_id)
+
+    def learn() -> None:
+        title        = record.get("title", "")
+        body_preview = record.get("body_preview", "") or record.get("summary", "")
+        keywords     = extract_keywords(project_name, title, body_preview)
+
+        # Collect sender and recipient email addresses from the stored record
+        raw_senders: list[str] = []
+        for field in (
+            record.get("author", ""),
+            record.get("to_field", ""),
+            record.get("cc_field", ""),
+        ):
+            raw_senders.extend(extract_emails(field))
+        # Exclude the user's own address — it appears on almost every email
+        user_addr = (config.USER_EMAIL or "").lower()
+        senders = [s for s in raw_senders if s != user_addr]
+
+        if not keywords and not senders:
+            return
+
+        with db_lock:
+            saved = settings_tbl.get(doc_id=1) or {}
+
+        projects = saved.get("projects", list(config.PROJECTS))
+        for p in projects:
+            if p.get("name") == project_name:
+                if keywords:
+                    existing_kw = set(p.get("learned_keywords", []))
+                    existing_kw.update(k.lower() for k in keywords)
+                    p["learned_keywords"] = list(existing_kw)[:100]
+                if senders:
+                    existing_sr = set(p.get("learned_senders", []))
+                    existing_sr.update(senders)
+                    p["learned_senders"] = list(existing_sr)[:50]
+                break
+
+        saved["projects"] = projects
+        with db_lock:
+            if settings_tbl.get(doc_id=1):
+                settings_tbl.update(saved, doc_ids=[1])
+            else:
+                settings_tbl.insert(saved)
+        config.apply_overrides(saved)
+        kw_total = len(p.get("learned_keywords", []))
+        sr_total = len(p.get("learned_senders", []))
+        print(f"[learn] {project_name}: +{len(keywords)} keywords ({kw_total} total), "
+              f"+{len(senders)} senders ({sr_total} total)")
+
+    background_tasks.add_task(learn)
+    return {"ok": True, "project": project_name}
+
+
+@app.post("/analyses/{item_id}/noise")
+def mark_noise(item_id: str, background_tasks: BackgroundTasks):
+    """
+    Mark an item as irrelevant. Updates its category to noise immediately and
+    triggers background keyword extraction to grow the noise filter.
+    """
+    with db_lock:
+        record = analyses.get(Q.item_id == item_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    with db_lock:
+        analyses.update(
+            {"category": "noise", "priority": "low", "has_action": False},
+            Q.item_id == item_id,
+        )
+
+    def learn_noise() -> None:
+        title        = record.get("title", "")
+        body_preview = record.get("body_preview", "") or record.get("summary", "")
+        keywords     = extract_keywords("noise filter", title, body_preview)
+        if not keywords:
+            return
+
+        with db_lock:
+            saved = settings_tbl.get(doc_id=1) or {}
+
+        existing = set(saved.get("noise_keywords", list(config.NOISE_KEYWORDS)))
+        existing.update(k.lower() for k in keywords)
+        saved["noise_keywords"] = list(existing)[:200]
+
+        with db_lock:
+            if settings_tbl.get(doc_id=1):
+                settings_tbl.update(saved, doc_ids=[1])
+            else:
+                settings_tbl.insert(saved)
+        config.apply_overrides(saved)
+        print(f"[noise] +{len(keywords)} keywords ({len(existing)} total)")
+
+    background_tasks.add_task(learn_noise)
+    return {"ok": True}
+
+
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 @app.get("/settings")
@@ -225,6 +400,11 @@ def get_settings():
         "jira_domain":          config.JIRA_DOMAIN,
         "jira_jql":             config.JIRA_JQL,
         "lookback_hours":       config.LOOKBACK_HOURS,
+        "user_name":            config.USER_NAME,
+        "user_email":           config.USER_EMAIL,
+        "focus_topics":         ", ".join(config.FOCUS_TOPICS),
+        "projects":             config.PROJECTS,
+        "noise_keywords":       config.NOISE_KEYWORDS,
         "warnings":             config.validate(),
     }
 
