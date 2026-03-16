@@ -289,6 +289,29 @@ class TagRequest(BaseModel):
     project: str
 
 
+@app.patch("/analyses/{item_id}")
+def patch_analysis(item_id: str, body: dict):
+    """Update priority and/or category on a stored analysis. Also syncs priority to todos."""
+    allowed_priorities = {"high", "medium", "low"}
+    allowed_categories = {"reply_needed", "task", "deadline", "review", "approval", "fyi", "noise"}
+    updates = {}
+    if "priority" in body and body["priority"] in allowed_priorities:
+        updates["priority"] = body["priority"]
+    if "category" in body and body["category"] in allowed_categories:
+        updates["category"] = body["category"]
+        if body["category"] == "noise":
+            updates["has_action"] = False
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields to update.")
+    with db_lock:
+        if not analyses.get(Q.item_id == item_id):
+            raise HTTPException(status_code=404, detail="Item not found")
+        analyses.update(updates, Q.item_id == item_id)
+        if "priority" in updates:
+            todos.update({"priority": updates["priority"]}, Q.item_id == item_id)
+    return {"ok": True, **updates}
+
+
 @app.post("/analyses/{item_id}/tag")
 def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
     """
