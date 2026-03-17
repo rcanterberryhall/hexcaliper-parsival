@@ -120,3 +120,43 @@ class Analysis:
     cc_field:       str            = ""
     is_replied:     bool           = False
     replied_at:     Optional[str]  = None
+
+
+@dataclass
+class Situation:
+    """
+    A cross-source grouping of related Analysis items.
+
+    :ivar situation_id: Stable UUID for this situation.
+    :ivar title: LLM-generated short title.
+    :ivar summary: LLM-generated cross-source narrative (2-3 sentences).
+    :ivar status: Operational status — "blocked", "in_progress", "waiting",
+                  "needs_decision", or "informational".
+    :ivar item_ids: Ordered list of contributing analysis item_ids,
+                    most recently updated first.
+    :ivar sources: Unique source types present in this situation.
+    :ivar project_tag: Shared project tag if all items agree, else None.
+    :ivar score: Composite urgency score from score_situation().
+    :ivar priority: Derived from highest-priority contributing item.
+    :ivar open_actions: Deduplicated action items across all contributing items.
+    :ivar references: Union of all extracted reference strings from members.
+    :ivar key_context: LLM-extracted essential background sentence, or None.
+    :ivar last_updated: ISO timestamp of most recently updated contributing item.
+    :ivar created_at: ISO timestamp when this situation was first formed.
+    :ivar score_updated_at: ISO timestamp of last score recomputation.
+    """
+    situation_id:     str
+    title:            str
+    summary:          str
+    status:           str
+    item_ids:         list
+    sources:          list
+    project_tag:      Optional[str]
+    score:            float
+    priority:         str
+    open_actions:     list
+    references:       list
+    key_context:      Optional[str]
+    last_updated:     str
+    created_at:       str
+    score_updated_at: str

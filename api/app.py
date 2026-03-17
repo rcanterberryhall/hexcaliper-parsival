@@ -64,6 +64,7 @@ todos          = db.table("todos")
 scan_logs      = db.table("scan_logs")
 settings_tbl   = db.table("settings")
 embeddings_tbl = db.table("embeddings")
+situations_tbl = db.table("situations")
 Q            = Query()
 db_lock      = threading.Lock()
 
@@ -71,6 +72,20 @@ db_lock      = threading.Lock()
 _saved_settings = settings_tbl.get(doc_id=1)
 if _saved_settings:
     config.apply_overrides(_saved_settings)
+
+
+def _score_decay_loop():
+    """Recompute situation scores every 30 minutes to reflect recency decay."""
+    import time
+    while True:
+        time.sleep(1800)
+        try:
+            _rescore_all_situations()
+        except Exception as e:
+            print(f"[score_decay] {e}")
+
+
+threading.Thread(target=_score_decay_loop, daemon=True).start()
 
 CONNECTORS = {
     "slack":   connector_slack,
@@ -113,37 +128,47 @@ def _save_analysis(a: Analysis) -> None:
     ``hierarchy``, ``is_passdown``, ``project_tag``, ``goals`` (JSON),
     ``key_dates`` (JSON), and ``body_preview``.  Todo rows are only inserted
     for action items that do not already exist for the same ``item_id`` and
-    ``description`` pair.
+    ``description`` pair.  Preserves ``situation_id`` and ``references``
+    from existing records so the situation layer is not overwritten on re-scan.
     """
     with db_lock:
+        existing = analyses.get(Q.item_id == a.item_id)
+        existing_situation_id = (existing or {}).get("situation_id")
+
+        # Extract cross-source references
+        from correlator import extract_references
+        refs = extract_references(a.title, a.body_preview or "")
+
         analyses.upsert(
             {
-                "item_id":      a.item_id,
-                "source":       a.source,
-                "title":        a.title,
-                "author":       a.author,
-                "timestamp":    a.timestamp,
-                "url":          a.url,
-                "has_action":   a.has_action,
-                "priority":     a.priority,
-                "category":     a.category,
-                "summary":      a.summary,
-                "urgency":      a.urgency_reason,
-                "action_items": json.dumps([
+                "item_id":       a.item_id,
+                "source":        a.source,
+                "title":         a.title,
+                "author":        a.author,
+                "timestamp":     a.timestamp,
+                "url":           a.url,
+                "has_action":    a.has_action,
+                "priority":      a.priority,
+                "category":      a.category,
+                "summary":       a.summary,
+                "urgency":       a.urgency_reason,
+                "action_items":  json.dumps([
                     {"description": x.description, "deadline": x.deadline, "owner": x.owner}
                     for x in a.action_items
                 ]),
-                "hierarchy":    a.hierarchy,
-                "is_passdown":  a.is_passdown,
-                "project_tag":  a.project_tag,
-                "goals":        json.dumps(a.goals),
-                "key_dates":    json.dumps(a.key_dates),
-                "body_preview": a.body_preview,
-                "to_field":     a.to_field,
-                "cc_field":     a.cc_field,
-                "is_replied":   a.is_replied,
-                "replied_at":   a.replied_at,
-                "processed_at": now_iso(),
+                "hierarchy":     a.hierarchy,
+                "is_passdown":   a.is_passdown,
+                "project_tag":   a.project_tag,
+                "goals":         json.dumps(a.goals),
+                "key_dates":     json.dumps(a.key_dates),
+                "body_preview":  a.body_preview,
+                "to_field":      a.to_field,
+                "cc_field":      a.cc_field,
+                "is_replied":    a.is_replied,
+                "replied_at":    a.replied_at,
+                "processed_at":  now_iso(),
+                "situation_id":  existing_situation_id,
+                "references":    json.dumps(refs),
             },
             Q.item_id == a.item_id,
         )
@@ -206,6 +231,11 @@ def _run_scan(sources: list[str]) -> None:
         actions = sum(1 for r in results if r.has_action)
         for r in results:
             _save_analysis(r)
+            threading.Thread(
+                target=_maybe_form_situation,
+                args=(r.item_id,),
+                daemon=True,
+            ).start()
         status = "cancelled" if scan_state["cancelled"] else "success"
         with db_lock:
             scan_logs.insert({
@@ -267,6 +297,7 @@ def reset_db():
         todos.truncate()
         scan_logs.truncate()
         embeddings_tbl.truncate()
+        situations_tbl.truncate()
     return {"ok": True}
 
 
@@ -576,7 +607,13 @@ def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             scan_state["ingest_pending"] += len(raw)
         for item in raw:
             try:
-                _save_analysis(analyze(item))
+                result = analyze(item)
+                _save_analysis(result)
+                threading.Thread(
+                    target=_maybe_form_situation,
+                    args=(result.item_id,),
+                    daemon=True,
+                ).start()
             except Exception as e:
                 print(f"[ingest] {item.item_id}: {e}")
             with db_lock:
@@ -728,6 +765,316 @@ def get_analyses(
     return [_deserialize_analysis(dict(a)) for a in results[:limit]]
 
 
+# ── Situation layer ───────────────────────────────────────────────────────────
+
+import uuid as _uuid
+
+
+def _pri_rank(p: str) -> int:
+    return {"high": 3, "medium": 2, "low": 1}.get(p, 1)
+
+
+def _maybe_form_situation(item_id: str) -> None:
+    """
+    Check whether a newly saved item correlates with existing analyses and
+    create or update a Situation record accordingly.
+    """
+    try:
+        from correlator import find_correlated_candidates, score_situation, synthesize_situation
+        from embedder import get_item_vector
+
+        with db_lock:
+            record = analyses.get(Q.item_id == item_id)
+        if not record:
+            return
+
+        raw_refs = record.get("references")
+        try:
+            refs = json.loads(raw_refs) if isinstance(raw_refs, str) else (raw_refs or [])
+        except Exception:
+            refs = []
+
+        vector     = get_item_vector(item_id)
+        project    = record.get("project_tag")
+        candidates = find_correlated_candidates(item_id, refs, vector or [], project)
+
+        if not candidates:
+            # No new correlations — but rescore existing situation if item is already in one
+            existing_sit_id = record.get("situation_id")
+            if existing_sit_id:
+                _rescore_situation(existing_sit_id)
+            return
+
+        # Check whether any candidate already belongs to a situation
+        with db_lock:
+            sit_ids = set()
+            for cid in candidates:
+                r = analyses.get(Q.item_id == cid)
+                if r and r.get("situation_id"):
+                    sit_ids.add(r["situation_id"])
+
+        if sit_ids:
+            # Merge into the highest-scoring existing situation
+            target_sit_id = sit_ids.pop()
+            with db_lock:
+                sit = situations_tbl.get(Q.situation_id == target_sit_id)
+            if sit:
+                updated_ids = list(dict.fromkeys(sit.get("item_ids", []) + [item_id]))
+                # Merge any additional sit_ids
+                for extra_sid in sit_ids:
+                    with db_lock:
+                        extra = situations_tbl.get(Q.situation_id == extra_sid)
+                    if extra:
+                        updated_ids = list(dict.fromkeys(updated_ids + extra.get("item_ids", [])))
+                        with db_lock:
+                            situations_tbl.remove(Q.situation_id == extra_sid)
+
+                _update_situation_record(target_sit_id, updated_ids)
+                with db_lock:
+                    analyses.update({"situation_id": target_sit_id}, Q.item_id == item_id)
+                return
+
+        # No existing situation — check minimum cluster requirements
+        all_ids = [item_id] + candidates
+        with db_lock:
+            cluster_records = [analyses.get(Q.item_id == iid) for iid in all_ids]
+        cluster_records = [r for r in cluster_records if r]
+
+        unique_sources = len(set(r.get("source", "") for r in cluster_records))
+        if len(cluster_records) < 2 or unique_sources < 2:
+            return
+
+        # Create new situation
+        synthesis   = synthesize_situation(cluster_records, config.USER_NAME or "the user")
+        score       = score_situation(all_ids, cluster_records)
+        max_pri     = max(cluster_records, key=lambda r: _pri_rank(r.get("priority", "low")))
+        all_refs    = list(set(r for rec in cluster_records
+                               for raw in [rec.get("references")]
+                               for r in (json.loads(raw) if isinstance(raw, str) and raw else (raw or []))))
+        project_tags = list(set(r.get("project_tag") for r in cluster_records if r.get("project_tag")))
+        sources      = list(set(r.get("source", "") for r in cluster_records))
+        last_ts      = max((r.get("timestamp", "") for r in cluster_records), default=now_iso())
+
+        sit_id  = str(_uuid.uuid4())
+        sit_doc = {
+            "situation_id":     sit_id,
+            "title":            synthesis.get("title", "Correlated situation"),
+            "summary":          synthesis.get("summary", ""),
+            "status":           synthesis.get("status", "in_progress"),
+            "item_ids":         all_ids,
+            "sources":          sources,
+            "project_tag":      project_tags[0] if len(project_tags) == 1 else None,
+            "score":            score,
+            "priority":         max_pri.get("priority", "medium"),
+            "open_actions":     synthesis.get("open_actions", []),
+            "references":       all_refs,
+            "key_context":      synthesis.get("key_context"),
+            "last_updated":     last_ts,
+            "created_at":       now_iso(),
+            "score_updated_at": now_iso(),
+            "dismissed":        False,
+        }
+        with db_lock:
+            situations_tbl.insert(sit_doc)
+            for iid in all_ids:
+                analyses.update({"situation_id": sit_id}, Q.item_id == iid)
+
+        print(f"[correlator] formed situation {sit_id[:8]} from {len(all_ids)} items")
+
+    except Exception as e:
+        print(f"[correlator] _maybe_form_situation({item_id}): {e}")
+
+
+def _update_situation_record(sit_id: str, item_ids: list) -> None:
+    """Reload cluster records and recompute score + synthesis for an existing situation."""
+    try:
+        from correlator import score_situation, synthesize_situation
+
+        with db_lock:
+            cluster_records = [analyses.get(Q.item_id == iid) for iid in item_ids]
+        cluster_records = [r for r in cluster_records if r]
+        if not cluster_records:
+            return
+
+        synthesis   = synthesize_situation(cluster_records, config.USER_NAME or "the user")
+        score       = score_situation(item_ids, cluster_records)
+        max_pri     = max(cluster_records, key=lambda r: _pri_rank(r.get("priority", "low")))
+        all_refs    = list(set(r for rec in cluster_records
+                               for raw in [rec.get("references")]
+                               for r in (json.loads(raw) if isinstance(raw, str) and raw else (raw or []))))
+        sources     = list(set(r.get("source", "") for r in cluster_records))
+        last_ts     = max((r.get("timestamp", "") for r in cluster_records), default=now_iso())
+        proj_tags   = list(set(r.get("project_tag") for r in cluster_records if r.get("project_tag")))
+
+        updates = {
+            "item_ids":         item_ids,
+            "sources":          sources,
+            "score":            score,
+            "priority":         max_pri.get("priority", "medium"),
+            "title":            synthesis.get("title") or "",
+            "summary":          synthesis.get("summary") or "",
+            "status":           synthesis.get("status") or "in_progress",
+            "open_actions":     synthesis.get("open_actions") or [],
+            "key_context":      synthesis.get("key_context"),
+            "references":       all_refs,
+            "last_updated":     last_ts,
+            "project_tag":      proj_tags[0] if len(proj_tags) == 1 else None,
+            "score_updated_at": now_iso(),
+        }
+        with db_lock:
+            situations_tbl.update(updates, Q.situation_id == sit_id)
+            for iid in item_ids:
+                analyses.update({"situation_id": sit_id}, Q.item_id == iid)
+    except Exception as e:
+        print(f"[correlator] _update_situation_record({sit_id}): {e}")
+
+
+def _rescore_situation(sit_id: str) -> None:
+    """Recompute only the score (not synthesis) for a single situation."""
+    try:
+        from correlator import score_situation
+        with db_lock:
+            sit = situations_tbl.get(Q.situation_id == sit_id)
+        if not sit:
+            return
+        item_ids = sit.get("item_ids", [])
+        with db_lock:
+            cluster_records = [analyses.get(Q.item_id == iid) for iid in item_ids]
+        cluster_records = [r for r in cluster_records if r]
+        if not cluster_records:
+            return
+        score = score_situation(item_ids, cluster_records)
+        with db_lock:
+            situations_tbl.update(
+                {"score": score, "score_updated_at": now_iso()},
+                Q.situation_id == sit_id,
+            )
+    except Exception as e:
+        print(f"[correlator] _rescore_situation({sit_id}): {e}")
+
+
+def _rescore_all_situations() -> None:
+    """Recompute scores for all stored situations (called by decay loop)."""
+    with db_lock:
+        sit_ids = [s["situation_id"] for s in situations_tbl.all() if not s.get("dismissed")]
+    for sid in sit_ids:
+        try:
+            _rescore_situation(sid)
+        except Exception as e:
+            print(f"[score_decay] {sid}: {e}")
+
+
+def _situation_response(sit: dict) -> dict:
+    """Build the API response dict for a situation, including lightweight item summaries."""
+    item_ids = sit.get("item_ids", [])
+    with db_lock:
+        items_raw = [analyses.get(Q.item_id == iid) for iid in item_ids]
+    items = [
+        {
+            "item_id":   r.get("item_id"),
+            "source":    r.get("source"),
+            "title":     r.get("title"),
+            "priority":  r.get("priority"),
+            "timestamp": r.get("timestamp"),
+        }
+        for r in items_raw if r
+    ]
+    return {
+        "situation_id": sit.get("situation_id"),
+        "title":        sit.get("title"),
+        "summary":      sit.get("summary"),
+        "status":       sit.get("status"),
+        "score":        sit.get("score", 0.0),
+        "priority":     sit.get("priority"),
+        "sources":      sit.get("sources", []),
+        "project_tag":  sit.get("project_tag"),
+        "open_actions": sit.get("open_actions", []),
+        "references":   sit.get("references", []),
+        "key_context":  sit.get("key_context"),
+        "last_updated": sit.get("last_updated"),
+        "created_at":   sit.get("created_at"),
+        "dismissed":    sit.get("dismissed", False),
+        "item_count":   len(items),
+        "items":        items,
+    }
+
+
+@app.get("/situations")
+def get_situations(
+    project:   Optional[str] = None,
+    status:    Optional[str] = None,
+    min_score: float         = 0.0,
+):
+    """Return all active situations sorted by score descending."""
+    with db_lock:
+        all_sits = situations_tbl.all()
+    results = [s for s in all_sits if not s.get("dismissed")]
+    if project:
+        results = [s for s in results if s.get("project_tag") == project]
+    if status:
+        results = [s for s in results if s.get("status") == status]
+    if min_score:
+        results = [s for s in results if s.get("score", 0) >= min_score]
+    results.sort(key=lambda s: s.get("score", 0), reverse=True)
+    return [_situation_response(s) for s in results]
+
+
+@app.get("/situations/{situation_id}")
+def get_situation(situation_id: str):
+    """Return a single situation with full contributing analyses deserialized."""
+    with db_lock:
+        sit = situations_tbl.get(Q.situation_id == situation_id)
+    if not sit:
+        raise HTTPException(status_code=404, detail="Situation not found")
+    resp = _situation_response(sit)
+    # Replace lightweight items with fully deserialized analyses
+    item_ids = sit.get("item_ids", [])
+    with db_lock:
+        full_items = [analyses.get(Q.item_id == iid) for iid in item_ids]
+    resp["items"] = [_deserialize_analysis(dict(r)) for r in full_items if r]
+    return resp
+
+
+@app.post("/situations/{situation_id}/dismiss")
+def dismiss_situation(situation_id: str, body: dict = {}):
+    """Mark a situation as dismissed; excluded from GET /situations by default."""
+    with db_lock:
+        if not situations_tbl.get(Q.situation_id == situation_id):
+            raise HTTPException(status_code=404, detail="Situation not found")
+        situations_tbl.update(
+            {"dismissed": True, "dismiss_reason": body.get("reason")},
+            Q.situation_id == situation_id,
+        )
+    return {"ok": True}
+
+
+@app.post("/situations/{situation_id}/rescore")
+def rescore_situation(situation_id: str):
+    """Manually trigger score recomputation and LLM re-synthesis."""
+    with db_lock:
+        sit = situations_tbl.get(Q.situation_id == situation_id)
+    if not sit:
+        raise HTTPException(status_code=404, detail="Situation not found")
+    _update_situation_record(situation_id, sit.get("item_ids", []))
+    with db_lock:
+        updated = situations_tbl.get(Q.situation_id == situation_id)
+    return _situation_response(updated)
+
+
+@app.patch("/situations/{situation_id}")
+def patch_situation(situation_id: str, body: dict):
+    """Allow manual override of title, status, and project_tag."""
+    allowed = {"title", "status", "project_tag"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields to update.")
+    with db_lock:
+        if not situations_tbl.get(Q.situation_id == situation_id):
+            raise HTTPException(status_code=404, detail="Situation not found")
+        situations_tbl.update(updates, Q.situation_id == situation_id)
+    return {"ok": True, **updates}
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 @app.get("/stats")
@@ -751,13 +1098,19 @@ def get_stats():
         c = a.get("category", "unknown")
         by_category[c] = by_category.get(c, 0) + 1
 
+    with db_lock:
+        all_sits = situations_tbl.all()
+
     return {
-        "total_items":   len(all_a),
-        "open_todos":    len(open_todos),
-        "high_priority": sum(1 for t in open_todos if t.get("priority") == "high"),
-        "by_source":     [{"source": k, "count": v} for k, v in by_source.items()],
-        "by_category":   [{"category": k, "count": v} for k, v in by_category.items()],
-        "last_scan":     logs[0] if logs else None,
+        "total_items":           len(all_a),
+        "open_todos":            len(open_todos),
+        "high_priority":         sum(1 for t in open_todos if t.get("priority") == "high"),
+        "by_source":             [{"source": k, "count": v} for k, v in by_source.items()],
+        "by_category":           [{"category": k, "count": v} for k, v in by_category.items()],
+        "last_scan":             logs[0] if logs else None,
+        "open_situations":       len([s for s in all_sits if not s.get("dismissed")]),
+        "high_score_situations": len([s for s in all_sits
+                                      if not s.get("dismissed") and s.get("score", 0) >= 1.5]),
     }
 
 

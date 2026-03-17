@@ -150,11 +150,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .show-done input { accent-color: var(--accent); }
 
 /* ── Views ── */
-#todo-view  { flex: 1; overflow-y: auto; padding: 12px 18px; position: relative; }
-#items-view { flex: 1; overflow-y: auto; padding: 12px 18px; display: none; position: relative; }
+#todo-view       { flex: 1; overflow-y: auto; padding: 12px 18px; position: relative; }
+#items-view      { flex: 1; overflow-y: auto; padding: 12px 18px; display: none; position: relative; }
+#situations-view { flex: 1; overflow-y: auto; padding: 12px 18px; display: none; position: relative; }
 
 /* Watermark crest */
-#todo-view::before, #items-view::before {
+#todo-view::before, #items-view::before, #situations-view::before {
   content: '';
   position: absolute; top: 0; left: 0; right: 0; bottom: 0;
   background: url('/page/squire-crest.svg') no-repeat center center;
@@ -163,7 +164,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
   pointer-events: none;
   z-index: 0;
 }
-#todo-view > *, #items-view > * { position: relative; z-index: 1; }
+#todo-view > *, #items-view > *, #situations-view > * { position: relative; z-index: 1; }
 
 /* ── Todo groups ── */
 .group-label {
@@ -413,6 +414,46 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .search-input::-webkit-search-cancel-button { display: none; }
 .toolbar-filters { display: flex; align-items: center; gap: 6px; flex: 1; padding: 0 10px; min-width: 0; }
 
+/* ── Situation cards ── */
+.situation-card {
+  border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--surface); margin-bottom: 8px;
+  transition: border-color .15s, transform .1s;
+  animation: fadein .2s ease; overflow: hidden;
+}
+.situation-card:hover { transform: translateX(1px); }
+.situation-card.score-critical { border-color: var(--red);   border-left-width: 3px; }
+.situation-card.score-high     { border-color: var(--amber); border-left-width: 3px; }
+.situation-card.score-medium   { border-color: var(--accent); }
+.situation-card.score-low      { border-color: var(--border); }
+.sit-header { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px 8px; cursor: pointer; }
+.sit-score  { font-family: var(--display); font-size: 18px; font-weight: 700; min-width: 36px; text-align: center; line-height: 1; padding-top: 2px; flex-shrink: 0; }
+.score-critical .sit-score { color: var(--red); }
+.score-high     .sit-score { color: var(--amber); }
+.score-medium   .sit-score { color: var(--accent); }
+.score-low      .sit-score { color: var(--muted); }
+.sit-main    { flex: 1; min-width: 0; }
+.sit-title   { font-size: 13px; font-weight: 500; color: var(--text); margin-bottom: 4px; line-height: 1.3; }
+.sit-summary { font-size: 11px; color: var(--muted); line-height: 1.5; margin-bottom: 6px; }
+.sit-meta    { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.sit-src-dots { display: flex; gap: 3px; }
+.sit-src-dot  { width: 8px; height: 8px; border-radius: 50%; }
+.sit-actions  { flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+.sit-dismiss  { background: none; border: 1px solid transparent; color: var(--muted); cursor: pointer; padding: 2px 6px; font-size: 10px; border-radius: var(--r); }
+.sit-dismiss:hover { border-color: var(--red); color: var(--red); }
+.sit-evidence { border-top: 1px solid var(--border2); padding: 0 12px; display: none; }
+.sit-evidence.open { display: block; }
+.sit-evidence-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 11px; color: var(--muted); }
+.sit-evidence-item:last-child { border-bottom: none; }
+.sit-evidence-item:hover { color: var(--text); }
+.sit-detail-status { font-size: 9px; padding: 3px 8px; border-radius: var(--r); letter-spacing: .08em; text-transform: uppercase; display: inline-block; }
+.status-blocked        { background: rgba(255,64,64,.12);   color: var(--red);   border: 1px solid rgba(255,64,64,.25); }
+.status-in_progress    { background: rgba(64,184,255,.1);   color: var(--blue);  border: 1px solid rgba(64,184,255,.2); }
+.status-waiting        { background: rgba(255,176,32,.08);  color: var(--amber); border: 1px solid rgba(255,176,32,.2); }
+.status-needs_decision { background: rgba(212,160,23,.1);   color: var(--gold);  border: 1px solid rgba(212,160,23,.25); }
+.status-informational  { background: rgba(110,80,80,.1);    color: var(--muted); border: 1px solid var(--border); }
+.stat-situations { grid-column: 1 / -1; }
+
 /* ── Detail panel ── */
 .detail-panel {
   position: fixed; top: 0; right: -47%; bottom: 0; width: 47%;
@@ -507,7 +548,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 
   /* Main content fills full width */
   .main { overflow: visible; }
-  #todo-view, #items-view { overflow: visible; }
+  #todo-view, #items-view, #situations-view { overflow: visible; }
 
   /* Detail panel: full screen */
   .detail-panel { width: 100%; right: -100%; }
@@ -533,7 +574,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
   .vtabs .vtab  { padding: 5px 10px; }
 
   /* Todo cards */
-  #todo-view, #items-view { padding: 10px 12px; }
+  #todo-view, #items-view, #situations-view { padding: 10px 12px; }
   .todo-meta { gap: 6px; }
 }
 
@@ -599,6 +640,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
           <div class="stat"><div class="stat-val c-amber"  id="st-open">—</div><div class="stat-lbl">Open</div></div>
           <div class="stat"><div class="stat-val c-red"    id="st-high">—</div><div class="stat-lbl">High Pri</div></div>
           <div class="stat"><div class="stat-val c-blue"   id="st-scan">—</div><div class="stat-lbl">Last Scan</div></div>
+          <div class="stat stat-situations"><div class="stat-val c-red" id="st-situations">—</div><div class="stat-lbl">Situations</div></div>
         </div>
       </div>
 
@@ -646,6 +688,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
         <div class="vtabs">
           <button class="vtab active" onclick="setView('todos',this)">Action Items</button>
           <button class="vtab"        onclick="setView('items',this)">All Items</button>
+          <button class="vtab"        onclick="setView('situations',this)">Situations</button>
         </div>
         <div class="toolbar-filters">
           <input type="search" class="search-input" id="searchInput" placeholder="Search…" oninput="onSearch(this.value)" autocomplete="off">
@@ -660,6 +703,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
       </div>
       <div id="todo-view"></div>
       <div id="items-view"></div>
+      <div id="situations-view"></div>
     </div>
   </div>
 
@@ -783,6 +827,7 @@ let typeFilter      = 'all';
 let scanTimer       = null;
 let allTodos        = [];
 let allAnalyses     = [];
+let allSituations   = [];
 let ingestWasActive = false;
 let allProjects = [];
 let colWidths       = {}; // { colIndex: px }
@@ -921,7 +966,7 @@ async function pollScan() {
       $('spin').classList.remove('on');
       setStatus('ready');
       setTimeout(() => { $('pbar').style.width = '0'; }, 2000);
-      await Promise.all([loadStats(), loadTodos(), loadItems()]);
+      await Promise.all([loadStats(), loadTodos(), loadItems(), loadSituations()]);
       updateTypeCounts(allAnalyses);
     }
   } catch (e) { /* keep polling */ }
@@ -933,6 +978,7 @@ async function loadStats() {
     $('st-total').textContent = s.total_items;
     $('st-open').textContent  = s.open_todos;
     $('st-high').textContent  = s.high_priority;
+    if ($('st-situations')) $('st-situations').textContent = s.open_situations ?? '—';
     if (s.last_scan?.finished_at) $('st-scan').textContent = fmtTime(s.last_scan.finished_at);
     const sm = {};
     (s.by_source || []).forEach(r => sm[r.source] = r.count);
@@ -1234,12 +1280,137 @@ function onDateFilter(val) {
   renderItems(allAnalyses);
 }
 
+// ── Situations ────────────────────────────────────────────────────────────────
+
+async function loadSituations() {
+  try {
+    allSituations = await api('/situations');
+    renderSituations(allSituations);
+    const el = $('st-situations');
+    if (el) el.textContent = allSituations.filter(s => !s.dismissed).length;
+  } catch(e) { console.warn('situations:', e); }
+}
+
+function scoreClass(score) {
+  if (score >= 1.8) return 'score-critical';
+  if (score >= 1.3) return 'score-high';
+  if (score >= 0.8) return 'score-medium';
+  return 'score-low';
+}
+
+const srcColors = {
+  outlook: 'var(--blue)', slack: 'var(--purple)',
+  github: 'var(--text)', jira: 'var(--amber)'
+};
+
+function renderSituations(situations) {
+  const el = $('situations-view');
+  if (!el) return;
+  const visible = situations.filter(s => !s.dismissed);
+  if (!visible.length) {
+    el.innerHTML = `<div class="empty"><div class="empty-icon">◈</div>
+      <div class="empty-msg">No situations detected yet.\nSituations form when items from multiple sources\nrefer to the same real-world event.</div></div>`;
+    return;
+  }
+  el.innerHTML = visible.map(s => situationCard(s)).join('');
+}
+
+function situationCard(s) {
+  const sc      = scoreClass(s.score);
+  const score   = s.score.toFixed(2);
+  const srcDots = s.sources.map(src =>
+    `<div class="sit-src-dot" style="background:${srcColors[src]||'var(--muted)'}" title="${src}"></div>`
+  ).join('');
+  const priLabel    = `<span class="badge b-${s.priority||'low'}">${s.priority||'low'}</span>`;
+  const projLabel   = s.project_tag ? `<span class="badge b-project">${esc(s.project_tag)}</span>` : '';
+  const statusLabel = `<span class="sit-detail-status status-${s.status||'informational'}">${(s.status||'informational').replace('_',' ')}</span>`;
+  const actions     = (s.open_actions||[]).filter(a => a.owner === 'me' || a.owner === 'Me');
+  const actLine     = actions.length
+    ? `<span style="font-size:10px;color:var(--accent)">⚡ ${actions.length} action${actions.length!==1?'s':''} for you</span>`
+    : '';
+  const evidenceRows = (s.items||[]).map(i =>
+    `<div class="sit-evidence-item" onclick="event.stopPropagation();openItemDetail('${esc(i.item_id)}')">
+      <span class="badge b-${i.source}" style="flex-shrink:0">${i.source}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(i.title||'')}</span>
+      <span class="pri-${i.priority||'low'}" style="flex-shrink:0">${i.priority||'low'}</span>
+    </div>`
+  ).join('');
+  return `
+    <div class="situation-card ${sc}" id="sit-${esc(s.situation_id)}">
+      <div class="sit-header" onclick="toggleSituationEvidence('${esc(s.situation_id)}')">
+        <div class="sit-score">${score}</div>
+        <div class="sit-main">
+          <div class="sit-title">${esc(s.title)}</div>
+          <div class="sit-summary">${esc(s.summary)}</div>
+          <div class="sit-meta">
+            <div class="sit-src-dots">${srcDots}</div>
+            ${priLabel}${projLabel}${statusLabel}
+            <span style="font-size:10px;color:var(--muted)">${s.item_count} item${s.item_count!==1?'s':''}</span>
+            ${actLine}
+          </div>
+        </div>
+        <div class="sit-actions">
+          <button class="sit-dismiss" onclick="event.stopPropagation();dismissSituation('${esc(s.situation_id)}')" title="Dismiss">✕</button>
+          <button class="ia" onclick="event.stopPropagation();resynthSituation('${esc(s.situation_id)}')" title="Re-synthesize">↺</button>
+        </div>
+      </div>
+      <div class="sit-evidence" id="sit-ev-${esc(s.situation_id)}">
+        ${evidenceRows}
+      </div>
+    </div>`;
+}
+
+function toggleSituationEvidence(sitId) {
+  const ev = $('sit-ev-' + sitId);
+  if (ev) ev.classList.toggle('open');
+}
+
+async function dismissSituation(sitId) {
+  try {
+    await api(`/situations/${encodeURIComponent(sitId)}/dismiss`, 'POST');
+    allSituations = allSituations.map(s =>
+      s.situation_id === sitId ? {...s, dismissed: true} : s
+    );
+    renderSituations(allSituations);
+    const el = $('st-situations');
+    if (el) el.textContent = allSituations.filter(s => !s.dismissed).length;
+  } catch(e) { $('statusMsg').textContent = 'Dismiss failed: ' + e.message; }
+}
+
+async function resynthSituation(sitId) {
+  $('statusMsg').textContent = 'Re-synthesizing situation…';
+  try {
+    const updated = await api(`/situations/${encodeURIComponent(sitId)}/rescore`, 'POST');
+    allSituations = allSituations.map(s =>
+      s.situation_id === sitId ? updated : s
+    );
+    renderSituations(allSituations);
+    $('statusMsg').textContent = 'Situation updated.';
+  } catch(e) { $('statusMsg').textContent = 'Resynth failed: ' + e.message; }
+}
+
+function openItemDetail(itemId) {
+  const item = allAnalyses.find(a => a.item_id === itemId);
+  if (item) {
+    openDetail(item);
+    if ($('items-view').style.display === 'none') {
+      document.querySelectorAll('.vtab').forEach(e => e.classList.remove('active'));
+      document.querySelectorAll('.vtab')[1].classList.add('active');
+      $('todo-view').style.display       = 'none';
+      $('items-view').style.display      = 'block';
+      $('situations-view').style.display = 'none';
+    }
+  }
+}
+
 function setView(v, el) {
   document.querySelectorAll('.vtab').forEach(e => e.classList.remove('active'));
   el.classList.add('active');
-  $('todo-view').style.display  = v === 'todos' ? 'block' : 'none';
-  $('items-view').style.display = v === 'items' ? 'block' : 'none';
-  if (v === 'items') loadItems();
+  $('todo-view').style.display       = v === 'todos'      ? 'block' : 'none';
+  $('items-view').style.display      = v === 'items'      ? 'block' : 'none';
+  $('situations-view').style.display = v === 'situations' ? 'block' : 'none';
+  if (v === 'items')      loadItems();
+  if (v === 'situations') loadSituations();
 }
 
 // ── Sidebar (mobile) ──────────────────────────────────────────────────────────
@@ -1835,7 +2006,7 @@ async function pollStatus() {
       $('spin').classList.remove('on');
       setStatus('ready');
       $('statusMsg').textContent = 'Ready';
-      await Promise.all([loadStats(), loadTodos(), loadItems()]);
+      await Promise.all([loadStats(), loadTodos(), loadItems(), loadSituations()]);
     }
   } catch (e) { /* ignore */ }
 }
@@ -1848,6 +2019,7 @@ window.addEventListener('pageshow', clearSearch);
 loadStats();
 loadTodos();
 loadItems();
+loadSituations();
 loadProjectList();
 
 // Handle Slack OAuth redirect result

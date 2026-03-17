@@ -202,6 +202,22 @@ def remove_item(item_id: str, project_name: str) -> None:
         )
 
 
+def get_item_vector(item_id: str):
+    """
+    Retrieve the stored embedding vector for a specific item_id across all projects.
+    Returns None if the item has not been embedded (i.e. was never tagged).
+    Used by the correlator for embedding-based candidate generation.
+    """
+    if not _AVAILABLE:
+        return None
+    tbl = _get_tbl()
+    for rec in tbl.all():
+        for item in rec.get("items", []):
+            if item["item_id"] == item_id:
+                return item["vector"]
+    return None
+
+
 def get_project_stats() -> dict:
     """Return ``{project_name: {total_items, subdivisions}}`` for all stored projects."""
     try:
