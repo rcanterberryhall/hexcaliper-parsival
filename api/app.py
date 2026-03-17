@@ -351,7 +351,9 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
         if not old_record:
             raise HTTPException(status_code=404, detail="Item not found")
         analyses.update(updates, Q.item_id == item_id)
-        if "priority" in updates:
+        if updates.get("category") == "noise":
+            todos.remove(Q.item_id == item_id)
+        elif "priority" in updates:
             todos.update({"priority": updates["priority"]}, Q.item_id == item_id)
 
     old_project  = old_record.get("project_tag")
@@ -501,6 +503,7 @@ def mark_noise(item_id: str, background_tasks: BackgroundTasks):
             {"category": "noise", "priority": "low", "has_action": False},
             Q.item_id == item_id,
         )
+        todos.remove(Q.item_id == item_id)
 
     def learn_noise() -> None:
         title        = record.get("title", "")
