@@ -265,6 +265,41 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .empty-icon { font-size: 32px; opacity: .2; margin-bottom: 10px; }
 .empty-msg  { font-size: 11px; line-height: 2.2; letter-spacing: .04em; white-space: pre-line; }
 
+/* ── Seed modal overlay ── */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.65);
+  display: none; align-items: center; justify-content: center; z-index: 100;
+}
+.modal-overlay.open { display: flex; }
+.modal-box {
+  background: var(--surface); border: 1px solid var(--border2); border-radius: var(--r);
+  border-top: 2px solid var(--gold); box-shadow: 0 24px 64px rgba(0,0,0,.7);
+  display: flex; flex-direction: column;
+}
+.modal-box .modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px; border-bottom: 1px solid var(--border2); flex-shrink: 0;
+  font-family: var(--display); font-size: 12px; font-weight: 700;
+  letter-spacing: .18em; color: var(--accent);
+}
+.modal-box .modal-body { overflow-y: auto; padding: 18px 20px; flex: 1; }
+.modal-box .modal-foot {
+  padding: 12px 20px; border-top: 1px solid var(--border2);
+  display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+}
+.close-btn { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 2px 6px; transition: color .1s; }
+.close-btn:hover { color: var(--text); }
+
+/* ── Seed results ── */
+.seed-section { margin-top: 14px; }
+.seed-section-head { font-size: 10px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+.seed-project-row { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 6px; }
+.seed-project-row input { flex: 1; background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 3px; padding: 4px 6px; font-size: 11px; }
+.seed-project-row textarea { flex: 2; background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 3px; padding: 4px 6px; font-size: 11px; resize: none; height: 34px; }
+.seed-project-row .ia { flex-shrink: 0; }
+.seed-topic-chip { display:inline-flex;align-items:center;gap:4px;background:rgba(64,184,255,.08);border:1px solid rgba(64,184,255,.2);color:var(--blue);border-radius:12px;padding:2px 8px;font-size:10px;margin:2px; }
+.seed-topic-chip button { background:none;border:none;color:var(--muted);cursor:pointer;padding:0;line-height:1; }
+
 /* ── Settings button ── */
 .gear-btn {
   background: none; border: 1px solid var(--border2); color: var(--muted);
@@ -625,6 +660,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
         <button class="src-btn on-jira"    data-src="jira"    onclick="toggleSrc(this)">Jira</button>
         <button class="src-btn on-teams"  data-src="teams"   onclick="toggleSrc(this)">Teams</button>
       </div>
+      <button class="scan-btn" id="seedBtn" onclick="openSeed()" title="Bootstrap project intelligence from existing data" style="background:rgba(212,160,23,.08);border-color:var(--amber);color:var(--amber)">◈ Seed</button>
       <button class="gear-btn" onclick="openSettings()" title="Settings">⚙</button>
       <button class="scan-btn" id="scanBtn" onclick="startScan()">▶ Scan</button>
     </div>
@@ -725,6 +761,34 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
   <div class="detail-body" id="detailBody"></div>
   <div class="detail-edit" id="detailEdit"></div>
 <div class="detail-foot" id="detailFoot"></div>
+</div>
+
+<!-- Seed Modal -->
+<div class="modal-overlay" id="seedModal" onclick="if(event.target===this)closeSeed()">
+  <div class="modal-box" style="width:560px;max-height:80vh;overflow-y:auto">
+    <div class="modal-head">
+      <span>Bootstrap Project Intelligence</span>
+      <button class="close-btn" onclick="closeSeed()">✕</button>
+    </div>
+    <div class="modal-body" id="seedBody">
+      <div class="field-hint" style="margin-bottom:12px">
+        Reads all stored analyses — prioritising passdown emails — and uses the LLM to identify your active projects and recurring concerns. Results are shown for review before anything is saved.
+      </div>
+      <div class="field">
+        <label>Context (optional)</label>
+        <textarea id="seedContext" rows="3" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:6px 8px;font-size:11px;resize:vertical" placeholder="e.g. I work in industrial automation, supporting three shift crews on a continuous production line"></textarea>
+      </div>
+      <div id="seedProgress" style="display:none;margin:12px 0;font-size:11px;color:var(--muted)"></div>
+      <div id="seedResults" style="display:none"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="settings-msg" id="seedMsg"></span>
+      <div style="display:flex;gap:8px">
+        <button class="save-btn" id="seedRunBtn" onclick="runSeed()">▶ Analyse</button>
+        <button class="save-btn" id="seedApplyBtn" style="display:none" onclick="applySeed()">✓ Apply</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Settings Modal -->
@@ -1840,6 +1904,114 @@ async function connectTeams() {
   body.projects = readProjects();
   try { await api('/settings', 'POST', body); } catch(e) {}
   window.location.href = '/page/api/teams/connect';
+}
+
+let _seedResults = null;
+
+function openSeed() {
+  $('seedModal').classList.add('open');
+  $('seedProgress').style.display = 'none';
+  $('seedResults').style.display  = 'none';
+  $('seedApplyBtn').style.display = 'none';
+  $('seedRunBtn').style.display   = '';
+  $('seedMsg').textContent        = '';
+  _seedResults = null;
+}
+
+function closeSeed() {
+  $('seedModal').classList.remove('open');
+}
+
+async function runSeed() {
+  const ctx = $('seedContext').value.trim();
+  $('seedRunBtn').disabled     = true;
+  $('seedProgress').style.display = '';
+  $('seedProgress').textContent   = 'Analysing items… this may take a minute.';
+  $('seedResults').style.display  = 'none';
+  $('seedApplyBtn').style.display = 'none';
+  $('seedMsg').textContent        = '';
+  try {
+    const body = {};
+    if (ctx) body.context = ctx;
+    const res = await api('/seed', 'POST', body);
+    _seedResults = res;
+    $('seedProgress').textContent = `Analysed ${res.item_count} items (${res.passdown_count} passdowns).`;
+    renderSeedResults(res);
+    $('seedResults').style.display  = '';
+    $('seedApplyBtn').style.display = '';
+  } catch(e) {
+    $('seedProgress').textContent = 'Analysis failed: ' + e.message;
+  } finally {
+    $('seedRunBtn').disabled = false;
+  }
+}
+
+function renderSeedResults(res) {
+  const projects = res.projects || [];
+  const topics   = res.topics   || [];
+  let html = '';
+
+  html += `<div class="seed-section">
+    <div class="seed-section-head">Suggested Projects (${projects.length})</div>
+    <div id="seedProjectList">`;
+  if (!projects.length) {
+    html += `<div style="font-size:11px;color:var(--muted)">No projects identified.</div>`;
+  } else {
+    projects.forEach((p, i) => {
+      html += `<div class="seed-project-row">
+        <input id="sp-name-${i}" value="${esc(p.name)}" placeholder="Project name">
+        <textarea id="sp-kw-${i}" placeholder="keywords, comma separated">${esc((p.keywords||[]).join(', '))}</textarea>
+        <button class="ia del" onclick="this.closest('.seed-project-row').remove()">✕</button>
+      </div>`;
+    });
+  }
+  html += `</div></div>`;
+
+  html += `<div class="seed-section" style="margin-top:14px">
+    <div class="seed-section-head">Suggested Topics (${topics.length})</div>
+    <div id="seedTopicList" style="display:flex;flex-wrap:wrap;gap:2px;margin-bottom:4px">`;
+  if (!topics.length) {
+    html += `<span style="font-size:11px;color:var(--muted)">No topics identified.</span>`;
+  } else {
+    topics.forEach((t, i) => {
+      html += `<span class="seed-topic-chip" id="st-chip-${i}">${esc(t)}<button onclick="this.closest('.seed-topic-chip').remove()">✕</button></span>`;
+    });
+  }
+  html += `</div></div>`;
+
+  $('seedResults').innerHTML = html;
+}
+
+async function applySeed() {
+  // Read back edited values from DOM
+  const projectRows = document.querySelectorAll('#seedProjectList .seed-project-row');
+  const projects = [];
+  projectRows.forEach(row => {
+    const nameEl = row.querySelector('input');
+    const kwEl   = row.querySelector('textarea');
+    if (!nameEl || !kwEl) return;
+    const name = nameEl.value.trim();
+    const kws  = kwEl.value.split(',').map(s => s.trim()).filter(Boolean);
+    if (name) projects.push({ name, keywords: kws });
+  });
+
+  const topicChips = document.querySelectorAll('#seedTopicList .seed-topic-chip');
+  const topics = Array.from(topicChips).map(c => c.textContent.replace('✕','').trim()).filter(Boolean);
+
+  $('seedApplyBtn').disabled = true;
+  $('seedMsg').textContent   = 'Applying…';
+  try {
+    const res = await api('/seed/apply', 'POST', { projects, topics, retag: true });
+    $('seedMsg').textContent = `Done — ${res.projects_added} project${res.projects_added!==1?'s':''} added, ${res.items_retagged} item${res.items_retagged!==1?'s':''} re-tagged.`;
+    await loadSettings();
+    await loadItems();
+    await loadStats();
+  } catch(e) {
+    $('seedMsg').style.color = 'var(--red)';
+    $('seedMsg').textContent = 'Failed: ' + e.message;
+  } finally {
+    $('seedApplyBtn').disabled = false;
+  }
 }
 
 async function connectSlack() {

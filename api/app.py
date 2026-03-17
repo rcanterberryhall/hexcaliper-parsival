@@ -1335,3 +1335,276 @@ def disconnect_teams_account(account_id: str):
             settings_tbl.insert(existing)
     config.apply_overrides(existing)
     return {"ok": True}
+
+
+# ── Seed endpoints ─────────────────────────────────────────────────────────────
+
+MAP_PROMPT = """\
+You are analyzing work items from {user_name}'s ops inbox.
+{context_block}
+
+Identify distinct ongoing projects or workstreams and recurring operational concerns from these items.
+Passdown notes describe active operational handoffs — weight them heavily.
+
+Items:
+{items_block}
+
+Respond ONLY with valid JSON — no markdown, no explanation:
+{{
+  "projects": [
+    {{"name": "short project name", "keywords": ["keyword1", "keyword2", "keyword3"]}}
+  ],
+  "concerns": ["brief recurring concern phrase"]
+}}
+"""
+
+REDUCE_PROMPT = """\
+You are synthesizing project intelligence for {user_name}.
+{context_block}
+
+Below are theme extracts from {n_batches} batches covering {n_items} work items.
+
+{themes_block}
+
+Produce a final consolidated list. Merge similar projects. Keep only projects with strong evidence. Topics are recurring concerns that don't fit a specific project.
+
+Respond ONLY with valid JSON — no markdown, no explanation:
+{{
+  "projects": [
+    {{"name": "canonical project name", "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"]}}
+  ],
+  "topics": ["watch topic or recurring concern phrase"]
+}}
+"""
+
+
+@app.post("/seed")
+async def seed_preview(request: Request):
+    """
+    Two-pass LLM map-reduce over all stored analyses.
+    Returns suggested projects and topics without writing anything.
+    """
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    context = body.get("context", "") if isinstance(body, dict) else ""
+    user_name = config.USER_NAME or "the user"
+    context_block = f"Context about {user_name}: {context}" if context else ""
+
+    # 1. Fetch all analyses, sort passdowns first then by priority, cap at 120
+    with db_lock:
+        all_items = analyses.all()
+
+    priority_rank = {"high": 3, "medium": 2, "low": 1}
+
+    def _sort_key(a):
+        is_pd = 1 if a.get("is_passdown") else 0
+        pri = priority_rank.get(a.get("priority", "low"), 1)
+        return (is_pd, pri)
+
+    all_items.sort(key=_sort_key, reverse=True)
+    all_items = all_items[:120]
+
+    passdown_count = sum(1 for a in all_items if a.get("is_passdown"))
+
+    # 2. Map pass: batch_size=12
+    batch_size = 12
+    map_results = []
+
+    for batch_start in range(0, len(all_items), batch_size):
+        batch = all_items[batch_start:batch_start + batch_size]
+        lines = []
+        for a in batch:
+            source   = a.get("source", "?")
+            title    = a.get("title", "(no title)")
+            summary  = a.get("summary", "")
+            priority = a.get("priority", "low")
+            category = a.get("category", "")
+            is_pd    = a.get("is_passdown", False)
+            suffix   = ", passdown" if is_pd else ""
+            lines.append(f"[{source}] {title}: {summary} ({priority}, {category}{suffix})")
+        items_block = "\n".join(lines)
+
+        prompt = MAP_PROMPT.format(
+            user_name=user_name,
+            context_block=context_block,
+            items_block=items_block,
+        )
+        try:
+            resp = http_requests.post(
+                config.OLLAMA_URL,
+                headers=config.ollama_headers(),
+                json={
+                    "model": config.OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0.2, "num_predict": 600},
+                },
+                timeout=90,
+            )
+            resp.raise_for_status()
+            data = json.loads(resp.json().get("response", "{}"))
+            map_results.append(data)
+        except Exception as e:
+            print(f"[seed] map batch {batch_start} failed: {e}")
+            continue
+
+    if not map_results:
+        return {
+            "projects": [],
+            "topics": [],
+            "item_count": len(all_items),
+            "passdown_count": passdown_count,
+        }
+
+    # 3. Reduce pass
+    themes_parts = []
+    for i, mr in enumerate(map_results):
+        projects_str = json.dumps(mr.get("projects", []))
+        concerns_str = json.dumps(mr.get("concerns", []))
+        themes_parts.append(f"Batch {i + 1}:\n  projects: {projects_str}\n  concerns: {concerns_str}")
+    themes_block = "\n\n".join(themes_parts)
+
+    reduce_prompt = REDUCE_PROMPT.format(
+        user_name=user_name,
+        context_block=context_block,
+        n_batches=len(map_results),
+        n_items=len(all_items),
+        themes_block=themes_block,
+    )
+
+    try:
+        resp = http_requests.post(
+            config.OLLAMA_URL,
+            headers=config.ollama_headers(),
+            json={
+                "model": config.OLLAMA_MODEL,
+                "prompt": reduce_prompt,
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.2, "num_predict": 600},
+            },
+            timeout=90,
+        )
+        resp.raise_for_status()
+        final = json.loads(resp.json().get("response", "{}"))
+        projects = final.get("projects", [])
+        topics   = final.get("topics", [])
+    except Exception as e:
+        print(f"[seed] reduce failed: {e}")
+        # Fallback: flat merge of map results
+        projects = []
+        seen_names = set()
+        topics = []
+        for mr in map_results:
+            for p in mr.get("projects", []):
+                nm = p.get("name", "")
+                if nm and nm not in seen_names:
+                    seen_names.add(nm)
+                    projects.append(p)
+            topics.extend(mr.get("concerns", []))
+        topics = list(dict.fromkeys(topics))  # deduplicate preserving order
+
+    return {
+        "projects":       projects,
+        "topics":         topics,
+        "item_count":     len(all_items),
+        "passdown_count": passdown_count,
+    }
+
+
+@app.post("/seed/apply")
+def seed_apply(body: dict):
+    """
+    Apply seeded projects and topics to settings, optionally re-tagging existing analyses.
+    """
+    suggested_projects = body.get("projects", [])
+    suggested_topics   = body.get("topics", [])
+    retag              = body.get("retag", True)
+
+    # 1. Load existing settings
+    with db_lock:
+        existing = settings_tbl.get(doc_id=1) or {}
+
+    current_projects: list[dict] = existing.get("projects", list(config.PROJECTS))
+    current_names = {p.get("name", "").lower() for p in current_projects}
+
+    # 2. Merge projects
+    projects_added = 0
+    for sp in suggested_projects:
+        name = sp.get("name", "").strip()
+        if not name:
+            continue
+        if name.lower() not in current_names:
+            current_projects.append({
+                "name":             name,
+                "keywords":         sp.get("keywords", []),
+                "channels":         [],
+                "learned_keywords": [],
+                "learned_senders":  [],
+            })
+            current_names.add(name.lower())
+            projects_added += 1
+
+    # 3. Merge topics into focus_topics (comma-separated, deduplicated)
+    existing_ft_raw = existing.get("focus_topics", ", ".join(config.FOCUS_TOPICS))
+    existing_topics = [t.strip() for t in existing_ft_raw.split(",") if t.strip()]
+    existing_topics_lower = {t.lower() for t in existing_topics}
+    topics_added = 0
+    for t in suggested_topics:
+        t = t.strip()
+        if t and t.lower() not in existing_topics_lower:
+            existing_topics.append(t)
+            existing_topics_lower.add(t.lower())
+            topics_added += 1
+    new_focus_topics = ", ".join(existing_topics)
+
+    # 4. Save back
+    existing["projects"]     = current_projects
+    existing["focus_topics"] = new_focus_topics
+    with db_lock:
+        if settings_tbl.get(doc_id=1):
+            settings_tbl.update(existing, doc_ids=[1])
+        else:
+            settings_tbl.insert(existing)
+    config.apply_overrides(existing)
+
+    # 5. Optionally retag existing analyses
+    items_retagged = 0
+    if retag and projects_added > 0:
+        # Only consider newly-added projects for retagging
+        new_projects = current_projects[-projects_added:]
+        with db_lock:
+            all_items = analyses.all()
+
+        updates = []
+        for item in all_items:
+            if item.get("project_tag"):
+                continue
+            text = " ".join([
+                item.get("title", ""),
+                item.get("body_preview", ""),
+                item.get("summary", ""),
+            ]).lower()
+            for proj in new_projects:
+                kws = proj.get("keywords", []) + proj.get("learned_keywords", [])
+                if any(kw.lower() in text for kw in kws if kw):
+                    updates.append((item.doc_id, proj["name"]))
+                    items_retagged += 1
+                    break
+
+        if updates:
+            with db_lock:
+                for doc_id, tag in updates:
+                    analyses.update({"project_tag": tag}, doc_ids=[doc_id])
+
+    return {
+        "ok":             True,
+        "projects_added": projects_added,
+        "topics_added":   topics_added,
+        "items_retagged": items_retagged,
+    }
