@@ -847,8 +847,7 @@ def _maybe_form_situation(item_id: str) -> None:
             cluster_records = [analyses.get(Q.item_id == iid) for iid in all_ids]
         cluster_records = [r for r in cluster_records if r]
 
-        unique_sources = len(set(r.get("source", "") for r in cluster_records))
-        if len(cluster_records) < 2 or unique_sources < 2:
+        if len(cluster_records) < 2:
             return
 
         # Create new situation
