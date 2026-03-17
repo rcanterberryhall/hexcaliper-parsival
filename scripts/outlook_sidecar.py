@@ -30,9 +30,11 @@ import sys
 import requests
 from datetime import datetime, timedelta
 
-PAGE_API_URL   = "https://squire.hexcaliper.com/page/api"
-LOOKBACK_HOURS = 48
-MAX_EMAILS     = 75
+PAGE_API_URL        = "https://squire.hexcaliper.com/page/api"
+LOOKBACK_HOURS      = 48
+MAX_EMAILS          = 75
+SEED_LOOKBACK_HOURS = 720   # 30 days
+SEED_MAX_EMAILS     = 500
 
 # Windows Credential Manager service name used by keyring.
 _KEYRING_SERVICE = "hexcaliper-squire"
@@ -92,7 +94,7 @@ def _setup() -> None:
     print("\nCredentials saved to Windows Credential Manager.")
 
 
-def fetch() -> list[dict]:
+def fetch(lookback_hours: int = LOOKBACK_HOURS, max_emails: int = MAX_EMAILS) -> list[dict]:
     """
     Connect to the local Outlook client and fetch recent emails.
 
@@ -129,7 +131,7 @@ def fetch() -> list[dict]:
         except Exception as e:
             sys.exit(f"ERROR: Could not connect to Outlook — is it running? ({e})")
 
-        cutoff     = datetime.now() - timedelta(hours=LOOKBACK_HOURS)
+        cutoff     = datetime.now() - timedelta(hours=lookback_hours)
         cutoff_str = cutoff.strftime("%m/%d/%Y %I:%M %p")
 
         try:
@@ -143,7 +145,7 @@ def fetch() -> list[dict]:
         count = messages.Count
         print(f"Filtered item count: {count}", flush=True)
 
-        for index in range(1, min(count, MAX_EMAILS) + 1):
+        for index in range(1, min(count, max_emails) + 1):
             try:
                 msg      = messages.Item(index)
                 subject  = getattr(msg, "Subject", None)
@@ -261,6 +263,12 @@ def post(items: list[dict], client_id: str, client_secret: str) -> None:
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--setup":
         _setup()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--seed":
+        cf_id, cf_secret = _load_credentials()
+        print(f"SEED MODE — fetching Outlook emails (last {SEED_LOOKBACK_HOURS}h / {SEED_LOOKBACK_HOURS//24} days, cap {SEED_MAX_EMAILS})...", flush=True)
+        emails = fetch(lookback_hours=SEED_LOOKBACK_HOURS, max_emails=SEED_MAX_EMAILS)
+        print(f"Found {len(emails)} emails", flush=True)
+        post(emails, cf_id, cf_secret)
     else:
         cf_id, cf_secret = _load_credentials()
         print(f"Fetching Outlook emails (last {LOOKBACK_HOURS}h)...", flush=True)

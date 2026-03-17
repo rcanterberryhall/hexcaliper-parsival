@@ -1518,9 +1518,12 @@ async def seed_preview(request: Request):
 
 
 @app.post("/seed/apply")
-def seed_apply(body: dict):
+def seed_apply(body: dict, background_tasks: BackgroundTasks):
     """
-    Apply seeded projects and topics to settings, optionally re-tagging existing analyses.
+    Apply seeded projects and topics to settings, optionally re-tagging existing
+    analyses.  After retagging, runs embeddings for all newly-tagged items in the
+    background to populate centroids, then sweeps situation formation across the
+    full corpus so the correlation layer starts with a warm model.
     """
     suggested_projects = body.get("projects", [])
     suggested_topics   = body.get("topics", [])
@@ -1601,6 +1604,60 @@ def seed_apply(body: dict):
             with db_lock:
                 for doc_id, tag in updates:
                     analyses.update({"project_tag": tag}, doc_ids=[doc_id])
+
+    # 6. Background: embed all newly-tagged items, then sweep situation formation
+    #    across the full corpus.  This is the step that populates centroids and
+    #    warms the correlation layer from a bulk corpus instead of a trickle.
+    def _seed_embed_and_correlate() -> None:
+        print("[seed] starting embedding sweep...")
+        try:
+            from embedder import embed, update_project
+            with db_lock:
+                all_items = analyses.all()
+            for item in all_items:
+                tag = item.get("project_tag")
+                if not tag:
+                    continue
+                text = " ".join(filter(None, [
+                    item.get("title", ""),
+                    item.get("body_preview", ""),
+                    item.get("summary", ""),
+                ]))
+                if not text.strip():
+                    continue
+                try:
+                    vector = embed(text)
+                    if vector:
+                        update_project(
+                            project_name = tag,
+                            item_id      = item.get("item_id", ""),
+                            vector       = vector,
+                            category     = item.get("category", "fyi"),
+                            hierarchy    = item.get("hierarchy", "general"),
+                            source       = item.get("source", ""),
+                            priority     = item.get("priority", "medium"),
+                        )
+                except Exception as e:
+                    print(f"[seed] embed {item.get('item_id')}: {e}")
+            print("[seed] embedding sweep complete")
+        except Exception as e:
+            print(f"[seed] embedding sweep failed: {e}")
+
+        print("[seed] starting situation formation sweep...")
+        try:
+            with db_lock:
+                all_items = analyses.all()
+            item_ids = [item.get("item_id") for item in all_items if item.get("item_id")]
+            for iid in item_ids:
+                try:
+                    _maybe_form_situation(iid)
+                except Exception as e:
+                    print(f"[seed] situation sweep {iid}: {e}")
+            print(f"[seed] situation sweep complete ({len(item_ids)} items)")
+        except Exception as e:
+            print(f"[seed] situation sweep failed: {e}")
+
+    background_tasks.add_task(_seed_embed_and_correlate)
 
     return {
         "ok":             True,

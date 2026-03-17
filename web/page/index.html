@@ -772,7 +772,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
     </div>
     <div class="modal-body" id="seedBody">
       <div class="field-hint" style="margin-bottom:12px">
-        Reads all stored analyses — prioritising passdown emails — and uses the LLM to identify your active projects and recurring concerns. Results are shown for review before anything is saved.
+        One-time bootstrap: run <code style="font-size:10px;background:rgba(255,255,255,.06);padding:1px 4px;border-radius:3px">python outlook_sidecar.py --seed</code> first to load 30 days of email, then click Analyse. The LLM reads all stored items — prioritising passdowns — to identify your active projects and recurring concerns. After you apply, embeddings and situation formation run automatically in the background to warm the correlation system.
       </div>
       <div class="field">
         <label>Context (optional)</label>
@@ -2002,7 +2002,7 @@ async function applySeed() {
   $('seedMsg').textContent   = 'Applying…';
   try {
     const res = await api('/seed/apply', 'POST', { projects, topics, retag: true });
-    $('seedMsg').textContent = `Done — ${res.projects_added} project${res.projects_added!==1?'s':''} added, ${res.items_retagged} item${res.items_retagged!==1?'s':''} re-tagged.`;
+    $('seedMsg').textContent = `Done — ${res.projects_added} project${res.projects_added!==1?'s':''} added, ${res.items_retagged} item${res.items_retagged!==1?'s':''} re-tagged. Embeddings + situations building in background.`;
     await loadSettings();
     await loadItems();
     await loadStats();
