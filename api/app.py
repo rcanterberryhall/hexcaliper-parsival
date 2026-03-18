@@ -1407,7 +1407,7 @@ def _run_seed_job(context: str) -> None:
 
         passdown_count = sum(1 for a in all_items if a.get("is_passdown"))
         n_items        = len(all_items)
-        batch_size     = 12
+        batch_size     = 6
         n_batches      = max(1, (n_items + batch_size - 1) // batch_size)
 
         _seed_job["progress"] = f"Analysing {n_items} items ({passdown_count} passdowns)…"
@@ -1422,12 +1422,12 @@ def _run_seed_job(context: str) -> None:
             for a in batch:
                 source   = a.get("source", "?")
                 title    = a.get("title", "(no title)")
-                summary  = a.get("summary", "")
+                # Truncate summary to keep prompt small
+                summary  = (a.get("summary", "") or "")[:120]
                 priority = a.get("priority", "low")
-                category = a.get("category", "")
                 is_pd    = a.get("is_passdown", False)
-                suffix   = ", passdown" if is_pd else ""
-                lines.append(f"[{source}] {title}: {summary} ({priority}, {category}{suffix})")
+                suffix   = " [passdown]" if is_pd else ""
+                lines.append(f"[{source}]{suffix} {title}: {summary} ({priority})")
             items_block = "\n".join(lines)
 
             prompt = MAP_PROMPT.format(
@@ -1444,9 +1444,9 @@ def _run_seed_job(context: str) -> None:
                         "prompt":  prompt,
                         "stream":  False,
                         "format":  "json",
-                        "options": {"temperature": 0.2, "num_predict": 600},
+                        "options": {"temperature": 0.2, "num_predict": 300},
                     },
-                    timeout=90,
+                    timeout=120,
                 )
                 resp.raise_for_status()
                 data = json.loads(resp.json().get("response", "{}"))
@@ -1494,9 +1494,9 @@ def _run_seed_job(context: str) -> None:
                     "prompt":  reduce_prompt,
                     "stream":  False,
                     "format":  "json",
-                    "options": {"temperature": 0.2, "num_predict": 600},
+                    "options": {"temperature": 0.2, "num_predict": 400},
                 },
-                timeout=90,
+                timeout=120,
             )
             resp.raise_for_status()
             final    = json.loads(resp.json().get("response", "{}"))
