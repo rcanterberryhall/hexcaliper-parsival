@@ -1566,13 +1566,50 @@ Respond ONLY with valid JSON — no markdown, no explanation:
 
 def _run_seed_job(context: str) -> None:
     """
-    Background thread for POST /seed.  Runs the two-pass LLM map-reduce and
-    writes results into ``_seed_job`` so GET /seed/status can return progress.
+    Background thread for POST /seed.  Implements the full bootstrap state machine:
+
+    waiting_for_ingest → analyzing → review (thread exits; user applies)
+
+    After apply, seed_apply() transitions to reanalyzing → scan_prompt → done.
     """
+    import time
     global _seed_job
     try:
-        user_name     = config.USER_NAME or "the user"
+        user_name = config.USER_NAME or "the user"
+
+        # ── State: waiting_for_ingest ─────────────────────────────────────────
+        # Poll until at least one item has been ingested and the ingest queue
+        # has drained.  Context can be updated via PATCH /seed/context while
+        # waiting, so we read it from _seed_job just before analysis starts.
+        seen_items = False
+        while True:
+            with db_lock:
+                item_count = len(analyses.all())
+            pending = scan_state.get("ingest_pending", 0)
+            if item_count > 0:
+                seen_items = True
+            _seed_job.update({
+                "state":          "waiting_for_ingest",
+                "item_count":     item_count,
+                "ingest_pending": pending,
+                "progress":       (
+                    f"{item_count} item{'s' if item_count != 1 else ''} received"
+                    + (f", {pending} processing…" if pending else
+                       " — ingest complete" if seen_items else "")
+                ),
+            })
+            if seen_items and pending == 0:
+                break
+            if _seed_job.get("cancelled"):
+                _seed_job.update({"state": "idle", "status": "idle"})
+                return
+            time.sleep(3)
+
+        # ── State: analyzing ──────────────────────────────────────────────────
+        # Re-read context now in case it was updated while waiting.
+        context = _seed_job.get("context") or context
         context_block = f"Context about {user_name}: {context}" if context else ""
+        _seed_job.update({"state": "analyzing", "progress": "Starting analysis…"})
 
         # 1. Fetch all analyses, sort passdowns first then by priority, cap at 120
         with db_lock:
@@ -1590,16 +1627,6 @@ def _run_seed_job(context: str) -> None:
 
         passdown_count = sum(1 for a in all_items if a.get("is_passdown"))
         n_items        = len(all_items)
-
-        if n_items == 0:
-            _seed_job = {
-                "status":     "error",
-                "progress":   "No items to analyse. Run the sidecar (or a scan) to ingest emails first, then seed.",
-                "projects":   [],
-                "topics":     [],
-                "item_count": 0,
-            }
-            return
 
         batch_size = 6
         n_batches  = max(1, (n_items + batch_size - 1) // batch_size)
@@ -1652,14 +1679,15 @@ def _run_seed_job(context: str) -> None:
 
         if not map_results:
             err_detail = f" ({last_map_err})" if last_map_err else ""
-            _seed_job = {
+            _seed_job.update({
+                "state":          "error",
                 "status":         "error",
                 "progress":       f"All map batches failed{err_detail}",
                 "projects":       [],
                 "topics":         [],
                 "item_count":     n_items,
                 "passdown_count": passdown_count,
-            }
+            })
             return
 
         # 3. Reduce pass
@@ -1711,29 +1739,33 @@ def _run_seed_job(context: str) -> None:
                 topics.extend(mr.get("concerns", []))
             topics = list(dict.fromkeys(topics))
 
-        _seed_job = {
-            "status":         "done",
-            "progress":       f"Done — analysed {n_items} items.",
+        _seed_job.update({
+            "state":          "review",
+            "status":         "running",
+            "progress":       f"Analysis complete — {n_items} items reviewed.",
             "projects":       projects,
             "topics":         topics,
             "item_count":     n_items,
             "passdown_count": passdown_count,
-        }
+        })
+        # Thread exits here.  Frontend reads state="review" and shows the
+        # project/topic editor.  POST /seed/apply continues the state machine.
 
     except Exception as e:
-        _seed_job = {"status": "error", "progress": str(e)}
+        _seed_job.update({"state": "error", "status": "error", "progress": str(e)})
 
 
 @app.post("/seed")
 async def seed_preview(request: Request):
     """
-    Start a background two-pass LLM map-reduce over all stored analyses.
-    Returns immediately with ``{"status": "running"}``.
-    Poll ``GET /seed/status`` for progress and final results.
+    Start the seed state machine.  Always succeeds immediately — the
+    ``waiting_for_ingest`` phase handles empty databases by polling until
+    items arrive.  Returns the current ``_seed_job`` state.
     """
     global _seed_job
-    if _seed_job.get("status") == "running":
-        return {"status": "running", "progress": _seed_job.get("progress", "")}
+    active_states = {"waiting_for_ingest", "analyzing", "reanalyzing", "scanning"}
+    if _seed_job.get("state") in active_states:
+        return _seed_job
 
     body = {}
     try:
@@ -1742,9 +1774,24 @@ async def seed_preview(request: Request):
         pass
     context = body.get("context", "") if isinstance(body, dict) else ""
 
-    _seed_job = {"status": "running", "progress": "Starting…"}
+    _seed_job = {
+        "state":    "waiting_for_ingest",
+        "status":   "running",
+        "progress": "Waiting for ingest…",
+        "context":  context,
+        "item_count":     0,
+        "ingest_pending": 0,
+    }
     threading.Thread(target=_run_seed_job, args=(context,), daemon=True).start()
-    return {"status": "running", "progress": "Starting…"}
+    return _seed_job
+
+
+@app.patch("/seed/context")
+async def seed_update_context(request: Request):
+    """Update the context string while waiting for ingest."""
+    body = await request.json()
+    _seed_job["context"] = body.get("context", "")
+    return {"ok": True}
 
 
 @app.get("/seed/status")
@@ -1895,9 +1942,61 @@ def seed_apply(body: dict, background_tasks: BackgroundTasks):
 
     background_tasks.add_task(_seed_embed_and_correlate)
 
+    # Transition state machine → reanalyzing
+    _seed_job.update({
+        "state":    "reanalyzing",
+        "status":   "running",
+        "progress": "Re-analyzing all items with new project config…",
+    })
+    threading.Thread(target=_run_reanalyze, daemon=True).start()
+
+    def _monitor_reanalyze() -> None:
+        import time
+        time.sleep(1)
+        while scan_state.get("running"):
+            _seed_job["progress"] = scan_state.get("message", "Re-analyzing…")
+            time.sleep(2)
+        _seed_job.update({
+            "state":    "scan_prompt",
+            "status":   "running",
+            "progress": "Re-analysis complete.",
+        })
+
+    threading.Thread(target=_monitor_reanalyze, daemon=True).start()
+
     return {
         "ok":             True,
         "projects_added": projects_added,
         "topics_added":   topics_added,
         "items_retagged": items_retagged,
     }
+
+
+@app.post("/seed/scan")
+def seed_run_scan():
+    """Transition from scan_prompt → scanning, then → done."""
+    global _seed_job
+    if scan_state["running"]:
+        raise HTTPException(status_code=409, detail="A scan is already running.")
+    _seed_job.update({"state": "scanning", "status": "running", "progress": "Starting scan…"})
+    sources = ["slack", "github", "jira", "outlook", "teams"]
+    threading.Thread(target=_run_scan, args=(sources,), daemon=True).start()
+
+    def _monitor_scan() -> None:
+        import time
+        time.sleep(1)
+        while scan_state.get("running"):
+            _seed_job["progress"] = scan_state.get("message", "Scanning…")
+            time.sleep(2)
+        _seed_job.update({"state": "done", "status": "done", "progress": "Setup complete."})
+
+    threading.Thread(target=_monitor_scan, daemon=True).start()
+    return {"ok": True}
+
+
+@app.post("/seed/skip_scan")
+def seed_skip_scan():
+    """Transition from scan_prompt → done without running a scan."""
+    global _seed_job
+    _seed_job.update({"state": "done", "status": "done", "progress": "Setup complete."})
+    return {"ok": True}

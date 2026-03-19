@@ -793,30 +793,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
       <span>Bootstrap Project Intelligence</span>
       <button class="close-btn" onclick="closeSeed()">✕</button>
     </div>
-    <div class="modal-body" id="seedBody">
-      <div class="field-hint" style="margin-bottom:12px">
-        <strong style="color:var(--text)">Before running Seed, you must have items in the database.</strong>
-        Run your sidecar script to ingest emails first — the LLM will process them automatically as they arrive.
-        Once you have a body of data, come back here and click Analyse.
-        <br><br>
-        Seed reads all stored items (prioritising passdowns) and identifies your active projects and recurring concerns.
-        After you review and apply the results, embeddings and situation formation run in the background to warm the correlation system.
-        You can re-run Seed at any time as more data accumulates.
-      </div>
-      <div class="field">
-        <label>Context (optional)</label>
-        <textarea id="seedContext" rows="3" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:6px 8px;font-size:11px;resize:vertical" placeholder="e.g. I work in industrial automation, supporting three shift crews on a continuous production line"></textarea>
-      </div>
-      <div id="seedProgress" style="display:none;margin:12px 0;font-size:11px;color:var(--muted)"></div>
-      <div id="seedResults" style="display:none"></div>
-    </div>
-    <div class="modal-foot">
-      <span class="settings-msg" id="seedMsg"></span>
-      <div style="display:flex;gap:8px">
-        <button class="save-btn" id="seedRunBtn" onclick="runSeed()">▶ Analyse</button>
-        <button class="save-btn" id="seedApplyBtn" style="display:none" onclick="applySeed()">✓ Apply</button>
-      </div>
-    </div>
+    <div class="modal-body" id="seedBody"></div>
+    <div class="modal-foot" id="seedFoot"></div>
   </div>
 </div>
 
@@ -2017,96 +1995,192 @@ async function connectTeams() {
   window.location.href = '/page/api/teams/connect';
 }
 
-let _seedResults = null;
+// ── Seed state machine ────────────────────────────────────────────────────────
+
+let _seedPollTimer = null;
 
 function openSeed() {
   $('seedModal').classList.add('open');
-  $('seedProgress').style.display = 'none';
-  $('seedResults').style.display  = 'none';
-  $('seedApplyBtn').style.display = 'none';
-  $('seedRunBtn').style.display   = '';
-  $('seedMsg').textContent        = '';
-  _seedResults = null;
+  renderSeedState({ state: 'start' });
 }
 
 function closeSeed() {
+  stopSeedPolling();
   $('seedModal').classList.remove('open');
 }
 
-async function runSeed() {
-  const ctx = $('seedContext').value.trim();
-  $('seedRunBtn').disabled        = true;
-  $('seedProgress').style.display = '';
-  $('seedProgress').textContent   = 'Starting…';
-  $('seedResults').style.display  = 'none';
-  $('seedApplyBtn').style.display = 'none';
-  $('seedMsg').textContent        = '';
-  try {
-    const body = {};
-    if (ctx) body.context = ctx;
-    await api('/seed', 'POST', body);
-    // Poll for completion
-    while (true) {
-      await new Promise(r => setTimeout(r, 3000));
+function startSeedPolling() {
+  stopSeedPolling();
+  _seedPollTimer = setInterval(async () => {
+    try {
       const st = await api('/seed/status', 'GET');
-      $('seedProgress').textContent = st.progress || 'Analysing…';
-      if (st.status === 'done') {
-        _seedResults = st;
-        renderSeedResults(st);
-        $('seedResults').style.display  = '';
-        $('seedApplyBtn').style.display = '';
-        break;
-      } else if (st.status === 'error') {
-        $('seedProgress').textContent = 'Error: ' + (st.progress || 'unknown error');
-        $('seedRunBtn').disabled = false;
-        break;
+      renderSeedState(st);
+      if (['done','error'].includes(st.state)) stopSeedPolling();
+    } catch(e) { /* ignore transient */ }
+  }, 2500);
+}
+
+function stopSeedPolling() {
+  if (_seedPollTimer) { clearInterval(_seedPollTimer); _seedPollTimer = null; }
+}
+
+function renderSeedState(st) {
+  const body = $('seedBody');
+  const foot = $('seedFoot');
+  const state = st.state || st.status || 'start';
+
+  switch (state) {
+
+    case 'start':
+      body.innerHTML = `
+        <p style="margin:0 0 10px;font-size:13px;color:var(--fg)">
+          Seed analyses your existing emails to suggest project tags and topic
+          watch-words, then re-analyses everything with that new context.
+        </p>
+        <p style="margin:0 0 10px;font-size:13px;color:var(--fg)">
+          <strong>Before starting:</strong> run the Outlook sidecar to ingest
+          your emails. Seed will wait for the ingest to complete automatically.
+        </p>
+        <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">
+          Optional context for the LLM (your role, team, focus areas)
+        </label>
+        <textarea id="seedCtxInput" rows="3"
+          style="width:100%;box-sizing:border-box;background:var(--bg2);color:var(--fg);
+                 border:1px solid var(--border);border-radius:4px;padding:6px;font-size:12px;resize:vertical"
+          placeholder="e.g. I am a network operations manager. My team handles ISP backbone infrastructure…"></textarea>`;
+      foot.innerHTML = `
+        <button class="btn" onclick="closeSeed()">Cancel</button>
+        <button class="btn primary" onclick="startSeedProcess()">Start Seed</button>`;
+      break;
+
+    case 'waiting_for_ingest':
+      body.innerHTML = `
+        <p style="margin:0 0 8px;font-size:13px;color:var(--fg)">
+          Waiting for Outlook sidecar ingest to complete…
+        </p>
+        <p style="margin:0;font-size:12px;color:var(--muted)">
+          ${esc(st.progress || 'Monitoring ingest queue…')}
+        </p>`;
+      foot.innerHTML = `<button class="btn" onclick="closeSeed()">Cancel</button>`;
+      break;
+
+    case 'analyzing':
+    case 'running':
+      body.innerHTML = `
+        <p style="margin:0 0 8px;font-size:13px;color:var(--fg)">Analysing your emails…</p>
+        <p style="margin:0;font-size:12px;color:var(--muted)">${esc(st.progress || 'Working…')}</p>`;
+      foot.innerHTML = `<button class="btn" onclick="closeSeed()">Cancel</button>`;
+      break;
+
+    case 'review': {
+      const projects = st.projects || [];
+      const topics   = st.topics   || [];
+      let html = `<p style="margin:0 0 10px;font-size:12px;color:var(--muted)">
+        Review the suggested projects and topics. Edit or remove any before applying.</p>`;
+
+      html += `<div class="seed-section">
+        <div class="seed-section-head">Suggested Projects (${projects.length})</div>
+        <div id="seedProjectList">`;
+      if (!projects.length) {
+        html += `<div style="font-size:11px;color:var(--muted)">No projects identified.</div>`;
+      } else {
+        projects.forEach((p, i) => {
+          html += `<div class="seed-project-row">
+            <input id="sp-name-${i}" value="${esc(p.name)}" placeholder="Project name">
+            <textarea id="sp-kw-${i}" placeholder="keywords, comma separated">${esc((p.keywords||[]).join(', '))}</textarea>
+            <button class="ia del" onclick="this.closest('.seed-project-row').remove()">✕</button>
+          </div>`;
+        });
       }
+      html += `</div></div>`;
+
+      html += `<div class="seed-section" style="margin-top:14px">
+        <div class="seed-section-head">Suggested Topics (${topics.length})</div>
+        <div id="seedTopicList" style="display:flex;flex-wrap:wrap;gap:2px;margin-bottom:4px">`;
+      if (!topics.length) {
+        html += `<span style="font-size:11px;color:var(--muted)">No topics identified.</span>`;
+      } else {
+        topics.forEach((t, i) => {
+          html += `<span class="seed-topic-chip" id="st-chip-${i}">${esc(t)}<button onclick="this.closest('.seed-topic-chip').remove()">✕</button></span>`;
+        });
+      }
+      html += `</div></div>`;
+
+      body.innerHTML = html;
+      foot.innerHTML = `
+        <button class="btn" onclick="closeSeed()">Cancel</button>
+        <button class="btn primary" onclick="applySeedConfig()">Apply &amp; Re-analyse</button>`;
+      break;
     }
+
+    case 'applying':
+      body.innerHTML = `
+        <p style="margin:0 0 8px;font-size:13px;color:var(--fg)">Applying project settings…</p>
+        <p style="margin:0;font-size:12px;color:var(--muted)">${esc(st.progress || 'Saving…')}</p>`;
+      foot.innerHTML = ``;
+      break;
+
+    case 'reanalyzing':
+      body.innerHTML = `
+        <p style="margin:0 0 8px;font-size:13px;color:var(--fg)">Re-analysing all items with new project context…</p>
+        <p style="margin:0;font-size:12px;color:var(--muted)">${esc(st.progress || 'Working…')}</p>`;
+      foot.innerHTML = ``;
+      break;
+
+    case 'scan_prompt':
+      body.innerHTML = `
+        <p style="margin:0 0 8px;font-size:13px;color:var(--fg)">
+          Re-analysis complete. Would you like to run a full scan now to pull in any
+          new items from connected sources?
+        </p>`;
+      foot.innerHTML = `
+        <button class="btn" onclick="seedSkipScan()">Skip</button>
+        <button class="btn primary" onclick="seedRunScan()">Run Scan</button>`;
+      break;
+
+    case 'scanning':
+      body.innerHTML = `
+        <p style="margin:0 0 8px;font-size:13px;color:var(--fg)">Scanning sources…</p>
+        <p style="margin:0;font-size:12px;color:var(--muted)">${esc(st.progress || 'Working…')}</p>`;
+      foot.innerHTML = ``;
+      break;
+
+    case 'done':
+      body.innerHTML = `
+        <p style="margin:0 0 8px;font-size:13px;color:var(--fg)">
+          Seed complete. Your project intelligence has been applied and all items
+          have been re-analysed.
+        </p>
+        <p style="margin:0;font-size:12px;color:var(--muted)">${esc(st.progress || '')}</p>`;
+      foot.innerHTML = `<button class="btn primary" onclick="closeSeed(); Promise.all([loadStats(),loadItems(),loadTodos(),loadIntel(),loadSituations()])">Close</button>`;
+      break;
+
+    case 'error':
+      body.innerHTML = `
+        <p style="margin:0 0 8px;font-size:13px;color:var(--red)">Seed failed.</p>
+        <p style="margin:0;font-size:12px;color:var(--muted)">${esc(st.progress || st.error || 'Unknown error')}</p>`;
+      foot.innerHTML = `
+        <button class="btn" onclick="closeSeed()">Close</button>
+        <button class="btn primary" onclick="renderSeedState({state:'start'})">Try Again</button>`;
+      break;
+
+    default:
+      body.innerHTML = `<p style="font-size:12px;color:var(--muted)">${esc(st.progress || state)}</p>`;
+      foot.innerHTML = `<button class="btn" onclick="closeSeed()">Close</button>`;
+  }
+}
+
+async function startSeedProcess() {
+  const ctx = ($('seedCtxInput') || {}).value || '';
+  try {
+    await api('/seed', 'POST', ctx.trim() ? { context: ctx.trim() } : {});
+    startSeedPolling();
   } catch(e) {
-    $('seedProgress').textContent = 'Analysis failed: ' + e.message;
-  } finally {
-    $('seedRunBtn').disabled = false;
+    renderSeedState({ state: 'error', progress: e.message });
   }
 }
 
-function renderSeedResults(res) {
-  const projects = res.projects || [];
-  const topics   = res.topics   || [];
-  let html = '';
-
-  html += `<div class="seed-section">
-    <div class="seed-section-head">Suggested Projects (${projects.length})</div>
-    <div id="seedProjectList">`;
-  if (!projects.length) {
-    html += `<div style="font-size:11px;color:var(--muted)">No projects identified.</div>`;
-  } else {
-    projects.forEach((p, i) => {
-      html += `<div class="seed-project-row">
-        <input id="sp-name-${i}" value="${esc(p.name)}" placeholder="Project name">
-        <textarea id="sp-kw-${i}" placeholder="keywords, comma separated">${esc((p.keywords||[]).join(', '))}</textarea>
-        <button class="ia del" onclick="this.closest('.seed-project-row').remove()">✕</button>
-      </div>`;
-    });
-  }
-  html += `</div></div>`;
-
-  html += `<div class="seed-section" style="margin-top:14px">
-    <div class="seed-section-head">Suggested Topics (${topics.length})</div>
-    <div id="seedTopicList" style="display:flex;flex-wrap:wrap;gap:2px;margin-bottom:4px">`;
-  if (!topics.length) {
-    html += `<span style="font-size:11px;color:var(--muted)">No topics identified.</span>`;
-  } else {
-    topics.forEach((t, i) => {
-      html += `<span class="seed-topic-chip" id="st-chip-${i}">${esc(t)}<button onclick="this.closest('.seed-topic-chip').remove()">✕</button></span>`;
-    });
-  }
-  html += `</div></div>`;
-
-  $('seedResults').innerHTML = html;
-}
-
-async function applySeed() {
-  // Read back edited values from DOM
+async function applySeedConfig() {
   const projectRows = document.querySelectorAll('#seedProjectList .seed-project-row');
   const projects = [];
   projectRows.forEach(row => {
@@ -2117,23 +2191,36 @@ async function applySeed() {
     const kws  = kwEl.value.split(',').map(s => s.trim()).filter(Boolean);
     if (name) projects.push({ name, keywords: kws });
   });
-
   const topicChips = document.querySelectorAll('#seedTopicList .seed-topic-chip');
   const topics = Array.from(topicChips).map(c => c.textContent.replace('✕','').trim()).filter(Boolean);
 
-  $('seedApplyBtn').disabled = true;
-  $('seedMsg').textContent   = 'Applying…';
+  renderSeedState({ state: 'applying', progress: 'Saving settings…' });
   try {
-    const res = await api('/seed/apply', 'POST', { projects, topics, retag: true });
-    $('seedMsg').textContent = `Done — ${res.projects_added} project${res.projects_added!==1?'s':''} added, ${res.items_retagged} item${res.items_retagged!==1?'s':''} re-tagged. Embeddings + situations building in background.`;
+    await api('/seed/apply', 'POST', { projects, topics, retag: true });
     await loadSettings();
-    await loadItems();
-    await loadStats();
+    // Backend transitions to reanalyzing automatically; poll for it
+    startSeedPolling();
   } catch(e) {
-    $('seedMsg').style.color = 'var(--red)';
-    $('seedMsg').textContent = 'Failed: ' + e.message;
-  } finally {
-    $('seedApplyBtn').disabled = false;
+    renderSeedState({ state: 'error', progress: e.message });
+  }
+}
+
+async function seedRunScan() {
+  try {
+    await api('/seed/scan', 'POST');
+    startSeedPolling();
+  } catch(e) {
+    renderSeedState({ state: 'error', progress: e.message });
+  }
+}
+
+async function seedSkipScan() {
+  try {
+    await api('/seed/skip_scan', 'POST');
+    const st = await api('/seed/status', 'GET');
+    renderSeedState(st);
+  } catch(e) {
+    renderSeedState({ state: 'done', progress: '' });
   }
 }
 
