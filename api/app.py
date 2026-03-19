@@ -70,6 +70,8 @@ situations_tbl = db.table("situations")
 intel_tbl      = db.table("intel")
 Q            = Query()
 db_lock      = threading.Lock()
+# Limits concurrent Ollama calls — set to 1 for single GPU, raise for multi-GPU
+_ollama_sem  = threading.Semaphore(1)
 
 # Single-slot job state for the seed background job (one user, one job at a time)
 _seed_job: dict = {"status": "idle"}
@@ -258,7 +260,8 @@ def _run_scan(sources: list[str]) -> None:
                 "message":        f"[{item.source}] {i + 1}/{len(all_items)}: {item.title[:60]}",
             })
             try:
-                results.append(analyze(item))
+                with _ollama_sem:
+                    results.append(analyze(item))
             except Exception as e:
                 print(f"[agent] {item.item_id}: {e}")
 
@@ -362,7 +365,8 @@ def _run_reanalyze() -> None:
                 },
             )
             try:
-                result = analyze(item)
+                with _ollama_sem:
+                    result = analyze(item)
                 results.append(result)
             except Exception as e:
                 print(f"[reanalyze] {item.item_id}: {e}")
@@ -739,7 +743,8 @@ def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             scan_state["ingest_pending"] += len(raw)
         for item in raw:
             try:
-                result = analyze(item)
+                with _ollama_sem:
+                    result = analyze(item)
                 _save_analysis(result)
                 threading.Thread(
                     target=_maybe_form_situation,
@@ -1657,18 +1662,19 @@ def _run_seed_job(context: str) -> None:
                 items_block=items_block,
             )
             try:
-                resp = http_requests.post(
-                    config.OLLAMA_URL,
-                    headers=config.ollama_headers(),
-                    json={
-                        "model":   config.OLLAMA_MODEL,
-                        "prompt":  prompt,
-                        "stream":  False,
-                        "format":  "json",
-                        "options": {"temperature": 0.2, "num_predict": 300},
-                    },
-                    timeout=120,
-                )
+                with _ollama_sem:
+                    resp = http_requests.post(
+                        config.OLLAMA_URL,
+                        headers=config.ollama_headers(),
+                        json={
+                            "model":   config.OLLAMA_MODEL,
+                            "prompt":  prompt,
+                            "stream":  False,
+                            "format":  "json",
+                            "options": {"temperature": 0.2, "num_predict": 300},
+                        },
+                        timeout=120,
+                    )
                 resp.raise_for_status()
                 data = json.loads(resp.json().get("response", "{}"))
                 map_results.append(data)
@@ -1708,18 +1714,19 @@ def _run_seed_job(context: str) -> None:
         )
 
         try:
-            resp = http_requests.post(
-                config.OLLAMA_URL,
-                headers=config.ollama_headers(),
-                json={
-                    "model":   config.OLLAMA_MODEL,
-                    "prompt":  reduce_prompt,
-                    "stream":  False,
-                    "format":  "json",
-                    "options": {"temperature": 0.2, "num_predict": 400},
-                },
-                timeout=120,
-            )
+            with _ollama_sem:
+                resp = http_requests.post(
+                    config.OLLAMA_URL,
+                    headers=config.ollama_headers(),
+                    json={
+                        "model":   config.OLLAMA_MODEL,
+                        "prompt":  reduce_prompt,
+                        "stream":  False,
+                        "format":  "json",
+                        "options": {"temperature": 0.2, "num_predict": 400},
+                    },
+                    timeout=120,
+                )
             resp.raise_for_status()
             final    = json.loads(resp.json().get("response", "{}"))
             projects = final.get("projects", [])
