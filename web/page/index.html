@@ -795,7 +795,13 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
     </div>
     <div class="modal-body" id="seedBody">
       <div class="field-hint" style="margin-bottom:12px">
-        One-time bootstrap: run <code style="font-size:10px;background:rgba(255,255,255,.06);padding:1px 4px;border-radius:3px">python outlook_sidecar.py --seed</code> first to load 30 days of email, then click Analyse. The LLM reads all stored items — prioritising passdowns — to identify your active projects and recurring concerns. After you apply, embeddings and situation formation run automatically in the background to warm the correlation system.
+        <strong style="color:var(--text)">Before running Seed, you must have items in the database.</strong>
+        Run your sidecar script to ingest emails first — the LLM will process them automatically as they arrive.
+        Once you have a body of data, come back here and click Analyse.
+        <br><br>
+        Seed reads all stored items (prioritising passdowns) and identifies your active projects and recurring concerns.
+        After you review and apply the results, embeddings and situation formation run in the background to warm the correlation system.
+        You can re-run Seed at any time as more data accumulates.
       </div>
       <div class="field">
         <label>Context (optional)</label>
