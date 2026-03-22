@@ -28,10 +28,22 @@ User / project / topic context:
     ``USER_EMAIL`` — email address used in LLM prompts and Slack pre-filtering.
     ``FOCUS_TOPICS`` — list of general watch-topic keywords (populated from a
     comma-separated ``FOCUS_TOPICS`` env var).
-    ``PROJECTS`` — list of project dicts, each with ``name``, ``keywords``,
-    ``channels``, ``learned_keywords``, and ``learned_senders`` keys
-    (populated from a JSON-encoded ``PROJECTS`` env var; ``learned_keywords``
-    and ``learned_senders`` are grown at runtime via the tagging workflow).
+    ``PROJECTS`` — list of project dicts, each with the following keys:
+        ``name``             — unique project identifier shown in the UI and used
+                               as the ``project_tag`` on analysis records.
+        ``keywords``         — static keywords configured by the user.
+        ``channels``         — Slack/Teams channel names to pre-filter by.
+        ``description``      — optional free-text description passed to the LLM
+                               to help it distinguish projects with similar names.
+        ``parent``           — optional parent project name; when set and valid,
+                               the LLM prompt notes the sub-project relationship.
+        ``senders``          — static list of email addresses or group aliases
+                               associated with this project.
+        ``learned_keywords`` — keywords grown at runtime via the tagging workflow.
+        ``learned_senders``  — email addresses grown at runtime via the tagging
+                               workflow.
+    Populated from a JSON-encoded ``PROJECTS`` env var; ``learned_keywords``
+    and ``learned_senders`` are grown at runtime via ``apply_overrides``.
     ``NOISE_KEYWORDS`` — list of keyword strings learned from items that have
     been marked as irrelevant; not set via env var, only via ``apply_overrides``.
 
@@ -128,9 +140,10 @@ def apply_overrides(d: dict) -> None:
     Hot-reload config from a saved-settings dict without restarting the container.
 
     Called on startup (if saved settings exist in the DB) and after every
-    successful ``POST /settings`` request.  Handles all string credential
-    fields, ``slack_user_tokens``, ``slack_channels``, ``focus_topics``,
-    ``projects``, ``noise_keywords``, and ``lookback_hours``.
+    successful ``POST /settings`` or OAuth callback.  Handles all string
+    credential fields, ``slack_user_tokens``, ``teams_user_tokens``,
+    ``slack_channels``, ``focus_topics``, ``projects``, ``noise_keywords``,
+    and ``lookback_hours``.
 
     :param d: Dict of setting key/value pairs, as stored in the ``settings``
               TinyDB table or posted by the frontend.

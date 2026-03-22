@@ -300,6 +300,40 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .seed-topic-chip { display:inline-flex;align-items:center;gap:4px;background:rgba(64,184,255,.08);border:1px solid rgba(64,184,255,.2);color:var(--blue);border-radius:12px;padding:2px 8px;font-size:10px;margin:2px; }
 .seed-topic-chip button { background:none;border:none;color:var(--muted);cursor:pointer;padding:0;line-height:1; }
 
+/* ── Help button ── */
+.help-btn {
+  background: none; border: 1px solid var(--border2); color: var(--muted);
+  cursor: pointer; padding: 5px 9px; border-radius: var(--r); font-size: 13px;
+  font-weight: 700; font-family: var(--display); letter-spacing: .04em;
+  transition: all .15s; line-height: 1;
+}
+.help-btn:hover { border-color: var(--text); color: var(--text); }
+
+/* ── Help modal ── */
+.help-modal {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  width: 600px; max-height: 84vh; background: var(--surface);
+  border: 1px solid var(--border2); border-radius: var(--r);
+  display: none; flex-direction: column; z-index: 101;
+  box-shadow: 0 24px 64px rgba(0,0,0,.7);
+}
+.help-modal.open { display: flex; }
+.help-section { margin-bottom: 22px; }
+.help-section h3 {
+  font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted);
+  margin: 0 0 10px; padding-bottom: 7px; border-bottom: 1px solid var(--border);
+}
+.help-section p { font-size: 12px; color: var(--text); line-height: 1.6; margin: 0 0 8px; }
+.help-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 8px; }
+.help-table th { text-align: left; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); padding: 4px 8px 6px; border-bottom: 1px solid var(--border); }
+.help-table td { padding: 5px 8px; vertical-align: top; border-bottom: 1px solid var(--border); color: var(--text); line-height: 1.5; }
+.help-table td:first-child { color: var(--accent); font-family: var(--mono); white-space: nowrap; font-weight: 600; }
+.help-table tr:last-child td { border-bottom: none; }
+.help-kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 11px; margin-bottom: 6px; }
+.help-kv dt { color: var(--accent); font-family: var(--mono); font-weight: 600; white-space: nowrap; padding-top: 1px; }
+.help-kv dd { color: var(--text); line-height: 1.5; margin: 0; }
+.help-tip { background: rgba(64,184,255,.06); border-left: 2px solid var(--blue); padding: 7px 10px; border-radius: 0 var(--r) var(--r) 0; font-size: 11px; color: var(--text); line-height: 1.55; margin-top: 6px; }
+
 /* ── Settings button ── */
 .gear-btn {
   background: none; border: 1px solid var(--border2); color: var(--muted);
@@ -681,10 +715,11 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
         <button class="src-btn on-jira"    data-src="jira"    onclick="toggleSrc(this)">Jira</button>
         <button class="src-btn on-teams"  data-src="teams"   onclick="toggleSrc(this)">Teams</button>
       </div>
-      <button class="scan-btn" id="seedBtn" onclick="openSeed()" title="Bootstrap project intelligence from existing data" style="background:rgba(212,160,23,.08);border-color:var(--amber);color:var(--amber)">◈ Seed</button>
-      <button class="scan-btn" id="reanalyzeBtn" onclick="startReanalyze()" title="Re-run LLM analysis on all stored items with current project settings" style="background:rgba(64,184,255,.06);border-color:var(--blue);color:var(--blue)">↺ Re-analyze</button>
+      <button class="scan-btn" id="seedBtn" onclick="openSeed()" title="Bootstrap project intelligence from existing data" style="background:rgba(212,160,23,.08);border-color:var(--amber);color:var(--amber);min-width:90px">◈ Seed</button>
+      <button class="scan-btn" id="reanalyzeBtn" onclick="startReanalyze()" title="Re-run LLM analysis on all stored items with current project settings" style="background:rgba(64,184,255,.06);border-color:var(--blue);color:var(--blue);min-width:90px">↺ Re-analyze</button>
+      <button class="help-btn" onclick="openHelp()" title="Help">?</button>
       <button class="gear-btn" onclick="openSettings()" title="Settings">⚙</button>
-      <button class="scan-btn" id="scanBtn" onclick="startScan()">▶ Scan</button>
+      <button class="scan-btn" id="scanBtn" onclick="startScan()" style="min-width:90px">▶ Scan</button>
     </div>
   </div>
 
@@ -902,6 +937,136 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
       <button class="save-btn" style="border-color:var(--red);color:var(--red)" onclick="clearDb()">Clear DB</button>
       <button class="save-btn" onclick="saveSettings()">Save</button>
     </div>
+  </div>
+</div>
+
+<!-- Help Modal -->
+<div class="modal-backdrop" id="helpBackdrop" onclick="closeHelp()"></div>
+<div class="help-modal" id="helpModal">
+  <div class="modal-head">
+    <span class="modal-head-title">HELP</span>
+    <button class="modal-close" onclick="closeHelp()">✕</button>
+  </div>
+  <div class="modal-body">
+
+    <div class="help-section">
+      <h3>Overview</h3>
+      <p>Squire ingests messages from Outlook, Slack, GitHub, Jira, and Microsoft Teams, runs each one through a local LLM, and surfaces what needs your attention. Every item gets a priority, category, action items, and a project tag.</p>
+      <div class="help-tip">All analysis runs locally via Ollama — no data leaves your infrastructure.</div>
+    </div>
+
+    <div class="help-section">
+      <h3>Topbar buttons</h3>
+      <table class="help-table">
+        <tr><th>Button</th><th>What it does</th></tr>
+        <tr><td>▶ Scan</td><td>Fetch new items from all enabled sources (Outlook, Slack, GitHub, Jira, Teams) and run LLM analysis on anything new. Turns into <strong>■ Stop</strong> while running.</td></tr>
+        <tr><td>↺ Re-analyze</td><td>Re-run LLM analysis on every stored item using your current project settings. Use this after adding projects or changing keywords. Turns into <strong>■ Stop</strong> while running.</td></tr>
+        <tr><td>◈ Seed</td><td>Bootstrap project intelligence from your existing data — the LLM reads your stored items and proposes project names, keywords, and watch topics you can review and apply before running a full analysis.</td></tr>
+        <tr><td>?</td><td>This help panel.</td></tr>
+        <tr><td>⚙</td><td>Settings — configure your identity, Ollama endpoint, projects, connectors, and credentials.</td></tr>
+      </table>
+    </div>
+
+    <div class="help-section">
+      <h3>Source toggles</h3>
+      <p>The pill buttons (Outlook, Slack, GitHub, Jira, Teams) in the topbar filter which sources are shown in the item list. They also control which sources are included in the next scan — only active (lit) sources are scanned.</p>
+    </div>
+
+    <div class="help-section">
+      <h3>Left sidebar — filters</h3>
+      <table class="help-table">
+        <tr><th>Filter</th><th>Meaning</th></tr>
+        <tr><td>All / User / Project / Topic / General</td><td>Hierarchy tier. <strong>User</strong> = directly addressed to you. <strong>Project</strong> = related to a configured project. <strong>Topic</strong> = matches a watch topic. <strong>General</strong> = everything else.</td></tr>
+        <tr><td>Passdowns</td><td>Shift handoff notes detected by subject or body pattern.</td></tr>
+        <tr><td>Projects list</td><td>Click a project name to filter to its items. Click again to clear. The count next to each name reflects the current filter.</td></tr>
+      </table>
+    </div>
+
+    <div class="help-section">
+      <h3>Item list</h3>
+      <p>Items are sorted by priority (high first), then by timestamp. Click any row to open the detail panel. Each row shows priority, category, title with project badge, source icon, and timestamp.</p>
+      <dl class="help-kv">
+        <dt>◈</dt><dd>Tag the item to a project. Opens a picker with all configured projects. Select a project to tag; the system learns keywords and senders from the item in the background.</dd>
+        <dt>✕ noise</dt><dd>Mark the item as noise. Sets category to noise/low and teaches the noise filter its keywords so similar items are deprioritised in future scans.</dd>
+      </dl>
+    </div>
+
+    <div class="help-section">
+      <h3>Priority and category</h3>
+      <table class="help-table">
+        <tr><th>Priority</th><th>Meaning</th></tr>
+        <tr><td>high</td><td>Urgent — time-sensitive, someone is waiting, or a hard deadline is imminent.</td></tr>
+        <tr><td>medium</td><td>Important but not immediately urgent.</td></tr>
+        <tr><td>low</td><td>Informational, no near-term action required.</td></tr>
+      </table>
+      <table class="help-table" style="margin-top:8px">
+        <tr><th>Category</th><th>Meaning</th></tr>
+        <tr><td>reply_needed</td><td>Someone is waiting on a response from you.</td></tr>
+        <tr><td>task</td><td>A concrete piece of work you need to do.</td></tr>
+        <tr><td>deadline</td><td>A hard date is approaching.</td></tr>
+        <tr><td>review</td><td>Something needs your review or approval.</td></tr>
+        <tr><td>approval</td><td>An explicit sign-off is required from you.</td></tr>
+        <tr><td>fyi</td><td>Informational — no action required but worth knowing.</td></tr>
+        <tr><td>noise</td><td>Irrelevant to your work — marketing, automated alerts, etc.</td></tr>
+      </table>
+    </div>
+
+    <div class="help-section">
+      <h3>Situations</h3>
+      <p>Situations are cross-source groupings of related items that the system identifies as part of the same operational thread — for example, an email thread, a Slack conversation, and a Jira ticket all about the same issue. Each situation has a status, a composite urgency score, and a deduplicated action list.</p>
+      <dl class="help-kv">
+        <dt>Status</dt><dd>blocked · in_progress · waiting · needs_decision · informational</dd>
+        <dt>Score</dt><dd>Composite urgency — higher means more attention needed now.</dd>
+        <dt>Dismiss</dt><dd>Hides the situation from the list without deleting the underlying items.</dd>
+      </dl>
+    </div>
+
+    <div class="help-section">
+      <h3>Projects</h3>
+      <p>Projects are named workstreams the LLM uses to tag and group items. Configure them in Settings.</p>
+      <dl class="help-kv">
+        <dt>Name</dt><dd>Exact name used for tagging. The LLM will only assign this name — it will not invent variations.</dd>
+        <dt>Parent</dt><dd>Optional parent project. When set, the LLM prefers this sub-project over its parent when both could match.</dd>
+        <dt>Description</dt><dd>Free-text scope, location, or purpose. Shown to the LLM to help it classify ambiguous items.</dd>
+        <dt>Keywords</dt><dd>Comma-separated terms. Any item whose title or body contains these terms is a candidate for this project.</dd>
+        <dt>Senders</dt><dd>Comma-separated email addresses or display names. Items from these senders are tagged to this project deterministically before the LLM runs.</dd>
+      </dl>
+      <div class="help-tip">After changing project settings, run <strong>↺ Re-analyze</strong> to re-tag all stored items with the updated config.</div>
+    </div>
+
+    <div class="help-section">
+      <h3>Project learning</h3>
+      <p>When you manually tag an item to a project (via ◈), Squire extracts keywords from the item in the background and adds them to the project's learned keyword list. It also records the sender's address in the project's learned senders list. Both feed into future scans automatically.</p>
+      <p>You can inspect and remove learned keywords and senders from the project row in Settings → Projects (click <strong>inspect</strong>).</p>
+    </div>
+
+    <div class="help-section">
+      <h3>Seed — bootstrap intelligence</h3>
+      <p>If you have existing items in the database but haven't configured projects yet, Seed analyses a sample of them and proposes project names, keywords, and watch topics. Review and edit the suggestions, then click <strong>Apply</strong> to save them to Settings and optionally kick off a full re-analysis.</p>
+    </div>
+
+    <div class="help-section">
+      <h3>Email ingestion (Outlook / Thunderbird)</h3>
+      <p>Email is fed in from a sidecar script running on the host machine. Run the appropriate script on a schedule (e.g. Windows Task Scheduler or cron every 30 minutes):</p>
+      <dl class="help-kv">
+        <dt>Windows</dt><dd><code>python scripts/outlook_sidecar.py --setup</code> once, then schedule the normal run.</dd>
+        <dt>Ubuntu</dt><dd><code>python scripts/thunderbird_sidecar.py</code> via cron.</dd>
+      </dl>
+      <p>The API deduplicates by message ID so re-running is safe.</p>
+    </div>
+
+    <div class="help-section">
+      <h3>Keyboard shortcuts</h3>
+      <table class="help-table">
+        <tr><th>Key</th><th>Action</th></tr>
+        <tr><td>Escape</td><td>Close open panel or modal</td></tr>
+        <tr><td>/</td><td>Focus search</td></tr>
+      </table>
+    </div>
+
+  </div>
+  <div class="modal-foot" style="justify-content:flex-end">
+    <button class="save-btn" onclick="closeHelp()">Close</button>
   </div>
 </div>
 
@@ -1854,9 +2019,14 @@ function closeDetail() {
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
+    if ($('helpModal').classList.contains('open'))     { closeHelp();     return; }
     if ($('settingsModal').classList.contains('open')) { closeSettings(); return; }
     if ($('detailPanel').classList.contains('open'))   { closeDetail();   return; }
     closeSidebar();
+  }
+  if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+    e.preventDefault();
+    $('searchInput').focus();
   }
 });
 
@@ -1932,6 +2102,16 @@ function _removeSecretFields() {
     const el = $('s-' + id);
     if (el) el.remove();
   });
+}
+
+function openHelp() {
+  $('helpBackdrop').classList.add('open');
+  $('helpModal').classList.add('open');
+}
+
+function closeHelp() {
+  $('helpBackdrop').classList.remove('open');
+  $('helpModal').classList.remove('open');
 }
 
 function openSettings() {

@@ -13,16 +13,26 @@ Temperature is kept low (0.1) to favour deterministic, structured output.
 
 Key helpers:
     ``_projects_ctx()`` — builds the projects context string for the prompt,
-        including learned keywords and known senders/groups per project.
+        including ``description``, ``parent`` relationship, learned keywords,
+        channels, and known senders/groups per project (up to 20 keywords and
+        15 senders per project).
     ``_topics_ctx()``   — builds the watch-topics context string.
     ``_noise_ctx()``    — builds the noise-keywords context string (capped at 30).
     ``extract_emails(text)`` — extracts unique email addresses from a string.
     ``_match_sender(item)`` — checks whether the item's sender or recipient
-        addresses match a project's ``learned_senders`` list and returns the
-        project name as a prompt hint.  The LLM makes the final call.
+        addresses match a project's ``senders`` or ``learned_senders`` list
+        and returns the project name as a prompt hint.  The LLM makes the
+        final call.
     ``_detect_passdown(title, body)`` — deterministic regex pre-check that
-        overrides the LLM when the subject or opening lines contain the word
-        "passdown" or a phrase like "notes from <shift> shift".
+        overrides the LLM when the subject or opening lines match
+        ``_PASSDOWN_PATTERNS`` (covers "passdown", "notes from X shift",
+        "shift highlights/activities/notes/report/summary/handoff/update").
+    ``_strip_caution(body)`` — removes the standardised external-sender
+        CAUTION warning header from email bodies before storage and prompt
+        construction (matched by ``_CAUTION_PATTERN``).
+    ``_validated_project_tag(tag)`` — validates an LLM-returned project tag
+        against the configured project list, returning ``None`` for invented
+        names.
     ``extract_keywords(project_name, title, body)`` — calls the LLM to extract
         5–10 characteristic keywords from an item, used by the project and noise
         learning endpoints in ``app.py``.
@@ -144,7 +154,24 @@ Information item rules:
 
 
 def _projects_ctx() -> str:
-    """Build a readable summary of configured projects for the prompt."""
+    """
+    Build a readable summary of all configured projects for the LLM prompt.
+
+    For each project the output line includes:
+    - ``name`` — always included.
+    - ``[sub-project of <parent>]`` — appended when ``parent`` is set and
+      matches an existing project name (validates the relationship).
+    - ``— <description>`` — appended when a ``description`` is set.
+    - ``(keywords: ...)`` — combined ``keywords`` + ``learned_keywords``,
+      capped at 20.
+    - ``(channels: ...)`` — Slack/Teams channel names from ``channels``.
+    - ``(known senders: ...)`` — combined ``senders`` + ``learned_senders``,
+      capped at 15.
+
+    :return: Semicolon-separated project summaries, or ``"none configured"``
+             if ``config.PROJECTS`` is empty.
+    :rtype: str
+    """
     if not config.PROJECTS:
         return "none configured"
     # Index project names for parent lookup
@@ -174,12 +201,24 @@ def _projects_ctx() -> str:
 
 
 def _topics_ctx() -> str:
-    """Build a readable summary of watch topics for the prompt."""
+    """
+    Build a comma-separated summary of watch topics for the LLM prompt.
+
+    :return: Comma-separated ``config.FOCUS_TOPICS``, or ``"none configured"``.
+    :rtype: str
+    """
     return ", ".join(config.FOCUS_TOPICS) if config.FOCUS_TOPICS else "none configured"
 
 
 def _noise_ctx() -> str:
-    """Build a summary of learned noise keywords for the prompt."""
+    """
+    Build a comma-separated summary of noise keywords for the LLM prompt.
+
+    Capped at 30 keywords to keep the prompt size reasonable.
+
+    :return: Comma-separated noise keywords, or ``"none"`` if the list is empty.
+    :rtype: str
+    """
     return ", ".join(config.NOISE_KEYWORDS[:30]) if config.NOISE_KEYWORDS else "none"
 
 
@@ -305,12 +344,30 @@ def _match_sender(item: RawItem) -> str | None:
 
 def _detect_passdown(title: str, body: str) -> bool:
     """
-    Deterministically detect shift passdown emails by pattern-matching the
-    subject line and the first 300 characters of the body.
+    Deterministically detect shift handoff emails via ``_PASSDOWN_PATTERNS``.
 
-    Matches:
-    - Any occurrence of the word "passdown" in subject or opening lines
-    - Phrases like "notes from 2nd shift" / "notes from first shift"
+    Checks the item's title (subject line) and the first 300 characters of
+    the body.  A match forces ``is_passdown=True`` in the final ``Analysis``
+    regardless of what the LLM returns.
+
+    Patterns matched (case-insensitive, via ``_PASSDOWN_PATTERNS``):
+    - ``"passdown"`` (whole word)
+    - ``"notes from <word> shift"``
+    - ``"shift highlights"``
+    - ``"shift activities"``
+    - ``"shift notes"``
+    - ``"shift report"``
+    - ``"shift summary"``
+    - ``"shift handoff"``
+    - ``"shift handover"``
+    - ``"shift update"``
+
+    :param title: Item title or subject line.
+    :type title: str
+    :param body: Full item body text.
+    :type body: str
+    :return: ``True`` if any passdown pattern matches.
+    :rtype: bool
     """
     return bool(
         _PASSDOWN_PATTERNS.search(title)
@@ -327,12 +384,42 @@ _CAUTION_PATTERN = re.compile(
 
 
 def _strip_caution(body: str) -> str:
-    """Remove the external-sender CAUTION warning from email bodies."""
+    """
+    Remove the standard external-sender CAUTION banner from an email body.
+
+    Many mail systems prepend a boilerplate warning such as::
+
+        CAUTION: This email originated from outside the organization.
+        Do not click links or open attachments unless you recognize...
+
+    This banner adds noise to the LLM prompt and the stored body preview.
+    ``_CAUTION_PATTERN`` matches the banner and an optional "Do not click"
+    line, stripping them before the text is used further.
+
+    :param body: Raw email body text.
+    :type body: str
+    :return: Body text with the CAUTION banner removed and leading whitespace
+             stripped.
+    :rtype: str
+    """
     return _CAUTION_PATTERN.sub('', body).lstrip()
 
 
 def _validated_project_tag(tag: str | None) -> str | None:
-    """Return tag only if it exactly matches a configured project name, else None."""
+    """
+    Validate an LLM-returned project tag against the configured project list.
+
+    Prevents the LLM from inventing project names that don't exist in
+    ``config.PROJECTS``.  If ``tag`` exactly matches a configured project name
+    it is returned unchanged; otherwise ``None`` is returned.  When
+    ``config.PROJECTS`` is empty, any tag passes through (no list to validate
+    against).
+
+    :param tag: Project name returned by the LLM, or ``None``.
+    :type tag: str or None
+    :return: The validated tag, or ``None`` if it doesn't match any project.
+    :rtype: str or None
+    """
     if not tag or not config.PROJECTS:
         return tag
     valid = {p.get("name") for p in config.PROJECTS}

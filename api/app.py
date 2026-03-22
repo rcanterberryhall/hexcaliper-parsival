@@ -9,7 +9,7 @@ Key responsibilities:
 - Persisting ``Analysis`` and ``Todo`` records to TinyDB, including the
   context-aware enrichment fields: ``hierarchy``, ``is_passdown``,
   ``project_tag``, ``goals``, ``key_dates``, and ``body_preview``.
-- Serving settings, stats, and Slack OAuth endpoints to the frontend.
+- Serving settings, stats, and Slack/Teams OAuth endpoints to the frontend.
 - Project and noise learning:
     - ``POST /analyses/{item_id}/tag`` — tags an item to a project and
       triggers background LLM keyword extraction and sender/group address
@@ -17,14 +17,36 @@ Key responsibilities:
       and ``learned_senders`` lists in settings.
     - ``POST /analyses/{item_id}/noise`` — marks an item as irrelevant and
       triggers background keyword extraction into ``config.NOISE_KEYWORDS``.
-- ``POST /reset`` — truncates the analyses, todos, and scan_logs tables while
-  preserving saved settings.
-- ``GET /projects`` — returns configured projects with learned keyword counts.
-- ``GET /settings`` now returns ``user_name``, ``user_email``, ``focus_topics``,
+- ``POST /reset`` — truncates the analyses, todos, scan_logs, embeddings, and
+  situations tables while preserving saved settings.
+- ``GET /projects`` — returns configured projects with learned keyword counts,
+  sender counts, and embedding statistics.
+- ``GET /settings`` returns ``user_name``, ``user_email``, ``focus_topics``,
   ``projects``, and ``noise_keywords`` in addition to all credential fields.
+- Situation layer: ``_maybe_form_situation`` correlates related items into
+  cross-source ``Situation`` records via ``correlator``.  Scores decay every
+  30 minutes in a background thread (``_score_decay_loop``).
+- Seed workflow: a multi-stage state machine (``POST /seed``, ``POST /seed/apply``,
+  ``POST /seed/scan``) bootstraps project config from an existing corpus using
+  a map-reduce LLM pass.
 
 All AI analysis is performed asynchronously via ``agent.analyze`` so that
 HTTP responses are returned immediately and the UI polls for results.
+
+Module-level singletons:
+    ``db``             — TinyDB instance at ``config.DB_PATH``.
+    ``analyses``       — TinyDB table storing ``Analysis`` records.
+    ``todos``          — TinyDB table storing todo/action-item rows.
+    ``scan_logs``      — TinyDB table storing scan run metadata.
+    ``settings_tbl``   — TinyDB table storing persisted settings (doc_id=1).
+    ``embeddings_tbl`` — TinyDB table storing item embedding vectors.
+    ``situations_tbl`` — TinyDB table storing ``Situation`` records.
+    ``intel_tbl``      — TinyDB table storing information-item rows.
+    ``db_lock``        — ``threading.Lock`` serialising all TinyDB writes.
+    ``_ollama_sem``    — ``threading.Semaphore(1)`` throttling concurrent LLM calls.
+    ``scan_state``     — Shared dict updated in-place by all background jobs for
+                         progress reporting via ``GET /scan/status``.
+    ``_seed_job``      — Single-slot state dict for the seed background job.
 """
 import json
 import os
@@ -107,11 +129,28 @@ CONNECTORS = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def get_user(request: Request) -> str:
-    """Mirror hexcaliper's Cloudflare Access user scoping."""
+    """
+    Extract the authenticated user's email from the Cloudflare Access header.
+
+    Mirrors hexcaliper's user-scoping convention.  Falls back to
+    ``"local@dev"`` for requests that bypass Cloudflare Access (e.g. local
+    development without the tunnel).
+
+    :param request: The incoming FastAPI request.
+    :type request: Request
+    :return: Authenticated user email, or ``"local@dev"`` if not present.
+    :rtype: str
+    """
     return request.headers.get("cf-access-authenticated-user-email", "local@dev")
 
 
 def now_iso() -> str:
+    """
+    Return the current UTC time as an ISO 8601 string.
+
+    :return: Current UTC timestamp in ISO 8601 format, e.g. ``"2024-01-15T12:34:56.789012+00:00"``.
+    :rtype: str
+    """
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -136,13 +175,29 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
 
     Stores all base fields plus the context-aware enrichment fields:
     ``hierarchy``, ``is_passdown``, ``project_tag``, ``goals`` (JSON),
-    ``key_dates`` (JSON), and ``body_preview``.  Todo rows are only inserted
-    for action items that do not already exist for the same ``item_id`` and
-    ``description`` pair.  Preserves ``situation_id`` and ``references``
-    from existing records so the situation layer is not overwritten on re-scan.
+    ``key_dates`` (JSON), ``information_items`` (JSON), and ``body_preview``.
+    Todo rows are only inserted for action items that do not already exist for
+    the same ``item_id`` and ``description`` pair.  Intel rows are deduplicated
+    on the same ``item_id`` and ``fact`` pair.
 
-    When ``reanalyze=True``, existing todos and intel for this item are
-    removed first so stale entries from prior analysis passes do not persist.
+    Preserves ``situation_id`` from the existing record so situation membership
+    is not overwritten on re-scan.  Cross-source references are re-extracted on
+    every save via ``correlator.extract_references``.
+
+    User-edited fields (``priority``, ``category``, ``project_tag``,
+    ``is_passdown``) are preserved from the stored record using an ``or``
+    comparison so a manually set value always wins over the LLM's fresh output,
+    but a stored ``None`` falls through to the new LLM value (allowing
+    previously untagged items to receive a tag on re-scan).
+
+    When ``reanalyze=True``, existing todos and intel for this item are removed
+    first so stale entries from prior analysis passes do not accumulate.
+
+    :param a: The analysis result to persist.
+    :type a: Analysis
+    :param reanalyze: If ``True``, delete existing todos and intel for this
+                      item before inserting fresh ones.
+    :type reanalyze: bool
     """
     with db_lock:
         existing = analyses.get(Q.item_id == a.item_id)
@@ -246,6 +301,22 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
 
 
 def _run_scan(sources: list[str]) -> None:
+    """
+    Fetch items from one or more connectors and run LLM analysis on each.
+
+    Iterates ``sources`` in order, calling the matching connector's ``fetch()``
+    method.  Each item is then passed to ``agent.analyze`` under ``_ollama_sem``
+    so only one Ollama call runs at a time.  Saves every result via
+    ``_save_analysis`` and spawns a situation-formation task per item.  A scan
+    log entry is written regardless of success or cancellation.
+
+    Progress is reflected in the module-level ``scan_state`` dict, which the
+    frontend polls via ``GET /scan/status``.
+
+    :param sources: List of connector names to fetch from, e.g.
+                    ``["slack", "github", "jira"]``.
+    :type sources: list[str]
+    """
     scan_state.update({
         "running": True, "cancelled": False, "mode": "scan",
         "progress": 0, "total": 0, "message": "Starting...",
@@ -415,6 +486,18 @@ def _run_reanalyze() -> None:
 _MASK = "•"
 
 def _mask(val: str) -> str:
+    """
+    Partially redact a credential string for safe display in the settings API.
+
+    The first four characters are shown; the remainder is replaced with
+    ``_MASK`` bullets (``•``).  The frontend uses the presence of ``•`` in a
+    returned value to detect a masked placeholder and skip re-saving it.
+
+    :param val: The raw credential string to mask.
+    :type val: str
+    :return: Masked string, or an empty string if ``val`` is falsy.
+    :rtype: str
+    """
     if not val:
         return ""
     visible = min(4, len(val))
@@ -423,13 +506,31 @@ def _mask(val: str) -> str:
 
 @app.get("/health")
 def health():
-    """Service health check — mirrors hexcaliper's /health response shape."""
+    """
+    Service health check.
+
+    Mirrors hexcaliper's ``/health`` response shape.  Returns ``{"ok": True}``
+    plus any configuration warnings from ``config.validate()``.
+
+    :return: Dict with ``ok`` (bool) and ``warnings`` (list of strings).
+    :rtype: dict
+    """
     return {"ok": True, "warnings": config.validate()}
 
 
 @app.post("/reset")
 def reset_db():
-    """Drop all analyses, todos, scan logs, and embeddings. Settings are preserved."""
+    """
+    Truncate all data tables while preserving saved settings.
+
+    Clears: ``analyses``, ``todos``, ``intel_tbl``, ``scan_logs``,
+    ``embeddings_tbl``, and ``situations_tbl``.  The ``settings`` table
+    (doc_id=1) is intentionally left untouched so credentials and project
+    config survive a reset.
+
+    :return: ``{"ok": True}``
+    :rtype: dict
+    """
     with db_lock:
         analyses.truncate()
         todos.truncate()
@@ -442,7 +543,20 @@ def reset_db():
 
 @app.get("/projects")
 def get_projects():
-    """Return configured projects with learned keyword, sender, and embedding counts."""
+    """
+    Return all configured projects with learning metadata.
+
+    For each project in ``config.PROJECTS``, returns:
+    - ``name``, ``keywords``, ``channels`` — static config fields.
+    - ``learned_keywords``, ``learned_count`` — keywords grown at runtime via
+      the tagging workflow.
+    - ``learned_senders``, ``sender_count`` — email addresses grown via tagging.
+    - ``embedding_items``, ``embedding_subs`` — embedding centroid stats from
+      the ``embedder`` module.
+
+    :return: List of project dicts with learning metadata.
+    :rtype: list[dict]
+    """
     from embedder import get_project_stats
     stats = get_project_stats()
     return [
@@ -462,12 +576,42 @@ def get_projects():
 
 
 class TagRequest(BaseModel):
+    """Request body for ``POST /analyses/{item_id}/tag``.
+
+    :ivar project: Exact name of the target project (must match a configured project).
+    """
     project: str
 
 
 @app.patch("/analyses/{item_id}")
 def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
-    """Update priority and/or category on a stored analysis. Also syncs priority to todos."""
+    """
+    Update editable fields on a stored analysis record.
+
+    Accepts any subset of ``priority``, ``category``, ``project_tag``, and
+    ``is_passdown``.  Only values that pass the allowed-value guard are
+    applied; unknown or invalid values are silently ignored.
+
+    Side effects:
+    - Setting ``category="noise"`` also clears ``has_action`` and removes all
+      associated todos.
+    - Changing ``priority`` syncs the new value to all associated todo rows.
+    - Changing ``project_tag`` or ``category`` triggers a background embedding
+      update: if a new project is set, ``embedder.update_project`` is called;
+      if the project is cleared, ``embedder.remove_item`` is called.
+
+    :param item_id: Stable ID of the analysis item to update.
+    :type item_id: str
+    :param body: Partial update dict; accepted keys: ``priority``, ``category``,
+                 ``project_tag``, ``is_passdown``.
+    :type body: dict
+    :param background_tasks: FastAPI background task runner for async embedding updates.
+    :type background_tasks: BackgroundTasks
+    :return: ``{"ok": True}`` plus all fields that were actually updated.
+    :rtype: dict
+    :raises HTTPException 400: If no valid fields are present in ``body``.
+    :raises HTTPException 404: If no item with ``item_id`` exists.
+    """
     allowed_priorities = {"high", "medium", "low"}
     allowed_categories = {"reply_needed", "task", "deadline", "review", "approval", "fyi", "noise"}
     updates = {}
@@ -502,6 +646,7 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
 
     if (project_changed or category_changed) and (new_project or old_project):
         def relearn() -> None:
+            """Update embeddings when a project tag or category changes on an existing item."""
             with db_lock:
                 record = analyses.get(Q.item_id == item_id)
             if not record:
@@ -536,8 +681,31 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
 @app.post("/analyses/{item_id}/tag")
 def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
     """
-    Tag an analysis item to a project and trigger background keyword learning.
-    Updates the item's project_tag immediately; keyword extraction runs async.
+    Tag an analysis item to a project and trigger background keyword/sender learning.
+
+    Sets the item's ``project_tag`` synchronously, then runs a background task
+    (``learn``) that:
+
+    1. Calls ``extract_keywords`` to get 5–10 characteristic keywords from the
+       item's body/summary, then merges them into the project's
+       ``learned_keywords`` list (capped at 100 entries).
+    2. Extracts all email addresses from ``author``, ``to_field``, and
+       ``cc_field``, strips the user's own address, and merges the remainder
+       into the project's ``learned_senders`` list (capped at 50 entries).
+    3. Persists the updated project config back to ``settings_tbl`` and calls
+       ``config.apply_overrides`` so future analyses benefit immediately.
+    4. Calls ``embedder.update_project`` to add/update the item's vector in
+       the project's embedding centroid.
+
+    :param item_id: Stable ID of the analysis item to tag.
+    :type item_id: str
+    :param body: Must contain a ``project`` field matching a configured project name.
+    :type body: TagRequest
+    :param background_tasks: FastAPI background task runner.
+    :type background_tasks: BackgroundTasks
+    :return: ``{"ok": True, "project": project_name}``
+    :rtype: dict
+    :raises HTTPException 404: If the item or project does not exist.
     """
     with db_lock:
         record = analyses.get(Q.item_id == item_id)
@@ -553,6 +721,7 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
         analyses.update({"project_tag": project_name}, Q.item_id == item_id)
 
     def learn() -> None:
+        """Extract keywords and senders from the tagged item and update project config."""
         title        = record.get("title", "")
         body_preview = record.get("body_preview", "") or record.get("summary", "")
         keywords     = extract_keywords(project_name, title, body_preview)
@@ -627,8 +796,21 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
 @app.post("/analyses/{item_id}/noise")
 def mark_noise(item_id: str, background_tasks: BackgroundTasks):
     """
-    Mark an item as irrelevant. Updates its category to noise immediately and
-    triggers background keyword extraction to grow the noise filter.
+    Mark an analysis item as irrelevant and grow the noise keyword filter.
+
+    Sets ``category="noise"``, ``priority="low"``, and ``has_action=False``
+    synchronously, and removes all associated todos.  Then runs a background
+    task (``learn_noise``) that extracts keywords from the item and merges them
+    into ``config.NOISE_KEYWORDS`` (capped at 200), persisting back to
+    ``settings_tbl`` so future LLM prompts include the updated noise list.
+
+    :param item_id: Stable ID of the analysis item to mark as noise.
+    :type item_id: str
+    :param background_tasks: FastAPI background task runner.
+    :type background_tasks: BackgroundTasks
+    :return: ``{"ok": True}``
+    :rtype: dict
+    :raises HTTPException 404: If no item with ``item_id`` exists.
     """
     with db_lock:
         record = analyses.get(Q.item_id == item_id)
@@ -643,6 +825,7 @@ def mark_noise(item_id: str, background_tasks: BackgroundTasks):
         todos.remove(Q.item_id == item_id)
 
     def learn_noise() -> None:
+        """Extract keywords from the noise-marked item and merge into the global noise filter."""
         title        = record.get("title", "")
         body_preview = record.get("body_preview", "") or record.get("summary", "")
         keywords     = extract_keywords("noise filter", title, body_preview)
@@ -672,6 +855,23 @@ def mark_noise(item_id: str, background_tasks: BackgroundTasks):
 
 @app.get("/settings")
 def get_settings():
+    """
+    Return all current configuration values for the settings UI.
+
+    Credential fields are partially masked via ``_mask`` so the frontend can
+    distinguish "set" from "not set" without exposing full secrets.  Fields
+    containing ``•`` in the response are placeholders that the frontend should
+    not re-POST (``save_settings`` filters them out).
+
+    Includes: Ollama URL/model, Cloudflare Access tokens, Slack/Teams OAuth
+    credentials, GitHub PAT/username, Jira credentials and JQL, lookback
+    hours, ``user_name``, ``user_email``, ``focus_topics`` (comma-separated
+    string), ``projects`` (list), ``noise_keywords`` (list), and
+    ``warnings`` from ``config.validate()``.
+
+    :return: Dict of all current config values, with sensitive fields masked.
+    :rtype: dict
+    """
     return {
         "ollama_url":           config.OLLAMA_URL,
         "ollama_model":         config.OLLAMA_MODEL,
@@ -697,7 +897,26 @@ def get_settings():
 
 @app.post("/settings")
 def save_settings(body: dict):
-    """Persist settings and hot-reload config. Fields containing • are ignored (masked placeholders)."""
+    """
+    Persist settings to TinyDB and hot-reload config.
+
+    Merges ``body`` into the existing settings record.  Any field whose value
+    is a string containing ``•`` (the mask character) is skipped — this
+    prevents the frontend from accidentally overwriting a real credential with
+    a masked placeholder.
+
+    When the ``projects`` list changes, analyses tagged to removed projects
+    have their ``project_tag`` cleared so no orphan tags remain in the DB.
+
+    Calls ``config.apply_overrides`` so all in-memory config values are
+    updated immediately without a container restart.
+
+    :param body: Partial or full settings dict.  Unknown keys are stored as-is.
+    :type body: dict
+    :return: ``{"ok": True, "warnings": [...]}`` where warnings come from
+             ``config.validate()``.
+    :rtype: dict
+    """
     with db_lock:
         existing = settings_tbl.get(doc_id=1) or {}
 
@@ -726,14 +945,35 @@ def save_settings(body: dict):
 # ── Ingest (POST target for host sidecar scripts) ─────────────────────────────
 
 class IngestRequest(BaseModel):
+    """Request body for ``POST /ingest``.
+
+    :ivar items: List of raw item dicts.  Each dict must have an ``item_id``
+                 key; all other fields correspond to ``RawItem`` fields.
+    """
     items: list[dict]
 
 
 @app.post("/ingest")
 def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
     """
-    Receive raw items from the Outlook or Thunderbird sidecar scripts.
-    Deduplicates by item_id, then queues new items for AI analysis in the background.
+    Receive raw items from host sidecar scripts (Outlook, Thunderbird, etc.).
+
+    Deduplicates by ``item_id`` against the analyses table — items that have
+    already been processed are silently skipped.  New items are queued as a
+    background task (``process``) so the HTTP response is returned immediately.
+
+    The background task respects ``scan_state["cancelled"]`` so it can be
+    halted via ``POST /analysis/stop``.  Tracks in-flight item count via
+    ``scan_state["ingest_pending"]``.  After each item is analysed, a
+    situation-formation task is spawned via ``_spawn_situation_task``.
+
+    :param body: List of raw item dicts.
+    :type body: IngestRequest
+    :param background_tasks: FastAPI background task runner.
+    :type background_tasks: BackgroundTasks
+    :return: ``{"received": N, "skipped": M}`` where ``received`` is the
+             number of new items queued and ``skipped`` is duplicates.
+    :rtype: dict
     """
     raw: list[RawItem] = []
     for i in body.items:
@@ -755,6 +995,7 @@ def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         ))
 
     def process() -> None:
+        """Analyse each new item, save results, and spawn situation tasks."""
         with db_lock:
             scan_state["ingest_pending"] += len(raw)
         for item in raw:
@@ -782,11 +1023,29 @@ def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
 # ── Scan ──────────────────────────────────────────────────────────────────────
 
 class ScanRequest(BaseModel):
+    """Request body for ``POST /scan``.
+
+    :ivar sources: Connector names to fetch from.  Defaults to all four
+                   standard connectors.
+    """
     sources: list[str] = ["slack", "github", "jira", "outlook"]
 
 
 @app.post("/scan")
 def start_scan(body: ScanRequest):
+    """
+    Start a multi-source scan in the background.
+
+    Fetches fresh items from each connector listed in ``body.sources`` and
+    runs LLM analysis on every item.  Returns immediately; poll
+    ``GET /scan/status`` for progress.
+
+    :param body: Scan request specifying which sources to include.
+    :type body: ScanRequest
+    :return: ``{"status": "started", "sources": [...]}``
+    :rtype: dict
+    :raises HTTPException 409: If a scan or re-analysis is already running.
+    """
     if scan_state["running"]:
         raise HTTPException(status_code=409, detail="Scan already in progress.")
     threading.Thread(target=_run_scan, args=(body.sources,), daemon=True).start()
@@ -795,12 +1054,32 @@ def start_scan(body: ScanRequest):
 
 @app.get("/scan/status")
 def scan_status():
+    """
+    Return the current scan/ingest/reanalyze progress state.
+
+    The returned dict is the module-level ``scan_state`` singleton, updated
+    in-place by all background analysis jobs.  Key fields: ``running``
+    (bool), ``cancelled`` (bool), ``progress`` (int), ``total`` (int),
+    ``message`` (str), ``ingest_pending`` (int), ``situations_pending`` (int).
+
+    :return: Current ``scan_state`` dict.
+    :rtype: dict
+    """
     return scan_state
 
 
 @app.post("/scan/cancel")
 def cancel_scan():
-    """Signal a running scan to stop after the current item finishes."""
+    """
+    Signal a running scan to stop after the current item finishes.
+
+    Sets ``scan_state["cancelled"] = True``.  The scan loop checks this flag
+    between items and exits cleanly, writing a ``"cancelled"`` status to the
+    scan log.
+
+    :return: ``{"ok": True}`` if a scan was running, else ``{"ok": False, ...}``.
+    :rtype: dict
+    """
     if not scan_state["running"]:
         return {"ok": False, "detail": "No scan running"}
     scan_state["cancelled"] = True
@@ -809,7 +1088,16 @@ def cancel_scan():
 
 @app.post("/analysis/stop")
 def stop_all_analysis():
-    """Gracefully halt all ongoing analysis: scan, reanalyze, ingest, situation formation, and seed."""
+    """
+    Gracefully halt all ongoing analysis activity.
+
+    Sets both ``scan_state["cancelled"]`` and ``_seed_job["cancelled"]`` so
+    that the scan loop, reanalyze loop, ingest worker, situation formation
+    tasks, and seed state machine all exit after their current item finishes.
+
+    :return: ``{"ok": True}``
+    :rtype: dict
+    """
     scan_state["cancelled"] = True
     _seed_job["cancelled"]  = True
     return {"ok": True}
@@ -817,7 +1105,20 @@ def stop_all_analysis():
 
 @app.post("/reanalyze")
 def start_reanalyze():
-    """Re-run LLM analysis on all stored items with the current config."""
+    """
+    Re-run LLM analysis on all stored items using the current config.
+
+    Reconstructs a ``RawItem`` from each stored record and passes it through
+    ``agent.analyze``, preserving the original ``body_preview``, email header
+    fields, and any manually set ``project_tag`` as a hint.  Useful after
+    updating project keywords, adding projects, or changing the user profile.
+
+    Returns immediately; poll ``GET /scan/status`` for progress.
+
+    :return: ``{"status": "started", "item_count": N}``
+    :rtype: dict
+    :raises HTTPException 409: If a scan or re-analysis is already running.
+    """
     if scan_state["running"]:
         raise HTTPException(status_code=409, detail="A scan or re-analysis is already running.")
     with db_lock:
@@ -828,7 +1129,15 @@ def start_reanalyze():
 
 @app.get("/reanalyze/count")
 def reanalyze_count():
-    """Return the number of stored items that would be re-analyzed."""
+    """
+    Return the number of stored items that would be processed by ``POST /reanalyze``.
+
+    Used by the frontend to show a confirmation count before the user triggers
+    a potentially long re-analysis run.
+
+    :return: ``{"count": N}``
+    :rtype: dict
+    """
     with db_lock:
         return {"count": len(analyses.all())}
 
@@ -841,6 +1150,23 @@ def get_todos(
     priority: Optional[str] = None,
     done:     bool          = False,
 ):
+    """
+    Return action-item todos, optionally filtered and sorted by priority.
+
+    By default only open (``done=False``) items are returned.  Results are
+    sorted by priority (high → medium → low) then by creation time ascending.
+    A ``doc_id`` field and a ``status`` field (back-filled for legacy records
+    that pre-date the status column) are added to every returned row.
+
+    :param source: Filter to items from a specific connector, e.g. ``"slack"``.
+    :type source: str, optional
+    :param priority: Filter to items with a specific priority level.
+    :type priority: str, optional
+    :param done: If ``True``, include completed items.  Defaults to ``False``.
+    :type done: bool
+    :return: List of todo dicts sorted by priority then creation time.
+    :rtype: list[dict]
+    """
     with db_lock:
         results = todos.all()
 
@@ -865,6 +1191,21 @@ def get_todos(
 
 @app.patch("/todos/{doc_id}")
 def patch_todo(doc_id: int, body: dict):
+    """
+    Update a todo item's status and/or assignment.
+
+    The ``status`` field (``"open"``, ``"done"``, ``"assigned"``) takes
+    precedence over the legacy ``done`` boolean; both are kept in sync for
+    backward compatibility with older frontend builds.
+
+    :param doc_id: TinyDB document ID of the todo record.
+    :type doc_id: int
+    :param body: Partial update dict; accepted keys: ``status``, ``done``,
+                 ``assigned_to``.
+    :type body: dict
+    :return: ``{"ok": True}``
+    :rtype: dict
+    """
     updates = {}
     # status field takes precedence; "done" bool kept for backward compat
     if "status" in body and body["status"] in ("open", "done", "assigned"):
@@ -884,6 +1225,13 @@ def patch_todo(doc_id: int, body: dict):
 
 @app.delete("/todos/{doc_id}")
 def delete_todo(doc_id: int):
+    """
+    Permanently delete a todo item by its document ID.
+
+    :param doc_id: TinyDB document ID of the todo record to remove.
+    :type doc_id: int
+    :return: HTTP 204 No Content.
+    """
     with db_lock:
         todos.remove(doc_ids=[doc_id])
     return Response(status_code=204)
@@ -896,7 +1244,21 @@ def get_intel(
     source:  Optional[str] = None,
     project: Optional[str] = None,
 ):
-    """Return undismissed intel items sorted by timestamp descending."""
+    """
+    Return non-dismissed intel (information) items sorted by timestamp descending.
+
+    Intel items are factual observations and completed-action notes extracted
+    by the LLM that are worth knowing but are not action items for the user.
+    A ``doc_id`` field is added to each returned row for use in
+    ``DELETE /intel/{doc_id}`` and ``PATCH /intel/{doc_id}``.
+
+    :param source: Filter to items from a specific connector, e.g. ``"outlook"``.
+    :type source: str, optional
+    :param project: Filter to items tagged to a specific project.
+    :type project: str, optional
+    :return: List of intel dicts sorted newest-first.
+    :rtype: list[dict]
+    """
     with db_lock:
         results = intel_tbl.all()
     results = [r for r in results if not r.get("dismissed")]
@@ -912,6 +1274,13 @@ def get_intel(
 
 @app.delete("/intel/{doc_id}")
 def delete_intel(doc_id: int):
+    """
+    Permanently delete an intel item by its document ID.
+
+    :param doc_id: TinyDB document ID of the intel record to remove.
+    :type doc_id: int
+    :return: HTTP 204 No Content.
+    """
     with db_lock:
         intel_tbl.remove(doc_ids=[doc_id])
     return Response(status_code=204)
@@ -919,6 +1288,16 @@ def delete_intel(doc_id: int):
 
 @app.patch("/intel/{doc_id}")
 def patch_intel(doc_id: int, body: dict):
+    """
+    Update an intel item, currently limited to toggling the ``dismissed`` flag.
+
+    :param doc_id: TinyDB document ID of the intel record.
+    :type doc_id: int
+    :param body: Partial update dict; accepted key: ``dismissed`` (bool).
+    :type body: dict
+    :return: ``{"ok": True}``
+    :rtype: dict
+    """
     if "dismissed" in body:
         with db_lock:
             intel_tbl.update({"dismissed": bool(body["dismissed"])}, doc_ids=[doc_id])
@@ -928,7 +1307,21 @@ def patch_intel(doc_id: int, body: dict):
 # ── Analyses ──────────────────────────────────────────────────────────────────
 
 def _deserialize_analysis(a: dict) -> dict:
-    """Deserialize JSON-string fields and normalize field names for the frontend."""
+    """
+    Deserialize JSON-string fields and normalise legacy field names for the frontend.
+
+    TinyDB stores ``action_items``, ``goals``, ``key_dates``, and
+    ``information_items`` as JSON strings.  This helper parses them back to
+    Python objects so the API response contains proper arrays.
+
+    Also renames the legacy ``"urgency"`` key to ``"urgency_reason"`` for any
+    records written before that field was renamed.
+
+    :param a: Raw analysis record dict as returned by TinyDB.
+    :type a: dict
+    :return: The same dict with JSON fields parsed and field names normalised.
+    :rtype: dict
+    """
     for field in ("action_items", "goals", "key_dates", "information_items"):
         v = a.get(field)
         if isinstance(v, str):
@@ -953,6 +1346,34 @@ def get_analyses(
     to_date:   Optional[str] = None,
     limit:     int = 1000,
 ):
+    """
+    Return stored analysis records with optional filtering.
+
+    All filters are applied sequentially (AND logic).  Results are sorted by
+    ``timestamp`` descending.  JSON-encoded fields are deserialized via
+    ``_deserialize_analysis`` before returning.
+
+    :param source: Filter to a specific connector, e.g. ``"outlook"``.
+    :type source: str, optional
+    :param category: Filter by category (``"reply_needed"``, ``"task"``, etc.).
+    :type category: str, optional
+    :param hierarchy: Filter by hierarchy tier (``"user"``, ``"project"``, etc.).
+    :type hierarchy: str, optional
+    :param project: Filter by project tag.  Pass ``"__none__"`` to return only
+                    untagged items.
+    :type project: str, optional
+    :param q: Full-text search across ``title``, ``summary``, ``author``, and
+              ``body_preview`` (case-insensitive substring match).
+    :type q: str, optional
+    :param from_date: ISO 8601 lower bound on ``timestamp`` (inclusive).
+    :type from_date: str, optional
+    :param to_date: ISO 8601 upper bound on ``timestamp`` (inclusive).
+    :type to_date: str, optional
+    :param limit: Maximum number of results to return. Defaults to 1000.
+    :type limit: int
+    :return: List of deserialized analysis dicts sorted newest-first.
+    :rtype: list[dict]
+    """
     with db_lock:
         results = analyses.all()
 
@@ -987,13 +1408,42 @@ import uuid as _uuid
 
 
 def _pri_rank(p: str) -> int:
+    """
+    Convert a priority string to a numeric rank for comparison.
+
+    :param p: Priority string — ``"high"``, ``"medium"``, or ``"low"``.
+    :type p: str
+    :return: Numeric rank: high=3, medium=2, low=1.  Unknown values return 1.
+    :rtype: int
+    """
     return {"high": 3, "medium": 2, "low": 1}.get(p, 1)
 
 
 def _maybe_form_situation(item_id: str) -> None:
     """
-    Check whether a newly saved item correlates with existing analyses and
-    create or update a Situation record accordingly.
+    Attempt to correlate a newly saved item with existing analyses and form
+    or update a ``Situation`` record.
+
+    Algorithm:
+    1. Load the item's stored record and parse its cross-source reference
+       tokens (e.g. Jira keys, PR numbers).
+    2. Retrieve the item's embedding vector (if available).
+    3. Call ``correlator.find_correlated_candidates`` with references, vector,
+       and project tag to identify related items.
+    4. If no candidates are found, rescore the item's existing situation (if
+       any) and return.
+    5. If any candidate already belongs to a situation, merge this item (and
+       any additional orphan situations) into the highest-scoring one via
+       ``_update_situation_record``.
+    6. Otherwise, if the cluster meets the minimum size (≥ 2), create a new
+       ``Situation`` document via ``correlator.synthesize_situation`` and
+       ``correlator.score_situation``, then link all cluster items.
+
+    All TinyDB writes are serialised through ``db_lock``.  Exceptions are
+    caught and logged so a single failing item does not block the ingest queue.
+
+    :param item_id: Stable ID of the analysis item to process.
+    :type item_id: str
     """
     try:
         from embedder import get_item_vector
@@ -1109,7 +1559,16 @@ def _maybe_form_situation(item_id: str) -> None:
 
 
 def _spawn_situation_task(item_id: str) -> None:
-    """Spawn a tracked _maybe_form_situation thread reflected in scan_state."""
+    """
+    Spawn ``_maybe_form_situation`` in a daemon thread and track it in ``scan_state``.
+
+    Increments ``scan_state["situations_pending"]`` before starting the thread
+    and decrements it in a ``finally`` block so the counter stays accurate even
+    when situation formation raises an exception.
+
+    :param item_id: Stable ID of the analysis item to process.
+    :type item_id: str
+    """
     with db_lock:
         scan_state["situations_pending"] += 1
 
@@ -1124,7 +1583,23 @@ def _spawn_situation_task(item_id: str) -> None:
 
 
 def _update_situation_record(sit_id: str, item_ids: list) -> None:
-    """Reload cluster records and recompute score + synthesis for an existing situation."""
+    """
+    Reload cluster records and recompute score and LLM synthesis for an existing situation.
+
+    Fetches all analysis records for ``item_ids``, re-runs
+    ``correlator.synthesize_situation`` (full LLM pass) and
+    ``correlator.score_situation``, then writes the updated fields back to
+    ``situations_tbl``.  Also re-links every item in ``item_ids`` to
+    ``sit_id`` via ``analyses.update`` in case new items were merged in.
+
+    Called when a new item is merged into an existing situation and after
+    ``POST /situations/{situation_id}/rescore``.
+
+    :param sit_id: UUID of the situation to update.
+    :type sit_id: str
+    :param item_ids: Complete ordered list of analysis item IDs for this situation.
+    :type item_ids: list
+    """
     try:
         with db_lock:
             cluster_records = [analyses.get(Q.item_id == iid) for iid in item_ids]
@@ -1171,7 +1646,16 @@ def _update_situation_record(sit_id: str, item_ids: list) -> None:
 
 
 def _rescore_situation(sit_id: str) -> None:
-    """Recompute only the score (not synthesis) for a single situation."""
+    """
+    Recompute only the urgency score for a single situation without re-running LLM synthesis.
+
+    Cheaper than ``_update_situation_record`` — used by the 30-minute decay
+    loop (``_score_decay_loop``) and when a newly saved item correlates with
+    an existing situation but is not merged (i.e. it was already a member).
+
+    :param sit_id: UUID of the situation to rescore.
+    :type sit_id: str
+    """
     try:
         with db_lock:
             sit = situations_tbl.get(Q.situation_id == sit_id)
@@ -1194,7 +1678,17 @@ def _rescore_situation(sit_id: str) -> None:
 
 
 def _rescore_all_situations() -> None:
-    """Recompute scores for all stored situations (called by decay loop)."""
+    """
+    Recompute urgency scores for all non-dismissed situations.
+
+    Iterates every situation in ``situations_tbl`` that is not marked
+    ``dismissed`` and calls ``_rescore_situation`` on each.  Exceptions for
+    individual situations are caught and logged so a single failure does not
+    abort the sweep.
+
+    Called every 30 minutes by the daemon thread started at module load time
+    (``_score_decay_loop``).
+    """
     with db_lock:
         sit_ids = [s["situation_id"] for s in situations_tbl.all() if not s.get("dismissed")]
     for sid in sit_ids:
@@ -1205,7 +1699,20 @@ def _rescore_all_situations() -> None:
 
 
 def _situation_response(sit: dict) -> dict:
-    """Build the API response dict for a situation, including lightweight item summaries."""
+    """
+    Build the API response dict for a situation.
+
+    Fetches a lightweight summary (``item_id``, ``source``, ``title``,
+    ``priority``, ``timestamp``) for each contributing analysis and includes
+    it in the response as the ``items`` list.  The full analyses are only
+    deserialized in ``GET /situations/{situation_id}`` to keep the list
+    response compact.
+
+    :param sit: Raw situation document dict from TinyDB.
+    :type sit: dict
+    :return: API-ready dict with all situation fields plus lightweight ``items``.
+    :rtype: dict
+    """
     item_ids = sit.get("item_ids", [])
     with db_lock:
         items_raw = [analyses.get(Q.item_id == iid) for iid in item_ids]
@@ -1245,7 +1752,19 @@ def get_situations(
     status:    Optional[str] = None,
     min_score: float         = 0.0,
 ):
-    """Return all active situations sorted by score descending."""
+    """
+    Return all non-dismissed situations, optionally filtered and sorted by score.
+
+    :param project: Filter to situations tagged to a specific project.
+    :type project: str, optional
+    :param status: Filter by status (``"blocked"``, ``"in_progress"``, etc.).
+    :type status: str, optional
+    :param min_score: Minimum composite urgency score (inclusive).  Defaults
+                      to 0.0 (all situations returned).
+    :type min_score: float
+    :return: List of situation response dicts sorted by score descending.
+    :rtype: list[dict]
+    """
     with db_lock:
         all_sits = situations_tbl.all()
     results = [s for s in all_sits if not s.get("dismissed")]
@@ -1261,7 +1780,19 @@ def get_situations(
 
 @app.get("/situations/{situation_id}")
 def get_situation(situation_id: str):
-    """Return a single situation with full contributing analyses deserialized."""
+    """
+    Return a single situation with all contributing analyses fully deserialized.
+
+    Unlike the list endpoint, the ``items`` field contains complete analysis
+    records (JSON fields parsed, field names normalised) rather than just
+    lightweight summaries.
+
+    :param situation_id: UUID of the situation to retrieve.
+    :type situation_id: str
+    :return: Full situation dict with deserialized ``items`` list.
+    :rtype: dict
+    :raises HTTPException 404: If no situation with the given ID exists.
+    """
     with db_lock:
         sit = situations_tbl.get(Q.situation_id == situation_id)
     if not sit:
@@ -1277,7 +1808,20 @@ def get_situation(situation_id: str):
 
 @app.post("/situations/{situation_id}/dismiss")
 def dismiss_situation(situation_id: str, body: dict = {}):
-    """Mark a situation as dismissed; excluded from GET /situations by default."""
+    """
+    Mark a situation as dismissed.
+
+    Dismissed situations are excluded from ``GET /situations`` by default.
+    An optional ``reason`` field in ``body`` is stored as ``dismiss_reason``.
+
+    :param situation_id: UUID of the situation to dismiss.
+    :type situation_id: str
+    :param body: Optional dict with a ``reason`` key.
+    :type body: dict
+    :return: ``{"ok": True}``
+    :rtype: dict
+    :raises HTTPException 404: If no situation with the given ID exists.
+    """
     with db_lock:
         if not situations_tbl.get(Q.situation_id == situation_id):
             raise HTTPException(status_code=404, detail="Situation not found")
@@ -1290,7 +1834,19 @@ def dismiss_situation(situation_id: str, body: dict = {}):
 
 @app.post("/situations/{situation_id}/rescore")
 def rescore_situation(situation_id: str):
-    """Manually trigger score recomputation and LLM re-synthesis."""
+    """
+    Manually trigger a full score recomputation and LLM re-synthesis for a situation.
+
+    Delegates to ``_update_situation_record`` which re-runs both
+    ``correlator.score_situation`` and ``correlator.synthesize_situation``.
+    Returns the updated situation response.
+
+    :param situation_id: UUID of the situation to rescore.
+    :type situation_id: str
+    :return: Updated situation response dict.
+    :rtype: dict
+    :raises HTTPException 404: If no situation with the given ID exists.
+    """
     with db_lock:
         sit = situations_tbl.get(Q.situation_id == situation_id)
     if not sit:
@@ -1303,7 +1859,22 @@ def rescore_situation(situation_id: str):
 
 @app.patch("/situations/{situation_id}")
 def patch_situation(situation_id: str, body: dict):
-    """Allow manual override of title, status, and project_tag."""
+    """
+    Manually override editable fields on a situation record.
+
+    Only ``title``, ``status``, and ``project_tag`` may be changed this way;
+    all other keys in ``body`` are silently ignored.
+
+    :param situation_id: UUID of the situation to update.
+    :type situation_id: str
+    :param body: Partial update dict; accepted keys: ``title``, ``status``,
+                 ``project_tag``.
+    :type body: dict
+    :return: ``{"ok": True}`` plus all fields that were applied.
+    :rtype: dict
+    :raises HTTPException 400: If no valid fields are present in ``body``.
+    :raises HTTPException 404: If no situation with the given ID exists.
+    """
     allowed = {"title", "status", "project_tag"}
     updates = {k: v for k, v in body.items() if k in allowed}
     if not updates:
@@ -1319,6 +1890,19 @@ def patch_situation(situation_id: str, body: dict):
 
 @app.get("/stats")
 def get_stats():
+    """
+    Return aggregate statistics for the dashboard summary bar.
+
+    Counts: total analysis items, open todos, high-priority todos, open intel
+    items, todos by source, all items by category, open and high-score
+    situations, and the most recent scan log entry.
+
+    :return: Dict with counts and breakdowns.  Key fields: ``total_items``,
+             ``open_todos``, ``high_priority``, ``open_intel``,
+             ``open_situations``, ``high_score_situations``, ``by_source``
+             (list), ``by_category`` (list), ``last_scan`` (dict or None).
+    :rtype: dict
+    """
     with db_lock:
         all_a      = analyses.all()
         open_todos = [t for t in todos.all() if not t.get("done")]
@@ -1367,6 +1951,15 @@ _SLACK_USER_SCOPES   = (
 
 @app.get("/slack/connect")
 def slack_connect():
+    """
+    Begin the Slack OAuth2 user-token flow.
+
+    Redirects the user's browser to ``slack.com/oauth/v2/authorize`` with the
+    required user scopes and the configured ``SLACK_CLIENT_ID``.
+
+    :return: HTTP 302 redirect to the Slack authorization page.
+    :raises HTTPException 400: If ``SLACK_CLIENT_ID`` is not yet configured.
+    """
     if not config.SLACK_CLIENT_ID:
         raise HTTPException(status_code=400, detail="SLACK_CLIENT_ID not configured — save it in Settings first.")
     url = (
@@ -1380,6 +1973,25 @@ def slack_connect():
 
 @app.get("/slack/callback")
 def slack_callback(code: str = None, error: str = None):
+    """
+    Handle the Slack OAuth2 redirect callback.
+
+    Exchanges the authorization code for a user access token, then stores the
+    token alongside workspace metadata in ``settings_tbl`` (keyed by
+    ``team_id`` so re-connecting a workspace replaces the old token).  Calls
+    ``config.apply_overrides`` so the connector can start using the new token
+    immediately.
+
+    On success, redirects to ``/page/?slack_connected=1``.
+    On failure, redirects to ``/page/?slack_error=<reason>``.
+
+    :param code: Authorization code returned by Slack.
+    :type code: str, optional
+    :param error: Error identifier returned by Slack if the user denied access.
+    :type error: str, optional
+    :return: HTTP 302 redirect.
+    :raises HTTPException 400: If no ``code`` is provided and no ``error`` is set.
+    """
     if error:
         return Response(status_code=302, headers={"Location": f"/page/?slack_error={error}"})
     if not code:
@@ -1434,6 +2046,12 @@ def slack_callback(code: str = None, error: str = None):
 
 @app.get("/slack/workspaces")
 def get_slack_workspaces():
+    """
+    Return all connected Slack workspaces (without tokens).
+
+    :return: List of dicts with ``team`` (display name) and ``team_id`` fields.
+    :rtype: list[dict]
+    """
     with db_lock:
         existing = settings_tbl.get(doc_id=1) or {}
     tokens = existing.get("slack_user_tokens", [])
@@ -1442,6 +2060,14 @@ def get_slack_workspaces():
 
 @app.delete("/slack/workspaces/{team_id}")
 def disconnect_slack_workspace(team_id: str):
+    """
+    Remove a Slack workspace's user token from stored settings.
+
+    :param team_id: Slack workspace team ID to disconnect.
+    :type team_id: str
+    :return: ``{"ok": True}``
+    :rtype: dict
+    """
     with db_lock:
         existing = settings_tbl.get(doc_id=1) or {}
     tokens = [t for t in existing.get("slack_user_tokens", []) if t.get("team_id") != team_id]
@@ -1463,6 +2089,16 @@ _TEAMS_SCOPES       = "Chat.Read ChannelMessage.Read.All Channel.ReadBasic.All o
 
 @app.get("/teams/connect")
 def teams_connect():
+    """
+    Begin the Microsoft Teams (Azure AD) OAuth2 user-token flow.
+
+    Redirects the user's browser to the Microsoft identity platform authorize
+    endpoint with the required Graph API scopes and the configured
+    ``TEAMS_CLIENT_ID``.
+
+    :return: HTTP 302 redirect to the Microsoft authorization page.
+    :raises HTTPException 400: If ``TEAMS_CLIENT_ID`` is not yet configured.
+    """
     if not config.TEAMS_CLIENT_ID:
         raise HTTPException(status_code=400, detail="TEAMS_CLIENT_ID not configured — save it in Settings first.")
     url = (
@@ -1478,6 +2114,27 @@ def teams_connect():
 
 @app.get("/teams/callback")
 def teams_callback(code: str = None, error: str = None, error_description: str = None):
+    """
+    Handle the Microsoft Teams OAuth2 redirect callback.
+
+    Exchanges the authorization code for access and refresh tokens, then
+    resolves the user's display name and tenant via ``/me`` on the Microsoft
+    Graph API.  Stores the token bundle in ``settings_tbl`` (keyed by
+    ``account_id``).  Calls ``config.apply_overrides`` so the Teams connector
+    can use the new token immediately.
+
+    On success, redirects to ``/page/?teams_connected=1``.
+    On failure, redirects to ``/page/?teams_error=<reason>``.
+
+    :param code: Authorization code returned by Microsoft.
+    :type code: str, optional
+    :param error: Error identifier returned if the user denied access.
+    :type error: str, optional
+    :param error_description: Human-readable error description.
+    :type error_description: str, optional
+    :return: HTTP 302 redirect.
+    :raises HTTPException 400: If no ``code`` is provided and no ``error`` is set.
+    """
     if error:
         return Response(status_code=302, headers={"Location": f"/page/?teams_error={error}"})
     if not code:
@@ -1552,6 +2209,13 @@ def teams_callback(code: str = None, error: str = None, error_description: str =
 
 @app.get("/teams/workspaces")
 def get_teams_workspaces():
+    """
+    Return all connected Microsoft Teams accounts (without tokens).
+
+    :return: List of dicts with ``display_name``, ``account_id``, and
+             ``tenant`` fields.
+    :rtype: list[dict]
+    """
     with db_lock:
         existing = settings_tbl.get(doc_id=1) or {}
     tokens = existing.get("teams_user_tokens", [])
@@ -1563,6 +2227,14 @@ def get_teams_workspaces():
 
 @app.delete("/teams/workspaces/{account_id}")
 def disconnect_teams_account(account_id: str):
+    """
+    Remove a Teams account's token bundle from stored settings.
+
+    :param account_id: Microsoft Graph user ID (``me.id``) of the account to disconnect.
+    :type account_id: str
+    :return: ``{"ok": True}``
+    :rtype: dict
+    """
     with db_lock:
         existing = settings_tbl.get(doc_id=1) or {}
     tokens = [t for t in existing.get("teams_user_tokens", []) if t.get("account_id") != account_id]
@@ -1671,6 +2343,7 @@ def _run_seed_job(context: str) -> None:
         priority_rank = {"high": 3, "medium": 2, "low": 1}
 
         def _sort_key(a):
+            """Sort passdowns first, then by descending priority rank."""
             is_pd = 1 if a.get("is_passdown") else 0
             pri   = priority_rank.get(a.get("priority", "low"), 1)
             return (is_pd, pri)
@@ -1846,7 +2519,18 @@ async def seed_preview(request: Request):
 
 @app.patch("/seed/context")
 async def seed_update_context(request: Request):
-    """Update the context string while waiting for ingest."""
+    """
+    Update the user-provided context string while the seed job is in the
+    ``waiting_for_ingest`` state.
+
+    The context is read just before the analyzing phase begins, so updates
+    posted during the waiting period are picked up without restarting the job.
+
+    :param request: Request body must be JSON with a ``context`` key.
+    :type request: Request
+    :return: ``{"ok": True}``
+    :rtype: dict
+    """
     body = await request.json()
     _seed_job["context"] = body.get("context", "")
     return {"ok": True}
@@ -1854,17 +2538,52 @@ async def seed_update_context(request: Request):
 
 @app.get("/seed/status")
 def seed_status():
-    """Return the current state of the background seed job."""
+    """
+    Return the current state of the background seed job.
+
+    The returned dict is the module-level ``_seed_job`` singleton, which
+    contains at least ``state``, ``status``, and ``progress``.  When the
+    state is ``"review"``, it also contains ``projects`` and ``topics`` for
+    the frontend editor.
+
+    :return: Current ``_seed_job`` state dict.
+    :rtype: dict
+    """
     return _seed_job
 
 
 @app.post("/seed/apply")
 def seed_apply(body: dict, background_tasks: BackgroundTasks):
     """
-    Apply seeded projects and topics to settings, optionally re-tagging existing
-    analyses.  After retagging, runs embeddings for all newly-tagged items in the
-    background to populate centroids, then sweeps situation formation across the
-    full corpus so the correlation layer starts with a warm model.
+    Apply the seed editor's confirmed projects and topics to settings.
+
+    Called after the user reviews and edits the LLM-proposed project/topic
+    list in the frontend.  Steps performed synchronously:
+
+    1. Merges new projects into ``config.PROJECTS`` (skipping duplicates by
+       name, case-insensitive).
+    2. Merges new topics into ``config.FOCUS_TOPICS`` (deduplication,
+       case-insensitive).
+    3. Persists updated settings to ``settings_tbl`` and calls
+       ``config.apply_overrides``.
+    4. Optionally (``retag=True``, default) keyword-matches existing analyses
+       against newly added projects and sets ``project_tag`` on matches.
+
+    Then in background (``_seed_embed_and_correlate``):
+    - Embeds all tagged analyses to populate project centroid vectors.
+    - Sweeps all items through situation formation to warm the correlation layer.
+
+    Also transitions ``_seed_job`` to ``"reanalyzing"`` and starts
+    ``_run_reanalyze`` in a daemon thread, then monitors it via
+    ``_monitor_reanalyze`` to advance the state machine to ``"scan_prompt"``.
+
+    :param body: Dict with keys ``projects`` (list), ``topics`` (list), and
+                 optionally ``retag`` (bool, default ``True``).
+    :type body: dict
+    :param background_tasks: FastAPI background task runner.
+    :type background_tasks: BackgroundTasks
+    :return: ``{"ok": True, "projects_added": N, "topics_added": M, "items_retagged": K}``
+    :rtype: dict
     """
     suggested_projects = body.get("projects", [])
     suggested_topics   = body.get("topics", [])
@@ -1950,6 +2669,18 @@ def seed_apply(body: dict, background_tasks: BackgroundTasks):
     #    across the full corpus.  This is the step that populates centroids and
     #    warms the correlation layer from a bulk corpus instead of a trickle.
     def _seed_embed_and_correlate() -> None:
+        """
+        Background task run after ``seed_apply`` to warm the embedding and
+        situation layers from the existing corpus.
+
+        Phase 1 (embedding sweep): iterates all tagged analyses, generates
+        a text embedding from title + body_preview + summary, and calls
+        ``embedder.update_project`` to build/update each project's centroid.
+
+        Phase 2 (situation sweep): calls ``_maybe_form_situation`` on every
+        stored item so that the correlation layer is pre-populated from the
+        bulk corpus rather than forming incrementally only as new items arrive.
+        """
         print("[seed] starting embedding sweep...")
         try:
             from embedder import embed, update_project
@@ -2014,6 +2745,7 @@ def seed_apply(body: dict, background_tasks: BackgroundTasks):
     threading.Thread(target=_run_reanalyze, daemon=True).start()
 
     def _monitor_reanalyze() -> None:
+        """Poll until _run_reanalyze finishes, then advance _seed_job to scan_prompt."""
         import time
         time.sleep(1)
         while scan_state.get("running"):
@@ -2037,7 +2769,18 @@ def seed_apply(body: dict, background_tasks: BackgroundTasks):
 
 @app.post("/seed/scan")
 def seed_run_scan():
-    """Transition from scan_prompt → scanning, then → done."""
+    """
+    Transition the seed state machine from ``scan_prompt`` to ``scanning``,
+    run a full multi-source scan, then transition to ``done``.
+
+    Starts ``_run_scan`` (all five connectors) in a daemon thread.  A monitor
+    thread (``_monitor_scan``) polls ``scan_state["running"]`` and advances
+    ``_seed_job`` to ``{"state": "done"}`` once the scan completes.
+
+    :return: ``{"ok": True}``
+    :rtype: dict
+    :raises HTTPException 409: If a scan is already running.
+    """
     global _seed_job
     if scan_state["running"]:
         raise HTTPException(status_code=409, detail="A scan is already running.")
@@ -2046,6 +2789,7 @@ def seed_run_scan():
     threading.Thread(target=_run_scan, args=(sources,), daemon=True).start()
 
     def _monitor_scan() -> None:
+        """Poll until _run_scan finishes, then advance _seed_job to done."""
         import time
         time.sleep(1)
         while scan_state.get("running"):
@@ -2059,7 +2803,16 @@ def seed_run_scan():
 
 @app.post("/seed/skip_scan")
 def seed_skip_scan():
-    """Transition from scan_prompt → done without running a scan."""
+    """
+    Transition the seed state machine from ``scan_prompt`` to ``done``
+    without running a connector scan.
+
+    Allows users who have already seeded via the ingest workflow to skip the
+    optional live-scan step and complete setup immediately.
+
+    :return: ``{"ok": True}``
+    :rtype: dict
+    """
     global _seed_job
     _seed_job.update({"state": "done", "status": "done", "progress": "Setup complete."})
     return {"ok": True}

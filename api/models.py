@@ -89,13 +89,24 @@ class Analysis:
     :ivar key_dates: Deadlines, release dates, or other time references
                      extracted from the content, each a dict with ``"date"``
                      and ``"description"`` keys. Defaults to an empty list.
-    :ivar body_preview: First 500 characters of the item body, stored for
-                        post-hoc keyword learning without re-fetching content.
-                        Defaults to an empty string.
+    :ivar body_preview: Up to 2000 characters of the item body after stripping
+                        the external-sender CAUTION banner, stored for post-hoc
+                        keyword learning and re-analysis without re-fetching
+                        content from the source system.  Defaults to ``""``.
     :ivar to_field: Raw ``To`` header value carried forward from item metadata.
                     Used for post-hoc sender/group learning. Defaults to ``""``.
     :ivar cc_field: Raw ``CC`` header value carried forward from item metadata.
                     Used for post-hoc sender/group learning. Defaults to ``""``.
+    :ivar is_replied: ``True`` when the user has already replied to this item
+                      (populated from ``item.metadata["is_replied"]``).
+                      Defaults to ``False``.
+    :ivar replied_at: ISO 8601 timestamp of the user's reply, or ``None`` if
+                      not replied.  Defaults to ``None``.
+    :ivar information_items: Factual observations and completed-action notes
+                             extracted by the LLM that are worth knowing but
+                             are not action items for the user.  Each entry is
+                             a dict with ``"fact"`` and ``"relevance"`` keys.
+                             Defaults to an empty list.
     """
     item_id:        str
     source:         str
