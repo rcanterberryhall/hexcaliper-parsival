@@ -127,7 +127,7 @@ Category rules:
 - deadline: time-sensitive with an explicit or implied due date
 - review: code/doc review requested of {user_name}
 - approval: decision or sign-off needed from {user_name}
-- fyi: informational, no action required of {user_name}
+- fyi: informational only — no action required of {user_name}; MUST have has_action=false and action_items=[]
 - noise: automated notifications, irrelevant to {user_name}
 
 Priority rules:
@@ -591,10 +591,10 @@ def analyze(item: RawItem) -> Analysis:
         author            = item.author,
         timestamp         = item.timestamp,
         url               = item.url,
-        has_action        = data.get("has_action", bool(action_items)),
-        priority          = data.get("priority", "medium"),
         category          = data.get("category", "fyi"),
-        action_items      = action_items,
+        has_action        = data.get("has_action", bool(action_items)) and data.get("category", "fyi") != "fyi",
+        priority          = data.get("priority", "medium"),
+        action_items      = action_items if data.get("category", "fyi") != "fyi" else [],
         summary           = data.get("summary", item.title),
         urgency_reason    = data.get("urgency_reason"),
         hierarchy         = data.get("hierarchy", item.metadata.get("hierarchy", "general")),

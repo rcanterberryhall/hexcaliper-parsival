@@ -259,7 +259,7 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
             Q.item_id == a.item_id,
         )
 
-        if a.has_action:
+        if a.has_action and a.category != "fyi":
             for item in a.action_items:
                 exists = todos.get(
                     (Q.item_id == a.item_id) & (Q.description == item.description)
@@ -504,6 +504,42 @@ def _mask(val: str) -> str:
     return val[:visible] + _MASK * max(0, len(val) - visible)
 
 
+@app.get("/gpu")
+def gpu_stats():
+    """
+    Return live GPU utilisation, VRAM usage, and temperature via NVML.
+
+    Used by the frontend GPU meter widget.  Returns ``{"ok": False}`` when
+    ``pynvml`` is not installed or no NVIDIA device is present — the UI will
+    fade the meter gracefully in that case.
+
+    :return: Dict with ``ok``, and when successful: ``name``, ``gpu_util``
+        (int %), ``mem_used`` (bytes), ``mem_total`` (bytes),
+        ``temperature`` (°C).
+    :rtype: dict
+    """
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        util   = pynvml.nvmlDeviceGetUtilizationRates(handle)
+        mem    = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        temp   = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+        name   = pynvml.nvmlDeviceGetName(handle)
+        if isinstance(name, bytes):
+            name = name.decode()
+        return {
+            "ok":         True,
+            "name":       name,
+            "gpu_util":   util.gpu,
+            "mem_used":   mem.used,
+            "mem_total":  mem.total,
+            "temperature": temp,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @app.get("/health")
 def health():
     """
@@ -639,6 +675,9 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
         if "project_tag" in updates:
             intel_tbl.update({"project_tag": updates["project_tag"]}, Q.item_id == item_id)
 
+    if "project_tag" in updates:
+        _sync_situation_tags_for_item(item_id)
+
     old_project  = old_record.get("project_tag")
     old_category = old_record.get("category")
     new_project  = updates.get("project_tag", old_project)
@@ -722,6 +761,7 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
     with db_lock:
         analyses.update({"project_tag": project_name}, Q.item_id == item_id)
         intel_tbl.update({"project_tag": project_name}, Q.item_id == item_id)
+    _sync_situation_tags_for_item(item_id)
 
     def learn() -> None:
         """Extract keywords and senders from the tagged item and update project config."""
@@ -941,6 +981,7 @@ def save_settings(body: dict):
             for name in removed_projects:
                 analyses.update({"project_tag": None}, Q.project_tag == name)
                 intel_tbl.update({"project_tag": None}, Q.project_tag == name)
+            _sync_situation_tags_all()
 
     config.apply_overrides(existing)
     return {"ok": True, "warnings": config.validate()}
@@ -1245,11 +1286,12 @@ def delete_todo(doc_id: int):
 
 @app.get("/intel")
 def get_intel(
-    source:  Optional[str] = None,
-    project: Optional[str] = None,
+    source:             Optional[str] = None,
+    project:            Optional[str] = None,
+    include_dismissed:  bool          = False,
 ):
     """
-    Return non-dismissed intel (information) items sorted by timestamp descending.
+    Return intel (information) items sorted by timestamp descending.
 
     Intel items are factual observations and completed-action notes extracted
     by the LLM that are worth knowing but are not action items for the user.
@@ -1260,12 +1302,17 @@ def get_intel(
     :type source: str, optional
     :param project: Filter to items tagged to a specific project.
     :type project: str, optional
+    :param include_dismissed: When ``True``, dismissed items are included in the
+        response (with ``dismissed: True`` set on each record).  Defaults to
+        ``False`` (dismissed items hidden).
+    :type include_dismissed: bool
     :return: List of intel dicts sorted newest-first.
     :rtype: list[dict]
     """
     with db_lock:
         results = intel_tbl.all()
-    results = [r for r in results if not r.get("dismissed")]
+    if not include_dismissed:
+        results = [r for r in results if not r.get("dismissed")]
     if source:
         results = [r for r in results if r.get("source") == source]
     if project:
@@ -1586,6 +1633,59 @@ def _spawn_situation_task(item_id: str) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _sync_situation_tags_for_item(item_id: str) -> None:
+    """
+    Recompute ``project_tag`` on every situation that contains ``item_id``.
+
+    Lightweight — no LLM call.  Mirrors the consensus rule used in
+    ``_update_situation_record``: set the tag only when *all* member analyses
+    agree on the same non-null tag, otherwise set it to ``None``.
+
+    Called synchronously (inside a ``db_lock`` block at the call site is *not*
+    required — this function acquires its own lock) after any endpoint that
+    changes a single analysis's ``project_tag``.
+
+    :param item_id: Stable ID of the analysis whose tag just changed.
+    :type item_id: str
+    """
+    with db_lock:
+        affected = [s for s in situations_tbl.all() if item_id in s.get("item_ids", [])]
+    for sit in affected:
+        sit_id   = sit.get("situation_id")
+        mem_ids  = sit.get("item_ids", [])
+        with db_lock:
+            members = [analyses.get(Q.item_id == iid) for iid in mem_ids]
+        members   = [m for m in members if m]
+        proj_tags = list({m.get("project_tag") for m in members if m.get("project_tag")})
+        new_tag   = proj_tags[0] if len(proj_tags) == 1 else None
+        if new_tag != sit.get("project_tag"):
+            with db_lock:
+                situations_tbl.update({"project_tag": new_tag}, Q.situation_id == sit_id)
+
+
+def _sync_situation_tags_all() -> None:
+    """
+    Recompute ``project_tag`` on every situation.
+
+    Called after a bulk project-tag change (e.g. project deletion in
+    ``save_settings``).  Uses the same consensus rule as
+    ``_sync_situation_tags_for_item``.
+    """
+    with db_lock:
+        all_sits = situations_tbl.all()
+    for sit in all_sits:
+        sit_id   = sit.get("situation_id")
+        mem_ids  = sit.get("item_ids", [])
+        with db_lock:
+            members = [analyses.get(Q.item_id == iid) for iid in mem_ids]
+        members   = [m for m in members if m]
+        proj_tags = list({m.get("project_tag") for m in members if m.get("project_tag")})
+        new_tag   = proj_tags[0] if len(proj_tags) == 1 else None
+        if new_tag != sit.get("project_tag"):
+            with db_lock:
+                situations_tbl.update({"project_tag": new_tag}, Q.situation_id == sit_id)
+
+
 def _update_situation_record(sit_id: str, item_ids: list) -> None:
     """
     Reload cluster records and recompute score and LLM synthesis for an existing situation.
@@ -1752,12 +1852,13 @@ def _situation_response(sit: dict) -> dict:
 
 @app.get("/situations")
 def get_situations(
-    project:   Optional[str] = None,
-    status:    Optional[str] = None,
-    min_score: float         = 0.0,
+    project:            Optional[str] = None,
+    status:             Optional[str] = None,
+    min_score:          float         = 0.0,
+    include_dismissed:  bool          = False,
 ):
     """
-    Return all non-dismissed situations, optionally filtered and sorted by score.
+    Return situations, optionally filtered and sorted by score descending.
 
     :param project: Filter to situations tagged to a specific project.
     :type project: str, optional
@@ -1766,12 +1867,15 @@ def get_situations(
     :param min_score: Minimum composite urgency score (inclusive).  Defaults
                       to 0.0 (all situations returned).
     :type min_score: float
+    :param include_dismissed: When ``True``, dismissed situations are included.
+        Defaults to ``False``.
+    :type include_dismissed: bool
     :return: List of situation response dicts sorted by score descending.
     :rtype: list[dict]
     """
     with db_lock:
         all_sits = situations_tbl.all()
-    results = [s for s in all_sits if not s.get("dismissed")]
+    results = all_sits if include_dismissed else [s for s in all_sits if not s.get("dismissed")]
     if project:
         results = [s for s in results if s.get("project_tag") == project]
     if status:
@@ -1831,6 +1935,30 @@ def dismiss_situation(situation_id: str, body: dict = {}):
             raise HTTPException(status_code=404, detail="Situation not found")
         situations_tbl.update(
             {"dismissed": True, "dismiss_reason": body.get("reason")},
+            Q.situation_id == situation_id,
+        )
+    return {"ok": True}
+
+
+@app.post("/situations/{situation_id}/undismiss")
+def undismiss_situation(situation_id: str):
+    """
+    Restore a previously dismissed situation.
+
+    Clears the ``dismissed`` flag so the situation reappears in
+    ``GET /situations`` and the UI.
+
+    :param situation_id: UUID of the situation to restore.
+    :type situation_id: str
+    :return: ``{"ok": True}``
+    :rtype: dict
+    :raises HTTPException 404: If no situation with the given ID exists.
+    """
+    with db_lock:
+        if not situations_tbl.get(Q.situation_id == situation_id):
+            raise HTTPException(status_code=404, detail="Situation not found")
+        situations_tbl.update(
+            {"dismissed": False, "dismiss_reason": None},
             Q.situation_id == situation_id,
         )
     return {"ok": True}

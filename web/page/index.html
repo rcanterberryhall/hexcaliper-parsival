@@ -85,6 +85,19 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .scan-btn:disabled { opacity: .3; cursor: not-allowed; }
 .scan-btn:disabled:hover { background: transparent; color: var(--accent); }
 
+/* ── GPU meter ── */
+#gpu-meter { display:flex; flex-direction:column; gap:3px; min-width:86px; padding:3px 10px; border-left:1px solid var(--border2); border-right:1px solid var(--border2); transition:opacity .3s; }
+#gpu-meter.unavailable { opacity:.2; pointer-events:none; }
+.gpu-meter-row { display:flex; align-items:center; justify-content:space-between; gap:5px; }
+.gpu-meter-label { font-size:9px; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); }
+#gpu-pct { font-size:11px; font-weight:700; color:var(--accent); }
+.gpu-bar-wrap { height:3px; background:var(--border2); border-radius:2px; overflow:hidden; }
+.gpu-bar { height:100%; width:0%; background:var(--accent); border-radius:2px; transition:width .6s ease, background-color .4s ease; }
+.gpu-bar.warm { background:var(--amber); }
+.gpu-bar.hot  { background:var(--red); }
+#gpu-vram { font-size:9px; color:var(--muted); }
+@media(max-width:768px){ #gpu-meter { display:none; } }
+
 /* ── Progress ── */
 .progress-track { background: var(--border); }
 .progress-fill  { height: 2px; background: var(--accent); box-shadow: 0 0 8px var(--accent); transition: width .4s ease; width: 0; }
@@ -149,6 +162,9 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .vtab.active { background: var(--border2); color: var(--accent); border-color: var(--accent); }
 .show-done { display: flex; align-items: center; gap: 5px; cursor: pointer; font-size: 11px; color: var(--muted); }
 .show-done input { accent-color: var(--accent); }
+.row-hidden { opacity: 0.45; }
+.restore-btn { font-size: 10px; padding: 1px 5px; border: 1px solid var(--border2); border-radius: var(--r); background: none; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.restore-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ── Views ── */
 #todo-view       { flex: 1; overflow-y: auto; padding: 12px 18px; position: relative; }
@@ -715,6 +731,16 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
         <button class="src-btn on-jira"    data-src="jira"    onclick="toggleSrc(this)">Jira</button>
         <button class="src-btn on-teams"  data-src="teams"   onclick="toggleSrc(this)">Teams</button>
       </div>
+      <div id="gpu-meter" title="">
+        <div class="gpu-meter-row">
+          <span class="gpu-meter-label">GPU</span>
+          <span id="gpu-pct">--</span>
+        </div>
+        <div class="gpu-bar-wrap"><div id="gpu-util-bar" class="gpu-bar"></div></div>
+        <div class="gpu-meter-row">
+          <span id="gpu-vram">-- VRAM</span>
+        </div>
+      </div>
       <button class="scan-btn" id="seedBtn" onclick="openSeed()" title="Bootstrap project intelligence from existing data" style="background:rgba(212,160,23,.08);border-color:var(--amber);color:var(--amber);min-width:90px">◈ Seed</button>
       <button class="scan-btn" id="reanalyzeBtn" onclick="startReanalyze()" title="Re-run LLM analysis on all stored items with current project settings" style="background:rgba(64,184,255,.06);border-color:var(--blue);color:var(--blue);min-width:90px">↺ Re-analyze</button>
       <button class="help-btn" onclick="openHelp()" title="Help">?</button>
@@ -795,8 +821,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
             <option value="30">30 days</option>
             <option value="90">90 days</option>
           </select>
+          <select class="detail-select" id="sortSel" onchange="onSortChange(this.value)" title="Sort order">
+            <option value="priority">Priority ↓</option>
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="score" id="sortOptScore" style="display:none">Score ↓</option>
+          </select>
         </div>
-        <label class="show-done"><input type="checkbox" id="showDone" onchange="loadTodos()"> Show completed</label>
+        <label class="show-done" id="showDoneLbl"><input type="checkbox" id="showDone" onchange="loadTodos()"> Show completed</label>
+        <label class="show-done"><input type="checkbox" id="showHidden" onchange="onShowHidden()"> Show hidden</label>
       </div>
       <div id="todo-view"></div>
       <div id="intel-view"></div>
@@ -1087,6 +1120,10 @@ let colWidths       = {}; // { colIndex: px }
 let _resizing       = null;
 let hierarchyFilter = 'all';
 let projectFilter   = 'all';
+let currentView     = 'todos';
+let showHidden      = false;
+let sortBy          = 'priority';
+const _priRank      = p => ({high:0,medium:1,low:2}[p] ?? 1);
 let searchQuery     = '';
 let dateFilter      = 'all';
 let _searchTimer    = null;
@@ -1157,9 +1194,27 @@ async function markNoise(itemId) {
   try {
     await api(`/analyses/${encodeURIComponent(itemId)}/noise`, 'POST');
     $('statusMsg').textContent = 'Marked irrelevant — noise filter updating in background…';
-    await Promise.all([loadTodos(), loadItems()]);
+    const a = allAnalyses.find(x => x.item_id === itemId);
+    if (a) a.category = 'noise';
+    allTodos = allTodos.filter(t => t.item_id !== itemId);
+    renderItems(allAnalyses);
+    const vt = _filterTodos(allTodos); renderTodos(vt); updateCounts(vt);
+    if ($('detailPanel').classList.contains('open') && a) openDetail(a);
   } catch(e) {
     $('statusMsg').textContent = 'Failed: ' + e.message;
+  }
+}
+
+async function restoreItem(itemId) {
+  try {
+    await api(`/analyses/${encodeURIComponent(itemId)}`, 'PATCH', { category: 'fyi' });
+    $('statusMsg').textContent = 'Item restored.';
+    const a = allAnalyses.find(x => x.item_id === itemId);
+    if (a) a.category = 'fyi';
+    renderItems(allAnalyses);
+    if ($('detailPanel').classList.contains('open') && a) openDetail(a);
+  } catch(e) {
+    $('statusMsg').textContent = 'Restore failed: ' + e.message;
   }
 }
 
@@ -1283,9 +1338,16 @@ async function loadStats() {
 }
 
 function _filterTodos(todos) {
-  if (!searchQuery) return todos;
+  let result = todos;
+  if (projectFilter !== 'all') {
+    result = result.filter(t => {
+      const tag = (allAnalyses.find(a => a.item_id === t.item_id) || {}).project_tag || null;
+      return projectFilter === '__none__' ? !tag : tag === projectFilter;
+    });
+  }
+  if (!searchQuery) return result;
   const q = searchQuery.toLowerCase();
-  return todos.filter(t =>
+  return result.filter(t =>
     (t.description || '').toLowerCase().includes(q) ||
     (t.title       || '').toLowerCase().includes(q)
   );
@@ -1309,6 +1371,14 @@ function updateCounts(todos) {
   Object.entries(c).forEach(([k, v]) => { const el = $('fc-' + k); if (el) el.textContent = v; });
 }
 
+function _sortTodos(todos) {
+  const a = todos.slice();
+  if (sortBy === 'newest') return a.sort((x,y) => (y.created_at||'').localeCompare(x.created_at||''));
+  if (sortBy === 'oldest') return a.sort((x,y) => (x.created_at||'').localeCompare(y.created_at||''));
+  // priority: high→medium→low, then newest within group
+  return a.sort((x,y) => _priRank(x.priority) - _priRank(y.priority) || (y.created_at||'').localeCompare(x.created_at||''));
+}
+
 function renderTodos(todos) {
   const el = $('todo-view');
   if (!todos.length) {
@@ -1319,18 +1389,25 @@ function renderTodos(todos) {
     }</div></div>`;
     return;
   }
-  const groups = { high: [], medium: [], low: [] };
-  todos.forEach(t => (groups[t.priority] || groups.low).push(t));
-  const labels = { high: 'High Priority', medium: 'Medium Priority', low: 'Low Priority' };
+  const sorted = _sortTodos(todos);
   el.innerHTML = '';
-  ['high','medium','low'].forEach(p => {
-    if (!groups[p].length) return;
-    const g = document.createElement('div');
-    g.className = `g-${p}`;
-    g.innerHTML = `<div class="group-label"><div class="gdot"></div>${labels[p]} (${groups[p].length})</div>`;
-    groups[p].forEach(t => g.appendChild(makeTodo(t)));
-    el.appendChild(g);
-  });
+  if (sortBy === 'newest' || sortBy === 'oldest') {
+    // Flat list sorted by date
+    sorted.forEach(t => el.appendChild(makeTodo(t)));
+  } else {
+    // Grouped by priority
+    const groups = { high: [], medium: [], low: [] };
+    sorted.forEach(t => (groups[t.priority] || groups.low).push(t));
+    const labels = { high: 'High Priority', medium: 'Medium Priority', low: 'Low Priority' };
+    ['high','medium','low'].forEach(p => {
+      if (!groups[p].length) return;
+      const g = document.createElement('div');
+      g.className = `g-${p}`;
+      g.innerHTML = `<div class="group-label"><div class="gdot"></div>${labels[p]} (${groups[p].length})</div>`;
+      groups[p].forEach(t => g.appendChild(makeTodo(t)));
+      el.appendChild(g);
+    });
+  }
 }
 
 const srcIcon = { outlook: '✉', slack: '#', github: '⎇', jira: '◈' };
@@ -1435,6 +1512,7 @@ function renderSidebarProjects(items) {
 function renderItems(items) {
   const el = $('items-view');
   let filtered = items;
+  if (!showHidden)                  filtered = filtered.filter(i => i.category !== 'noise');
   if (typeFilter === 'passdown')    filtered = filtered.filter(i => i.is_passdown);
   if (hierarchyFilter !== 'all')   filtered = filtered.filter(i => i.hierarchy === hierarchyFilter);
   if (projectFilter === '__none__') filtered = filtered.filter(i => !i.project_tag);
@@ -1452,6 +1530,7 @@ function renderItems(items) {
       (i.body_preview || '').toLowerCase().includes(q)
     );
   }
+  filtered = _applySortAnalyses(filtered);
   if (!filtered.length) {
     el.innerHTML = `<div class="empty"><div class="empty-icon">◻</div><div class="empty-msg">${
       items.length === 0 ? 'No items scanned yet.' : 'Nothing matches this filter.'
@@ -1481,17 +1560,21 @@ function renderItems(items) {
 }
 
 function itemRow(i) {
-  const t    = i.timestamp ? new Date(i.timestamp).toLocaleDateString([], {month:'short', day:'numeric'}) : '';
-  const link = i.url ? `<a href="${esc(i.url)}" target="_blank">↗</a>` : '—';
-  const cat  = (i.category || 'fyi').replace('_', ' ');
+  const t       = i.timestamp ? new Date(i.timestamp).toLocaleDateString([], {month:'short', day:'numeric'}) : '';
+  const link    = i.url ? `<a href="${esc(i.url)}" target="_blank">↗</a>` : '—';
+  const cat     = (i.category || 'fyi').replace('_', ' ');
+  const isNoise = i.category === 'noise';
   const pd      = i.is_passdown ? `<span class="badge b-passdown" style="margin-left:4px">passdown</span>` : '';
   const proj    = i.project_tag ? `<span class="badge b-project" style="margin-left:4px">${esc(i.project_tag)}</span>` : '';
   const tagCell = `<td style="white-space:nowrap" onclick="event.stopPropagation()">
-    ${allProjects.length ? `<button class="ia" onclick="event.stopPropagation();showProjectPicker('${esc(i.item_id)}',this)" title="Tag to project">◈</button>` : ''}
-    <button class="ia del" onclick="event.stopPropagation();markNoise('${esc(i.item_id)}')" title="Mark irrelevant">✕</button>
+    ${isNoise
+      ? `<button class="restore-btn" onclick="event.stopPropagation();restoreItem('${esc(i.item_id)}')" title="Restore item">↩ restore</button>`
+      : `${allProjects.length ? `<button class="ia" onclick="event.stopPropagation();showProjectPicker('${esc(i.item_id)}',this)" title="Tag to project">◈</button>` : ''}
+         <button class="ia del" onclick="event.stopPropagation();markNoise('${esc(i.item_id)}')" title="Mark irrelevant">✕</button>`
+    }
   </td>`;
   const replied = i.is_replied ? `<span title="Replied" style="color:var(--blue);font-size:10px;margin-left:4px">↩</span>` : '';
-  return `<tr onclick="openItemDetail('${esc(i.item_id)}')">
+  return `<tr class="${isNoise ? 'row-hidden' : ''}" onclick="openItemDetail('${esc(i.item_id)}')">
     <td><span class="badge b-${i.source}">${i.source}</span>${pd}${replied}</td>
     <td><span class="badge b-${i.category || 'fyi'}">${cat}</span></td>
     <td class="t-title">${esc(i.title || '')}${proj}</td>
@@ -1525,6 +1608,7 @@ function setType(t, el) {
   renderItems(allAnalyses);
   if ($('items-view').style.display !== 'none') return;
   if (t === 'passdown') {
+    currentView = 'items';
     document.querySelectorAll('.vtab').forEach(e => e.classList.remove('active'));
     Array.from(document.querySelectorAll('.vtab')).find(t => t.textContent.trim() === 'All Items')?.classList.add('active');
     $('todo-view').style.display       = 'none';
@@ -1546,18 +1630,22 @@ function setHierarchy(h, el) {
 function setProject(p, el) {
   projectFilter = p;
   renderSidebarProjects(allAnalyses);
-  _switchToItems();
-  renderItems(allAnalyses);
+  if (currentView === 'items')      { renderItems(allAnalyses); }
+  else if (currentView === 'todos') { const v = _filterTodos(allTodos); renderTodos(v); updateCounts(v); }
+  else if (currentView === 'intel') { renderIntel(allIntel); }
+  else if (currentView === 'situations') { renderSituations(allSituations); }
 }
 
 function _switchToItems() {
   if ($('items-view').style.display !== 'none') return;
+  currentView = 'items';
   document.querySelectorAll('.vtab').forEach(e => e.classList.remove('active'));
   Array.from(document.querySelectorAll('.vtab')).find(t => t.textContent.trim() === 'All Items')?.classList.add('active');
   $('todo-view').style.display       = 'none';
   $('intel-view').style.display      = 'none';
   $('items-view').style.display      = 'block';
   $('situations-view').style.display = 'none';
+  _updateToolbarForView('items');
 }
 
 function onSearch(val) {
@@ -1580,7 +1668,8 @@ function onDateFilter(val) {
 
 async function loadSituations() {
   try {
-    allSituations = await api('/situations');
+    const qs = showHidden ? '?include_dismissed=true' : '';
+    allSituations = await api('/situations' + qs);
     renderSituations(allSituations);
     const el = $('st-situations');
     if (el) el.textContent = allSituations.filter(s => !s.dismissed).length;
@@ -1602,7 +1691,16 @@ const srcColors = {
 function renderSituations(situations) {
   const el = $('situations-view');
   if (!el) return;
-  const visible = situations.filter(s => !s.dismissed);
+  let visible = showHidden ? situations : situations.filter(s => !s.dismissed);
+  if (projectFilter !== 'all') {
+    visible = visible.filter(s =>
+      projectFilter === '__none__' ? !s.project_tag : s.project_tag === projectFilter
+    );
+  }
+  if (sortBy === 'newest')   visible.sort((a,b) => (b.last_updated||'').localeCompare(a.last_updated||''));
+  else if (sortBy === 'oldest') visible.sort((a,b) => (a.last_updated||'').localeCompare(b.last_updated||''));
+  else if (sortBy === 'priority') visible.sort((a,b) => _priRank(a.priority) - _priRank(b.priority) || b.score - a.score);
+  else /* score */           visible.sort((a,b) => b.score - a.score);
   if (!visible.length) {
     el.innerHTML = `<div class="empty"><div class="empty-icon">◈</div>
       <div class="empty-msg">No situations detected yet.\nSituations form when items from multiple sources\nrefer to the same real-world event.</div></div>`;
@@ -1631,8 +1729,12 @@ function situationCard(s) {
       <span class="pri-${i.priority||'low'}" style="flex-shrink:0">${i.priority||'low'}</span>
     </div>`
   ).join('');
+  const sitActions = s.dismissed
+    ? `<button class="restore-btn" onclick="event.stopPropagation();restoreSituation('${esc(s.situation_id)}')" title="Restore">↩ restore</button>`
+    : `<button class="sit-dismiss" onclick="event.stopPropagation();dismissSituation('${esc(s.situation_id)}')" title="Dismiss">✕</button>
+       <button class="ia" onclick="event.stopPropagation();resynthSituation('${esc(s.situation_id)}')" title="Re-synthesize">↺</button>`;
   return `
-    <div class="situation-card ${sc}" id="sit-${esc(s.situation_id)}">
+    <div class="situation-card ${sc}${s.dismissed ? ' row-hidden' : ''}" id="sit-${esc(s.situation_id)}">
       <div class="sit-header" onclick="toggleSituationEvidence('${esc(s.situation_id)}')">
         <div class="sit-score">${score}</div>
         <div class="sit-main">
@@ -1645,10 +1747,7 @@ function situationCard(s) {
             ${actLine}
           </div>
         </div>
-        <div class="sit-actions">
-          <button class="sit-dismiss" onclick="event.stopPropagation();dismissSituation('${esc(s.situation_id)}')" title="Dismiss">✕</button>
-          <button class="ia" onclick="event.stopPropagation();resynthSituation('${esc(s.situation_id)}')" title="Re-synthesize">↺</button>
-        </div>
+        <div class="sit-actions">${sitActions}</div>
       </div>
       <div class="sit-evidence" id="sit-ev-${esc(s.situation_id)}">
         ${evidenceRows}
@@ -1673,6 +1772,18 @@ async function dismissSituation(sitId) {
   } catch(e) { $('statusMsg').textContent = 'Dismiss failed: ' + e.message; }
 }
 
+async function restoreSituation(sitId) {
+  try {
+    await api(`/situations/${encodeURIComponent(sitId)}/undismiss`, 'POST');
+    allSituations = allSituations.map(s =>
+      s.situation_id === sitId ? {...s, dismissed: false} : s
+    );
+    renderSituations(allSituations);
+    const el = $('st-situations');
+    if (el) el.textContent = allSituations.filter(s => !s.dismissed).length;
+  } catch(e) { $('statusMsg').textContent = 'Restore failed: ' + e.message; }
+}
+
 async function resynthSituation(sitId) {
   $('statusMsg').textContent = 'Re-synthesizing situation…';
   try {
@@ -1689,28 +1800,40 @@ async function resynthSituation(sitId) {
 
 async function loadIntel() {
   try {
-    allIntel = await api('/intel');
+    const qs = showHidden ? '?include_dismissed=true' : '';
+    allIntel = await api('/intel' + qs);
     renderIntel(allIntel);
     const el = $('st-intel');
-    if (el) el.textContent = allIntel.length;
+    if (el) el.textContent = allIntel.filter(i => !i.dismissed).length;
   } catch(e) { console.warn('intel:', e); }
 }
 
 function renderIntel(items) {
   const el = $('intel-view');
+  if (projectFilter !== 'all') {
+    items = items.filter(i =>
+      projectFilter === '__none__' ? !i.project_tag : i.project_tag === projectFilter
+    );
+  }
   if (!items.length) {
     el.innerHTML = `<div class="empty"><div class="empty-icon">◻</div><div class="empty-msg">No current state items yet.\nIntel accumulates as items are scanned — status updates,\ncompleted actions, and key facts will appear here.</div></div>`;
     return;
   }
+  const _sortIntel = arr => {
+    const a = arr.slice();
+    if (sortBy === 'newest')   return a.sort((x,y) => (y.timestamp||'').localeCompare(x.timestamp||''));
+    if (sortBy === 'oldest')   return a.sort((x,y) => (x.timestamp||'').localeCompare(y.timestamp||''));
+    return a.sort((x,y) => _priRank(x.priority) - _priRank(y.priority) || (y.timestamp||'').localeCompare(x.timestamp||''));
+  };
   // Group by project_tag, then untagged
   const groups = {};
-  items.forEach(i => {
+  _sortIntel(items).forEach(i => {
     const k = i.project_tag || '—';
     if (!groups[k]) groups[k] = [];
     groups[k].push(i);
   });
-  const sorted = Object.keys(groups).sort((a, b) => a === '—' ? 1 : b === '—' ? -1 : a.localeCompare(b));
-  el.innerHTML = sorted.map(proj => `
+  const sortedKeys = Object.keys(groups).sort((a, b) => a === '—' ? 1 : b === '—' ? -1 : a.localeCompare(b));
+  el.innerHTML = sortedKeys.map(proj => `
     <div class="intel-group">
       <div class="intel-group-label">${proj === '—' ? 'Untagged' : esc(proj)}</div>
       ${groups[proj].map(i => makeIntelCard(i)).join('')}
@@ -1722,7 +1845,10 @@ function makeIntelCard(i) {
   const proj = i.project_tag ? `<span class="chip"><span class="badge b-project">${esc(i.project_tag)}</span></span>` : '';
   const link = i.url ? `<button class="ia open" onclick="window.open('${esc(i.url)}','_blank')" title="Open source">↗</button>` : '';
   const ts   = i.timestamp ? `<span class="chip" style="color:var(--muted)">${fmtTime(i.timestamp)}</span>` : '';
-  return `<div class="intel-card">
+  const actions = i.dismissed
+    ? `<button class="restore-btn" onclick="restoreIntel(${did})" title="Restore">↩ restore</button>`
+    : `${link}<button class="ia del" onclick="dismissIntel(${did})" title="Dismiss">✕</button>`;
+  return `<div class="intel-card${i.dismissed ? ' row-hidden' : ''}">
     <div class="intel-body" onclick="openItemDetail('${esc(i.item_id)}')">
       <div class="intel-fact">${esc(i.fact)}</div>
       ${i.relevance ? `<div class="intel-relevance">${esc(i.relevance)}</div>` : ''}
@@ -1732,43 +1858,80 @@ function makeIntelCard(i) {
         ${proj}${ts}
       </div>
     </div>
-    <div class="intel-actions">${link}<button class="ia del" onclick="dismissIntel(${did})" title="Dismiss">✕</button></div>
+    <div class="intel-actions">${actions}</div>
   </div>`;
 }
 
 async function dismissIntel(id) {
   try {
-    await api(`/intel/${id}`, 'DELETE');
-    allIntel = allIntel.filter(i => i.doc_id !== id);
+    await api(`/intel/${id}`, 'PATCH', { dismissed: true });
+    allIntel = allIntel.map(i => i.doc_id === id ? {...i, dismissed: true} : i);
     renderIntel(allIntel);
     const el = $('st-intel');
-    if (el) el.textContent = allIntel.length;
+    if (el) el.textContent = allIntel.filter(i => !i.dismissed).length;
   } catch(e) { console.warn('dismissIntel:', e); }
+}
+
+async function restoreIntel(id) {
+  try {
+    await api(`/intel/${id}`, 'PATCH', { dismissed: false });
+    allIntel = allIntel.map(i => i.doc_id === id ? {...i, dismissed: false} : i);
+    renderIntel(allIntel);
+    const el = $('st-intel');
+    if (el) el.textContent = allIntel.filter(i => !i.dismissed).length;
+  } catch(e) { console.warn('restoreIntel:', e); }
 }
 
 function openItemDetail(itemId) {
   const item = allAnalyses.find(a => a.item_id === itemId);
-  if (item) {
-    openDetail(item);
-    if ($('items-view').style.display === 'none') {
-      document.querySelectorAll('.vtab').forEach(e => e.classList.remove('active'));
-      // Find and activate the "All Items" tab by text content
-      Array.from(document.querySelectorAll('.vtab')).find(t => t.textContent.trim() === 'All Items')?.classList.add('active');
-      $('todo-view').style.display       = 'none';
-      $('intel-view').style.display      = 'none';
-      $('items-view').style.display      = 'block';
-      $('situations-view').style.display = 'none';
-    }
+  if (item) openDetail(item);
+}
+
+function _updateToolbarForView(v) {
+  const showDoneLbl  = $('showDoneLbl');
+  const scoreOpt     = $('sortOptScore');
+  if (showDoneLbl) showDoneLbl.style.display = v === 'todos' ? '' : 'none';
+  if (scoreOpt)    scoreOpt.style.display    = v === 'situations' ? '' : 'none';
+  // If "score" is selected but we left situations, fall back to priority
+  if (v !== 'situations' && sortBy === 'score') {
+    sortBy = 'priority';
+    const sel = $('sortSel'); if (sel) sel.value = 'priority';
   }
 }
 
+function onSortChange(val) {
+  sortBy = val;
+  if (currentView === 'items')           { renderItems(allAnalyses); }
+  else if (currentView === 'todos')      { const v = _filterTodos(allTodos); renderTodos(v); updateCounts(v); }
+  else if (currentView === 'intel')      { renderIntel(allIntel); }
+  else if (currentView === 'situations') { renderSituations(allSituations); }
+}
+
+function _applySortAnalyses(arr) {
+  const a = arr.slice();
+  if (sortBy === 'newest')   return a.sort((x,y) => (y.timestamp||'').localeCompare(x.timestamp||''));
+  if (sortBy === 'oldest')   return a.sort((x,y) => (x.timestamp||'').localeCompare(y.timestamp||''));
+  // priority (default): high→medium→low, then newest within each
+  return a.sort((x,y) => _priRank(x.priority) - _priRank(y.priority) || (y.timestamp||'').localeCompare(x.timestamp||''));
+}
+
+function onShowHidden() {
+  showHidden = $('showHidden').checked;
+  if (currentView === 'items')           { renderItems(allAnalyses); }
+  else if (currentView === 'todos')      { const v = _filterTodos(allTodos); renderTodos(v); updateCounts(v); }
+  else if (currentView === 'intel')      { loadIntel(); }
+  else if (currentView === 'situations') { loadSituations(); }
+}
+
 function setView(v, el) {
+  currentView = v;
   document.querySelectorAll('.vtab').forEach(e => e.classList.remove('active'));
   el.classList.add('active');
   $('todo-view').style.display       = v === 'todos'      ? 'block' : 'none';
   $('intel-view').style.display      = v === 'intel'      ? 'block' : 'none';
   $('items-view').style.display      = v === 'items'      ? 'block' : 'none';
   $('situations-view').style.display = v === 'situations' ? 'block' : 'none';
+  _updateToolbarForView(v);
   if (v === 'intel')      loadIntel();
   if (v === 'items')      loadItems();
   if (v === 'situations') loadSituations();
@@ -1924,9 +2087,13 @@ function openDetail(item) {
     <button class="detail-save" onclick="saveDetailEdits('${esc(item.item_id)}')">Save</button>
     <span class="detail-save-msg" id="detailSaveMsg"></span>`;
 
-  $('detailFoot').innerHTML = item.url
+  const openLink = item.url
     ? `<a href="${esc(item.url)}" target="_blank" class="connect-btn" style="text-decoration:none">↗ Open in ${item.source}</a>`
     : '<span style="font-size:11px;color:var(--muted)">No source link</span>';
+  const noiseBtn = item.category === 'noise'
+    ? `<button class="restore-btn" onclick="restoreItem('${esc(item.item_id)}')">↩ Restore</button>`
+    : `<button class="restore-btn" style="border-color:var(--red);color:var(--red)" onclick="markNoise('${esc(item.item_id)}')">✕ Mark irrelevant</button>`;
+  $('detailFoot').innerHTML = `${openLink}<span style="flex:1"></span>${noiseBtn}`;
 
   $('detailPanel').classList.add('open');
 }
@@ -2713,10 +2880,32 @@ async function pollStatus() {
 setInterval(pollStatus, 3000);
 pollStatus(); // check immediately on page load so refresh restores correct state
 
+// ── GPU meter ─────────────────────────────────────────────────────────────────
+async function pollGpu() {
+  const meter = $('gpu-meter');
+  if (!meter) return;
+  try {
+    const d = await api('/gpu');
+    if (!d.ok) { meter.classList.add('unavailable'); return; }
+    meter.classList.remove('unavailable');
+    meter.title = d.name || '';
+    $('gpu-pct').textContent = `${d.gpu_util}%`;
+    const bar = $('gpu-util-bar');
+    bar.style.width = `${d.gpu_util}%`;
+    bar.className = 'gpu-bar' + (d.gpu_util > 85 ? ' hot' : d.gpu_util > 55 ? ' warm' : '');
+    const used  = (d.mem_used  / 1073741824).toFixed(1);
+    const total = (d.mem_total / 1073741824).toFixed(1);
+    $('gpu-vram').textContent = `${used}/${total} GB`;
+  } catch { meter.classList.add('unavailable'); }
+}
+pollGpu();
+setInterval(pollGpu, 3000);
+
 function clearSearch() { $('searchInput').value = ''; searchQuery = ''; }
 clearSearch();
 setTimeout(clearSearch, 500);
 window.addEventListener('pageshow', clearSearch);
+_updateToolbarForView(currentView);
 loadStats();
 loadTodos();
 loadIntel();
