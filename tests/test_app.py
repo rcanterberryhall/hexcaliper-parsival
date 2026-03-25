@@ -3,8 +3,8 @@ import time
 from unittest.mock import patch
 
 import pytest
-from app import todos, analyses, scan_logs, scan_state
-from models import Analysis
+from app import todos, analyses, scan_logs, scan_state, intel_tbl, _save_analysis, Q
+from models import Analysis, ActionItem
 
 
 def _mock_analysis(item_id="x1", source="outlook"):
@@ -302,6 +302,94 @@ def test_scan_rejects_concurrent_scan(client):
     scan_state["running"] = True
     try:
         r = client.post("/scan", json={"sources": ["github"]})
+        assert r.status_code == 409
+    finally:
+        scan_state["running"] = False
+
+
+# ── _save_analysis ─────────────────────────────────────────────────────────────
+
+def _make_analysis(item_id="z1", has_action=False, category="fyi",
+                   action_items=None, information_items=None):
+    return Analysis(
+        item_id=item_id, source="outlook", title="Test item",
+        author="alice", timestamp="2026-03-17T10:00:00+00:00",
+        url="", has_action=has_action, priority="medium",
+        category=category,
+        action_items=action_items or [],
+        summary="S", urgency_reason=None,
+        information_items=information_items or [],
+    )
+
+
+def test_save_analysis_preserves_situation_id():
+    """situation_id set on an existing record must survive a re-save."""
+    analyses.insert({
+        "item_id": "z1", "source": "outlook", "title": "T",
+        "situation_id": "sit-42",
+        "priority": "medium", "category": "fyi",
+    })
+    _save_analysis(_make_analysis("z1"))
+    stored = analyses.get(Q.item_id == "z1")
+    assert stored["situation_id"] == "sit-42"
+
+
+def test_save_analysis_does_not_duplicate_todos():
+    """Calling _save_analysis twice with the same action item must produce
+    exactly one todo row."""
+    action = ActionItem(description="Do the thing", deadline=None, owner="me")
+    a = _make_analysis("z2", has_action=True, category="task",
+                       action_items=[action])
+    _save_analysis(a)
+    _save_analysis(a)
+    assert len(todos.all()) == 1
+
+
+def test_save_analysis_does_not_duplicate_intel():
+    """Calling _save_analysis twice with the same information_item must produce
+    exactly one intel row."""
+    a = _make_analysis("z3", information_items=[
+        {"fact": "Server was rebooted", "relevance": "ops context"}
+    ])
+    _save_analysis(a)
+    _save_analysis(a)
+    assert len(intel_tbl.all()) == 1
+
+
+# ── /analyses PATCH ────────────────────────────────────────────────────────────
+
+def test_patch_analysis_noise_removes_todos(client):
+    _insert_analysis(item_id="n1")
+    todos.insert({
+        "item_id": "n1", "source": "github", "title": "T",
+        "url": "", "description": "Do it", "deadline": None,
+        "owner": "me", "priority": "medium", "done": False,
+        "created_at": "2026-03-17T10:00:00+00:00",
+    })
+    r = client.patch("/analyses/n1", json={"category": "noise"})
+    assert r.status_code == 200
+    assert todos.get(Q.item_id == "n1") is None
+
+
+def test_patch_analysis_priority_syncs_to_todos(client):
+    _insert_analysis(item_id="p1", priority="low")
+    todos.insert({
+        "item_id": "p1", "source": "github", "title": "T",
+        "url": "", "description": "Do it", "deadline": None,
+        "owner": "me", "priority": "low", "done": False,
+        "created_at": "2026-03-17T10:00:00+00:00",
+    })
+    r = client.patch("/analyses/p1", json={"priority": "high"})
+    assert r.status_code == 200
+    assert todos.get(Q.item_id == "p1")["priority"] == "high"
+
+
+# ── /reanalyze ─────────────────────────────────────────────────────────────────
+
+def test_reanalyze_rejects_concurrent_scan(client):
+    scan_state["running"] = True
+    try:
+        r = client.post("/reanalyze")
         assert r.status_code == 409
     finally:
         scan_state["running"] = False
