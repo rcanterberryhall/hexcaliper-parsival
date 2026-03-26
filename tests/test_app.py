@@ -250,20 +250,20 @@ def test_get_settings_returns_expected_keys(client):
     r = client.get("/settings")
     assert r.status_code == 200
     body = r.json()
-    for key in ["ollama_url", "ollama_model", "slack_bot_token", "github_pat",
-                "jira_token", "jira_domain", "lookback_hours", "warnings"]:
+    for key in ["ollama_url", "ollama_model", "slack_client_id", "slack_client_secret",
+                "github_pat", "jira_token", "jira_domain", "lookback_hours", "warnings"]:
         assert key in body
 
 
 def test_get_settings_masks_secrets(client):
     import config as cfg
-    cfg.SLACK_BOT_TOKEN = "xoxb-realtoken123"
-    cfg.GITHUB_PAT      = "ghp_realpat456"
+    cfg.SLACK_CLIENT_SECRET = "xoxb-realtoken123"
+    cfg.GITHUB_PAT          = "ghp_realpat456"
     r = client.get("/settings")
     body = r.json()
-    assert "•" in body["slack_bot_token"]
-    assert "xoxb" in body["slack_bot_token"]   # prefix visible
-    assert "realtoken123" not in body["slack_bot_token"]
+    assert "•" in body["slack_client_secret"]
+    assert "xoxb" in body["slack_client_secret"]   # prefix visible
+    assert "realtoken123" not in body["slack_client_secret"]
     assert "•" in body["github_pat"]
 
 

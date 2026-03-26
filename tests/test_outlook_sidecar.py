@@ -8,7 +8,7 @@ keyring) are mocked so the suite runs on any OS.
 import sys
 import types
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch, call
 
 
@@ -25,7 +25,7 @@ def _make_msg(
 ):
     """Build a mock Outlook message COM object."""
     if received is None:
-        received = datetime(2026, 3, 14, 10, 0, 0)
+        received = datetime.now() - timedelta(hours=1)
 
     received_mock       = MagicMock()
     received_mock.year  = received.year
@@ -130,7 +130,7 @@ def test_fetch_returns_normalised_items():
         sender_name  = "Bob Jones",
         sender_email = "bob@example.com",
         unread       = True,
-        received     = datetime(2026, 3, 14, 9, 0, 0),
+        received     = datetime.now() - timedelta(hours=1),
     )
     mock_pythoncom, mock_win32com = _make_win32_stack([msg])
     with patch.dict(sys.modules, {"pythoncom": mock_pythoncom, "win32com": mock_win32com, "win32com.client": mock_win32com.client}):

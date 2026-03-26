@@ -141,7 +141,7 @@ def _run_seed_job(context: str) -> None:
                        " — ingest complete" if seen_items else "")
                 ),
             })
-            if seen_items and pending == 0:
+            if pending == 0:
                 break
             if _seed_job.get("cancelled"):
                 _seed_job.update({"state": "idle", "status": "idle"})
@@ -252,7 +252,7 @@ def _run_seed_job(context: str) -> None:
         )
 
         try:
-            with _ollama_sem:
+            with orchestrator.get_sem():
                 resp = http_requests.post(
                     config.OLLAMA_URL,
                     headers=config.ollama_headers(),

@@ -570,19 +570,23 @@ def analyze(item: RawItem) -> Analysis:
         if a.get("description")
     ]
 
-    # Jira fallback — always surface open tickets even if the LLM returns sparse output.
+    information_items = [
+        {"fact": i.get("fact", ""), "relevance": i.get("relevance", "")}
+        for i in data.get("information_items", [])
+        if i.get("fact")
+    ]
+
+    category     = data.get("category", "fyi")
+    action_items = action_items if category != "fyi" else []
+
+    # Jira fallback — always surface open tickets even if the LLM returns sparse
+    # output or assigns category=fyi.  Must run after the fyi-clear above.
     if item.source == "jira" and not action_items:
         action_items = [ActionItem(
             description = f"Work on: {item.title}",
             deadline    = item.metadata.get("due"),
             owner       = "me",
         )]
-
-    information_items = [
-        {"fact": i.get("fact", ""), "relevance": i.get("relevance", "")}
-        for i in data.get("information_items", [])
-        if i.get("fact")
-    ]
 
     return Analysis(
         item_id           = item.item_id,
@@ -591,10 +595,10 @@ def analyze(item: RawItem) -> Analysis:
         author            = item.author,
         timestamp         = item.timestamp,
         url               = item.url,
-        category          = data.get("category", "fyi"),
-        has_action        = data.get("has_action", bool(action_items)) and data.get("category", "fyi") != "fyi",
+        category          = category,
+        has_action        = bool(action_items),
         priority          = data.get("priority", "medium"),
-        action_items      = action_items if data.get("category", "fyi") != "fyi" else [],
+        action_items      = action_items,
         summary           = data.get("summary", item.title),
         urgency_reason    = data.get("urgency_reason"),
         hierarchy         = data.get("hierarchy", item.metadata.get("hierarchy", "general")),

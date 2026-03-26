@@ -1,3 +1,4 @@
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
 
 import connector_github
@@ -32,7 +33,7 @@ def test_github_fetch_returns_items(monkeypatch):
     monkeypatch.setattr(config, "GITHUB_USERNAME", "alice")
     monkeypatch.setattr(config, "LOOKBACK_HOURS", 48)
 
-    now = "2026-03-13T12:00:00Z"
+    now = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     notifications = [
         {

@@ -224,8 +224,8 @@ def validate() -> list[str]:
     checks = [
         (CF_CLIENT_ID,     "your-client-id",           "CF_CLIENT_ID not set — Ollama requests will be unauthenticated"),
         (CF_CLIENT_SECRET, "your-client-secret",        "CF_CLIENT_SECRET not set — Ollama requests will be unauthenticated"),
-        (SLACK_CLIENT_ID,  "",  "SLACK_CLIENT_ID not configured"),
-        (SLACK_CLIENT_SECRET, "", "SLACK_CLIENT_SECRET not configured"),
+        (SLACK_CLIENT_ID,     "your-slack-client",  "SLACK_CLIENT_ID not configured"),
+        (SLACK_CLIENT_SECRET, "your-slack-client",  "SLACK_CLIENT_SECRET not configured"),
         (GITHUB_PAT,       "ghp_your",                  "GITHUB_PAT not configured"),
         (JIRA_TOKEN,       "your-jira-api-token",       "JIRA_TOKEN not configured"),
         (JIRA_DOMAIN,      "yourcompany.atlassian.net", "JIRA_DOMAIN not configured"),

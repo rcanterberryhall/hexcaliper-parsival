@@ -88,14 +88,15 @@ def _seed(client, body=None, mock_fn=None):
     side_effect  = mock_fn if mock_fn else None
     rv           = default_mock if not mock_fn else None
 
-    with patch("app.http_requests.post", side_effect=side_effect, return_value=rv):
+    with patch("seeder.http_requests.post", side_effect=side_effect, return_value=rv):
         r = client.post("/seed", json=body or {})
         assert r.status_code == 200
 
         # Background thread runs with mock still active; spin until done
+        active_states = {"waiting_for_ingest", "analyzing", "reanalyzing", "scanning"}
         for _ in range(200):
             st = client.get("/seed/status").json()
-            if st.get("status") in ("done", "error"):
+            if st.get("state") not in active_states:
                 return st
             time.sleep(0.05)
 
@@ -187,7 +188,7 @@ def test_seed_passdowns_appear_first_in_batches(client):
 # situation sweep (the closure inside seed_apply resolves it from module globals).
 
 def test_seed_apply_adds_new_projects(client):
-    with patch("app._maybe_form_situation"):
+    with patch("seeder._maybe_form_situation"):
         r = client.post("/seed/apply", json={
             "projects": [{"name": "Reactor Upgrade", "keywords": ["reactor", "PROJ-88"]}],
             "topics":   ["safety audit"],
@@ -203,7 +204,7 @@ def test_seed_apply_skips_duplicate_project_names(client):
         "name": "Reactor Upgrade", "keywords": ["reactor"],
         "channels": [], "learned_keywords": [], "learned_senders": [],
     }]})
-    with patch("app._maybe_form_situation"):
+    with patch("seeder._maybe_form_situation"):
         r = client.post("/seed/apply", json={
             "projects": [{"name": "Reactor Upgrade", "keywords": ["reactor", "new-kw"]}],
             "topics":   [],
@@ -214,7 +215,7 @@ def test_seed_apply_skips_duplicate_project_names(client):
 
 def test_seed_apply_retags_untagged_items(client):
     _seed_corpus()
-    with patch("app._maybe_form_situation"):
+    with patch("seeder._maybe_form_situation"):
         r = client.post("/seed/apply", json={
             "projects": [{"name": "Reactor Upgrade", "keywords": ["reactor"]}],
             "topics":   [],
@@ -230,7 +231,7 @@ def test_seed_apply_does_not_retag_already_tagged_items(client):
     analyses.insert(_analysis("pre-tagged", "Reactor note", "Already tagged",
                                project_tag="Other Project",
                                body_preview="reactor coolant"))
-    with patch("app._maybe_form_situation"):
+    with patch("seeder._maybe_form_situation"):
         r = client.post("/seed/apply", json={
             "projects": [{"name": "Reactor Upgrade", "keywords": ["reactor"]}],
             "topics":   [],
@@ -242,7 +243,7 @@ def test_seed_apply_does_not_retag_already_tagged_items(client):
 
 def test_seed_apply_merges_topics_without_duplicates(client):
     settings_tbl.insert({"focus_topics": "safety audit, reactor ops", "projects": []})
-    with patch("app._maybe_form_situation"):
+    with patch("seeder._maybe_form_situation"):
         r = client.post("/seed/apply", json={
             "projects": [],
             "topics":   ["safety audit", "shift handoff"],
@@ -252,7 +253,7 @@ def test_seed_apply_merges_topics_without_duplicates(client):
 
 
 def test_seed_apply_returns_zero_counts_for_empty_input(client):
-    with patch("app._maybe_form_situation"):
+    with patch("seeder._maybe_form_situation"):
         r = client.post("/seed/apply", json={"projects": [], "topics": [], "retag": False})
     assert r.status_code == 200
     body = r.json()
