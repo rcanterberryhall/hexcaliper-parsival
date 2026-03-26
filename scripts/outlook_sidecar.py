@@ -94,19 +94,153 @@ def _setup() -> None:
     print("\nCredentials saved to Windows Credential Manager.")
 
 
+def _read_recipients(msg) -> tuple[list[str], list[str]]:
+    """
+    Extract To and CC recipient strings from a COM message object.
+
+    Returns ``(to_list, cc_list)`` as lists of ``"Name <addr>"`` strings.
+    Falls back to the plain ``msg.To`` / ``msg.CC`` string properties if the
+    Recipients COM collection is inaccessible.
+
+    :return: Tuple of ``(to_list, cc_list)``.
+    :rtype: tuple[list[str], list[str]]
+    """
+    to_list, cc_list = [], []
+    try:
+        for r in msg.Recipients:
+            addr  = getattr(r, "Address", "") or ""
+            name  = getattr(r, "Name", "")    or ""
+            entry = f"{name} <{addr}>" if name and addr else (name or addr)
+            rtype = getattr(r, "Type", 1)
+            if rtype == 1:    # olTo
+                to_list.append(entry)
+            elif rtype == 2:  # olCC
+                cc_list.append(entry)
+    except Exception:
+        to_list = [getattr(msg, "To", "") or ""]
+        cc_list = [getattr(msg, "CC", "") or ""]
+    return to_list, cc_list
+
+
+def _normalise_subject(subject: str) -> str:
+    """
+    Strip Re:/Fwd:/Fw: prefixes from a subject line for use as conversation_topic.
+
+    :param subject: Raw email subject string.
+    :return: Cleaned subject with reply/forward prefixes removed.
+    """
+    return re.sub(r'^(Re|Fwd?|AW|WG):\s*', '', subject or "", flags=re.IGNORECASE).strip()
+
+
+def _fetch_folder(
+    ns,
+    folder_id: int,
+    cutoff: "datetime",
+    max_emails: int,
+    direction: str,
+    time_field: str,
+) -> list[dict]:
+    """
+    Fetch emails from a single Outlook folder.
+
+    :param ns: MAPI namespace COM object.
+    :param folder_id: Outlook folder constant (6 = Inbox, 5 = Sent).
+    :param cutoff: Only fetch messages at or after this datetime.
+    :param max_emails: Maximum number of messages to return.
+    :param direction: ``"received"`` or ``"sent"``.
+    :param time_field: COM property name for the message timestamp
+                       (``"ReceivedTime"`` for Inbox, ``"SentOn"`` for Sent).
+    :return: List of normalised email dicts.
+    """
+    folder   = ns.GetDefaultFolder(folder_id)
+    messages = folder.Items
+    messages.Sort(f"[{time_field}]", True)
+
+    cutoff_str = cutoff.strftime("%m/%d/%Y %I:%M %p")
+    try:
+        messages = messages.Restrict(f"[{time_field}] >= '{cutoff_str}'")
+        messages.Sort(f"[{time_field}]", True)
+    except Exception:
+        pass
+
+    items = []
+    count = messages.Count
+    for index in range(1, min(count, max_emails) + 1):
+        try:
+            msg      = messages.Item(index)
+            subject  = getattr(msg, "Subject", None)
+            ts_com   = getattr(msg, time_field, None)
+            if ts_com is None:
+                continue
+
+            dt = datetime(
+                ts_com.year, ts_com.month, ts_com.day,
+                ts_com.hour, ts_com.minute, ts_com.second,
+            )
+            if dt < cutoff:
+                break
+
+            body         = re.sub(r'\n{3,}', '\n\n', (getattr(msg, "Body", "") or "")).strip()
+            sender_name  = getattr(msg, "SenderName", "")        or ""
+            sender_email = getattr(msg, "SenderEmailAddress", "") or ""
+            to_list, cc_list = _read_recipients(msg)
+
+            # Detect reply/forward via LastVerbExecuted (inbox only; sent = 0):
+            # 102 = olReplyToSender, 103 = olReplyToAll, 104 = olForward
+            last_verb    = getattr(msg, "LastVerbExecuted", 0) or 0
+            is_replied   = last_verb in (102, 103)
+            is_forwarded = last_verb == 104
+            replied_at   = None
+            if last_verb in (102, 103, 104):
+                try:
+                    rv = msg.LastVerbExecutionTime
+                    replied_at = datetime(
+                        rv.year, rv.month, rv.day,
+                        rv.hour, rv.minute, rv.second,
+                    ).isoformat()
+                except Exception:
+                    pass
+
+            conv_id    = getattr(msg, "ConversationID", "")    or ""
+            conv_topic = _normalise_subject(
+                getattr(msg, "ConversationTopic", "") or subject or ""
+            )
+
+            items.append({
+                "source":    "outlook",
+                "item_id":   str(getattr(msg, "EntryID", "")),
+                "title":     subject or "(no subject)",
+                "body":      body[:3000],
+                "url":       "",
+                "author":    f"{sender_name} <{sender_email}>".strip(),
+                "timestamp": dt.isoformat(),
+                "metadata":  {
+                    "direction":          direction,
+                    "is_read":            getattr(msg, "UnRead", True) is False,
+                    "to":                 "; ".join(to_list),
+                    "cc":                 "; ".join(cc_list),
+                    "is_replied":         is_replied,
+                    "is_forwarded":       is_forwarded,
+                    "replied_at":         replied_at,
+                    "conversation_id":    conv_id,
+                    "conversation_topic": conv_topic,
+                },
+            })
+        except Exception:
+            continue
+
+    return items
+
+
 def fetch(lookback_hours: int = LOOKBACK_HOURS, max_emails: int = MAX_EMAILS) -> list[dict]:
     """
-    Connect to the local Outlook client and fetch recent emails.
+    Connect to the local Outlook client and fetch recent emails from both
+    Inbox and Sent Items.
 
-    Uses ``win32com.client`` to access the MAPI namespace and retrieve
-    messages from the default Inbox.  Messages are filtered to the lookback
-    window defined by ``LOOKBACK_HOURS`` and capped at ``MAX_EMAILS``.
-
-    Recipient addresses are read from ``msg.Recipients`` (iterating the COM
-    collection and inspecting ``Type``: 1 = To, 2 = CC), with a fallback to
-    the plain ``msg.To`` / ``msg.CC`` string properties if the collection is
-    inaccessible.  Both ``to`` and ``cc`` are included as semicolon-separated
-    strings in ``metadata`` so the LLM can apply recipient-based hierarchy rules.
+    Uses ``win32com.client`` to access the MAPI namespace.  Each message is
+    enriched with ``conversation_id`` and ``conversation_topic`` for
+    graph-context linkage, and a ``direction`` flag (``"received"`` /
+    ``"sent"``) so the LLM can apply appropriate hierarchy rules.
 
     :return: List of normalised email dicts ready for ``POST /ingest``.
     :rtype: list[dict]
@@ -123,100 +257,26 @@ def fetch(lookback_hours: int = LOOKBACK_HOURS, max_emails: int = MAX_EMAILS) ->
         try:
             print("Connecting to Outlook...", flush=True)
             ns = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-            print("Opening Inbox...", flush=True)
-            inbox = ns.GetDefaultFolder(6)  # 6 = olFolderInbox
-            messages = inbox.Items
-            print("Sorting messages...", flush=True)
-            messages.Sort("[ReceivedTime]", True)
         except Exception as e:
             sys.exit(f"ERROR: Could not connect to Outlook — is it running? ({e})")
 
-        cutoff     = datetime.now() - timedelta(hours=lookback_hours)
-        cutoff_str = cutoff.strftime("%m/%d/%Y %I:%M %p")
+        cutoff = datetime.now() - timedelta(hours=lookback_hours)
 
-        try:
-            print("Applying time filter...", flush=True)
-            messages = messages.Restrict(f"[ReceivedTime] >= '{cutoff_str}'")
-            messages.Sort("[ReceivedTime]", True)
-        except Exception:
-            pass
+        print("Fetching Inbox...", flush=True)
+        inbox_items = _fetch_folder(
+            ns, folder_id=6, cutoff=cutoff, max_emails=max_emails,
+            direction="received", time_field="ReceivedTime",
+        )
+        print(f"  Inbox: {len(inbox_items)} items", flush=True)
 
-        items = []
-        count = messages.Count
-        print(f"Filtered item count: {count}", flush=True)
+        print("Fetching Sent Items...", flush=True)
+        sent_items = _fetch_folder(
+            ns, folder_id=5, cutoff=cutoff, max_emails=max_emails,
+            direction="sent", time_field="SentOn",
+        )
+        print(f"  Sent:  {len(sent_items)} items", flush=True)
 
-        for index in range(1, min(count, max_emails) + 1):
-            try:
-                msg      = messages.Item(index)
-                subject  = getattr(msg, "Subject", None)
-                received = getattr(msg, "ReceivedTime", None)
-                if received is None:
-                    continue
-
-                dt = datetime(
-                    received.year, received.month, received.day,
-                    received.hour, received.minute, received.second
-                )
-
-                if dt < cutoff:
-                    break
-
-                body         = re.sub(r'\n{3,}', '\n\n', (getattr(msg, "Body", "") or "")).strip()
-                sender_name  = getattr(msg, "SenderName", "")  or ""
-                sender_email = getattr(msg, "SenderEmailAddress", "") or ""
-
-                to_list, cc_list = [], []
-                try:
-                    for r in msg.Recipients:
-                        addr  = getattr(r, "Address", "") or ""
-                        name  = getattr(r, "Name", "")    or ""
-                        entry = f"{name} <{addr}>" if name and addr else (name or addr)
-                        rtype = getattr(r, "Type", 1)
-                        if rtype == 1:    # olTo
-                            to_list.append(entry)
-                        elif rtype == 2:  # olCC
-                            cc_list.append(entry)
-                except Exception:
-                    to_list = [getattr(msg, "To", "") or ""]
-                    cc_list = [getattr(msg, "CC", "") or ""]
-
-                # Detect reply/forward via LastVerbExecuted:
-                # 102 = olReplyToSender, 103 = olReplyToAll, 104 = olForward
-                last_verb   = getattr(msg, "LastVerbExecuted", 0) or 0
-                is_replied  = last_verb in (102, 103)
-                is_forwarded = last_verb == 104
-                replied_at  = None
-                if last_verb in (102, 103, 104):
-                    try:
-                        rv = msg.LastVerbExecutionTime
-                        replied_at = datetime(
-                            rv.year, rv.month, rv.day,
-                            rv.hour, rv.minute, rv.second,
-                        ).isoformat()
-                    except Exception:
-                        pass
-
-                items.append({
-                    "source":    "outlook",
-                    "item_id":   str(getattr(msg, "EntryID", "")),
-                    "title":     subject or "(no subject)",
-                    "body":      body[:3000],
-                    "url":       "",
-                    "author":    f"{sender_name} <{sender_email}>".strip(),
-                    "timestamp": dt.isoformat(),
-                    "metadata":  {
-                        "is_read":     getattr(msg, "UnRead", True) is False,
-                        "to":          "; ".join(to_list),
-                        "cc":          "; ".join(cc_list),
-                        "is_replied":  is_replied,
-                        "is_forwarded": is_forwarded,
-                        "replied_at":  replied_at,
-                    },
-                })
-            except Exception:
-                continue
-
-        return items
+        return inbox_items + sent_items
     finally:
         pythoncom.CoUninitialize()
 

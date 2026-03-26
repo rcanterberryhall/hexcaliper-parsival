@@ -22,58 +22,69 @@ def _make_msg(
     sender_email="alice@example.com",
     unread=True,
     received: datetime = None,
+    sent_on: datetime = None,
+    conversation_id="CONV001",
+    conversation_topic="Test Subject",
 ):
     """Build a mock Outlook message COM object."""
-    if received is None:
-        received = datetime.now() - timedelta(hours=1)
+    ts = received or sent_on or (datetime.now() - timedelta(hours=1))
 
-    received_mock       = MagicMock()
-    received_mock.year  = received.year
-    received_mock.month = received.month
-    received_mock.day   = received.day
-    received_mock.hour  = received.hour
-    received_mock.minute = received.minute
-    received_mock.second = received.second
+    def _com_dt(dt):
+        m = MagicMock()
+        m.year, m.month, m.day = dt.year, dt.month, dt.day
+        m.hour, m.minute, m.second = dt.hour, dt.minute, dt.second
+        return m
 
     msg = MagicMock()
     msg.Subject            = subject
-    msg.ReceivedTime       = received_mock
+    msg.ReceivedTime       = _com_dt(ts)
+    msg.SentOn             = _com_dt(ts)
     msg.Body               = body
     msg.SenderName         = sender_name
     msg.SenderEmailAddress = sender_email
     msg.EntryID            = entry_id
     msg.UnRead             = unread
+    msg.ConversationID     = conversation_id
+    msg.ConversationTopic  = conversation_topic
     return msg
 
 
-def _make_win32_stack(messages: list):
-    """
-    Build a mock win32com + pythoncom environment for a given message list.
-
-    Returns ``(mock_pythoncom, mock_win32com)`` ready to be injected via
-    ``sys.modules``.  ``Restrict()`` is wired to return the same mock so
-    that ``Count`` and ``Item`` remain intact after the time filter is applied.
-    """
+def _make_folder_mock(messages: list) -> MagicMock:
+    """Build a mock Outlook folder with the given message list."""
     mock_messages          = MagicMock()
     mock_messages.Count    = len(messages)
     mock_messages.Item     = lambda i: messages[i - 1]
-    # Restrict() returns the same mock so Count/Item stay valid after filtering.
     mock_messages.Restrict = MagicMock(return_value=mock_messages)
+    mock_folder       = MagicMock()
+    mock_folder.Items = mock_messages
+    return mock_folder
 
-    mock_inbox       = MagicMock()
-    mock_inbox.Items = mock_messages
+
+def _make_win32_stack(inbox_messages: list, sent_messages: list = None):
+    """
+    Build a mock win32com + pythoncom environment.
+
+    ``GetDefaultFolder(6)`` returns a folder with ``inbox_messages``.
+    ``GetDefaultFolder(5)`` returns a folder with ``sent_messages`` (empty by default).
+
+    Returns ``(mock_pythoncom, mock_win32com)`` ready for ``sys.modules``.
+    """
+    sent_messages = sent_messages or []
+
+    inbox_folder = _make_folder_mock(inbox_messages)
+    sent_folder  = _make_folder_mock(sent_messages)
 
     mock_ns = MagicMock()
-    mock_ns.GetDefaultFolder.return_value = mock_inbox
+    mock_ns.GetDefaultFolder.side_effect = lambda fid: (
+        inbox_folder if fid == 6 else sent_folder
+    )
 
     mock_app = MagicMock()
     mock_app.GetNamespace.return_value = mock_ns
 
-    mock_dispatch = MagicMock(return_value=mock_app)
-
     mock_win32com                 = types.ModuleType("win32com")
     mock_win32com.client          = MagicMock()
-    mock_win32com.client.Dispatch = mock_dispatch
+    mock_win32com.client.Dispatch = MagicMock(return_value=mock_app)
 
     mock_pythoncom                = types.ModuleType("pythoncom")
     mock_pythoncom.CoInitialize   = MagicMock()
@@ -190,6 +201,61 @@ def test_fetch_exits_when_outlook_not_running():
         sidecar = _sidecar()
         with pytest.raises(SystemExit):
             sidecar.fetch()
+
+
+def test_fetch_includes_conversation_fields():
+    msg = _make_msg(
+        entry_id="CONV_TEST",
+        subject="Re: Budget Review",
+        conversation_id="CONV-ID-123",
+        conversation_topic="Budget Review",
+    )
+    mock_pythoncom, mock_win32com = _make_win32_stack([msg])
+    with patch.dict(sys.modules, {"pythoncom": mock_pythoncom, "win32com": mock_win32com, "win32com.client": mock_win32com.client}):
+        sidecar = _sidecar()
+        items = sidecar.fetch()
+    assert len(items) == 1
+    meta = items[0]["metadata"]
+    assert meta["conversation_id"]    == "CONV-ID-123"
+    assert meta["conversation_topic"] == "Budget Review"
+    assert meta["direction"]          == "received"
+
+
+def test_fetch_sent_folder_sets_direction():
+    sent_msg = _make_msg(
+        entry_id="SENT001",
+        subject="My sent email",
+        conversation_id="CONV-SENT",
+        conversation_topic="My sent email",
+    )
+    mock_pythoncom, mock_win32com = _make_win32_stack([], sent_messages=[sent_msg])
+    with patch.dict(sys.modules, {"pythoncom": mock_pythoncom, "win32com": mock_win32com, "win32com.client": mock_win32com.client}):
+        sidecar = _sidecar()
+        items = sidecar.fetch()
+    assert len(items) == 1
+    assert items[0]["item_id"]              == "SENT001"
+    assert items[0]["metadata"]["direction"] == "sent"
+
+
+def test_fetch_returns_inbox_and_sent_combined():
+    inbox_msg = _make_msg(entry_id="IN001", subject="Incoming")
+    sent_msg  = _make_msg(entry_id="SN001", subject="Outgoing")
+    mock_pythoncom, mock_win32com = _make_win32_stack([inbox_msg], sent_messages=[sent_msg])
+    with patch.dict(sys.modules, {"pythoncom": mock_pythoncom, "win32com": mock_win32com, "win32com.client": mock_win32com.client}):
+        sidecar = _sidecar()
+        items = sidecar.fetch()
+    assert len(items) == 2
+    directions = {i["metadata"]["direction"] for i in items}
+    assert directions == {"received", "sent"}
+
+
+def test_normalise_subject_strips_re_prefix():
+    if "outlook_sidecar" in sys.modules:
+        del sys.modules["outlook_sidecar"]
+    import outlook_sidecar
+    assert outlook_sidecar._normalise_subject("Re: Budget Review") == "Budget Review"
+    assert outlook_sidecar._normalise_subject("Fwd: Notes") == "Notes"
+    assert outlook_sidecar._normalise_subject("No prefix") == "No prefix"
 
 
 def test_fetch_collapses_excessive_blank_lines():

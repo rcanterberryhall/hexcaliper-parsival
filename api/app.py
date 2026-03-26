@@ -718,14 +718,17 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
     :raises HTTPException 404: If no item with ``item_id`` exists.
     """
     allowed_priorities = {"high", "medium", "low"}
-    allowed_categories = {"reply_needed", "task", "deadline", "review", "approval", "fyi", "noise"}
+    allowed_categories = {"task", "approval", "fyi", "noise"}
+    allowed_task_types = {"reply", "review", None}
     updates = {}
     if "priority" in body and body["priority"] in allowed_priorities:
         updates["priority"] = body["priority"]
     if "category" in body and body["category"] in allowed_categories:
         updates["category"] = body["category"]
-        if body["category"] == "noise":
+        if body["category"] in ("noise", "fyi"):
             updates["has_action"] = 0
+    if "task_type" in body and body["task_type"] in allowed_task_types:
+        updates["task_type"] = body["task_type"]
     if "project_tag" in body:
         updates["project_tag"] = body["project_tag"] or None
     if "is_passdown" in body and isinstance(body["is_passdown"], bool):

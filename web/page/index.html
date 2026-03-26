@@ -258,10 +258,9 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .b-slack         { background: rgba(204,51,0,.1);     color: var(--purple); border: 1px solid rgba(204,51,0,.2); }
 .b-github        { background: rgba(240,228,224,.07); color: var(--text);   border: 1px solid var(--border2); }
 .b-jira          { background: rgba(255,176,32,.08);  color: var(--amber);  border: 1px solid rgba(255,176,32,.2); }
-.b-reply_needed  { color: var(--red);    background: rgba(255,64,64,.1);    border: 1px solid rgba(255,64,64,.2); }
 .b-task          { color: var(--accent); background: rgba(212,160,23,.08);  border: 1px solid rgba(212,160,23,.18); }
-.b-deadline      { color: var(--amber);  background: rgba(255,176,32,.07);  border: 1px solid rgba(255,176,32,.15); }
-.b-review        { color: var(--blue);   background: rgba(64,184,255,.07);  border: 1px solid rgba(64,184,255,.15); }
+.b-task-reply    { color: var(--red);    background: rgba(255,64,64,.1);    border: 1px solid rgba(255,64,64,.2); }
+.b-task-review   { color: var(--blue);   background: rgba(64,184,255,.07);  border: 1px solid rgba(64,184,255,.15); }
 .b-approval      { color: var(--purple); background: rgba(204,51,0,.08);    border: 1px solid rgba(204,51,0,.18); }
 .b-fyi, .b-noise { color: var(--muted);  background: rgba(110,80,80,.12);   border: 1px solid var(--border); }
 .b-passdown      { color: var(--gold);   background: rgba(212,160,23,.07);  border: 1px solid rgba(212,160,23,.18); }
@@ -1034,11 +1033,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
       </table>
       <table class="help-table" style="margin-top:8px">
         <tr><th>Category</th><th>Meaning</th></tr>
-        <tr><td>reply_needed</td><td>Someone is waiting on a response from you.</td></tr>
-        <tr><td>task</td><td>A concrete piece of work you need to do.</td></tr>
-        <tr><td>deadline</td><td>A hard date is approaching.</td></tr>
-        <tr><td>review</td><td>Something needs your review or approval.</td></tr>
-        <tr><td>approval</td><td>An explicit sign-off is required from you.</td></tr>
+        <tr><td>task</td><td>Actionable work for you. Sub-type shown as "task · reply" (someone awaiting your response) or "task · review" (review/approval needed); plain "task" for general assigned work.</td></tr>
+        <tr><td>approval</td><td>An approval event that occurred or affects you (PO approved, plan signed off, timesheets approved).</td></tr>
         <tr><td>fyi</td><td>Informational — no action required but worth knowing.</td></tr>
         <tr><td>noise</td><td>Irrelevant to your work — marketing, automated alerts, etc.</td></tr>
       </table>
@@ -1562,7 +1558,8 @@ function renderItems(items) {
 function itemRow(i) {
   const t       = i.timestamp ? new Date(i.timestamp).toLocaleDateString([], {month:'short', day:'numeric'}) : '';
   const link    = i.url ? `<a href="${esc(i.url)}" target="_blank">↗</a>` : '—';
-  const cat     = (i.category || 'fyi').replace('_', ' ');
+  const catKey  = i.task_type ? `task-${i.task_type}` : (i.category || 'fyi');
+  const catLabel = i.task_type ? `task · ${i.task_type}` : (i.category || 'fyi');
   const isNoise = i.category === 'noise';
   const pd      = i.is_passdown ? `<span class="badge b-passdown" style="margin-left:4px">passdown</span>` : '';
   const proj    = i.project_tag ? `<span class="badge b-project" style="margin-left:4px">${esc(i.project_tag)}</span>` : '';
@@ -1576,7 +1573,7 @@ function itemRow(i) {
   const replied = i.is_replied ? `<span title="Replied" style="color:var(--blue);font-size:10px;margin-left:4px">↩</span>` : '';
   return `<tr class="${isNoise ? 'row-hidden' : ''}" onclick="openItemDetail('${esc(i.item_id)}')">
     <td><span class="badge b-${i.source}">${i.source}</span>${pd}${replied}</td>
-    <td><span class="badge b-${i.category || 'fyi'}">${cat}</span></td>
+    <td><span class="badge b-${catKey}">${catLabel}</span></td>
     <td class="t-title">${esc(i.title || '')}${proj}</td>
     <td class="t-author">${esc(i.author || '')}</td>
     <td class="t-sum">${esc(i.summary || '')}</td>
@@ -1982,7 +1979,7 @@ function openDetail(item) {
 
   const badges = [
     `<span class="badge b-${item.source}">${item.source}</span>`,
-    item.category ? `<span class="badge b-${item.category}">${(item.category).replace('_', ' ')}</span>` : '',
+    item.category ? `<span class="badge b-${item.task_type ? 'task-'+item.task_type : item.category}">${item.task_type ? 'task · '+item.task_type : item.category}</span>` : '',
     `<span class="badge" style="background:rgba(110,80,80,.1);border:1px solid var(--border);color:var(--muted)">${item.priority || 'low'}</span>`,
     item.hierarchy ? `<span class="badge" style="background:rgba(110,80,80,.1);border:1px solid var(--border);color:var(--muted)">${item.hierarchy}</span>` : '',
     item.project_tag  ? `<span class="badge b-project">${esc(item.project_tag)}</span>` : '',
@@ -2067,8 +2064,10 @@ function openDetail(item) {
 
   const priOpts = ['high','medium','low'].map(v =>
     `<option value="${v}"${v === item.priority ? ' selected' : ''}>${v}</option>`).join('');
-  const catOpts = ['reply_needed','task','deadline','review','approval','fyi','noise'].map(v =>
-    `<option value="${v}"${v === item.category ? ' selected' : ''}>${v.replace('_',' ')}</option>`).join('');
+  const catOpts = ['task','approval','fyi','noise'].map(v =>
+    `<option value="${v}"${v === item.category ? ' selected' : ''}>${v}</option>`).join('');
+  const taskTypeOpts = [['','— none —'],['reply','reply'],['review','review']].map(([v,l]) =>
+    `<option value="${v}"${(item.task_type||'') === v ? ' selected' : ''}>${l}</option>`).join('');
   const projOpts = [`<option value="">— none —</option>`]
     .concat(allProjects.map(p =>
       `<option value="${esc(p.name)}"${p.name === item.project_tag ? ' selected' : ''}>${esc(p.name)}</option>`))
@@ -2078,6 +2077,8 @@ function openDetail(item) {
     <select class="detail-select" id="detailPri">${priOpts}</select>
     <label>Category</label>
     <select class="detail-select" id="detailCat">${catOpts}</select>
+    <label>Task type</label>
+    <select class="detail-select" id="detailTaskType">${taskTypeOpts}</select>
     <label>Project</label>
     <select class="detail-select" id="detailProj">${projOpts}</select>
     <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
@@ -2157,16 +2158,17 @@ async function detailToggleDone(docId, done, itemId) {
 async function saveDetailEdits(itemId) {
   const pri        = $('detailPri').value;
   const cat        = $('detailCat').value;
+  const taskType   = $('detailTaskType')?.value || null;
   const proj       = $('detailProj')?.value ?? undefined;
   const isPassdown = $('detailPassdown')?.checked;
   const msg        = $('detailSaveMsg');
-  const body = { priority: pri, category: cat, is_passdown: isPassdown };
+  const body = { priority: pri, category: cat, task_type: taskType, is_passdown: isPassdown };
   if (proj !== undefined) body.project_tag = proj || null;
   try {
     await api(`/analyses/${encodeURIComponent(itemId)}`, 'PATCH', body);
     const a = findAnalysis(itemId);
     if (a) {
-      a.priority = pri; a.category = cat; a.is_passdown = isPassdown;
+      a.priority = pri; a.category = cat; a.task_type = taskType; a.is_passdown = isPassdown;
       if (proj !== undefined) a.project_tag = proj || null;
     }
     renderItems(allAnalyses);

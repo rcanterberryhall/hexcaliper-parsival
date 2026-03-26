@@ -70,7 +70,8 @@ Respond ONLY with valid JSON. No explanation, no markdown fences.
 {{
   "has_action": true or false,
   "priority": "high" or "medium" or "low",
-  "category": one of ["reply_needed", "task", "deadline", "review", "approval", "fyi", "noise"],
+  "category": one of ["task", "approval", "fyi", "noise"],
+  "task_type": one of ["reply", "review", null],
   "hierarchy": one of ["user", "project", "topic", "general"],
   "is_passdown": true or false,
   "project_tag": "exact project name from the active projects list above, or null if none match — do NOT invent names from email content; prefer the most specific sub-project over its parent when both could match",
@@ -122,13 +123,13 @@ Goals — extract genuine project objectives or milestones stated in the content
 Key dates — extract any deadlines, release dates, meeting times, or time references (even relative: "end of sprint", "next Monday").
 
 Category rules:
-- reply_needed: someone is waiting on a response from {user_name}
-- task: work specifically assigned to or requested of {user_name}
-- deadline: time-sensitive with an explicit or implied due date
-- review: code/doc review requested of {user_name}
-- approval: decision or sign-off needed from {user_name}
+- task: actionable work for {user_name}; refine with task_type:
+  * task_type="reply"  — someone is waiting on a response from {user_name}
+  * task_type="review" — code/doc review, approval, or sign-off needed from {user_name}
+  * task_type=null     — general assigned work, deadline, or other task
+- approval: an approval event that already occurred or affects {user_name} (PO approved, plan signed off, timesheets approved) — NOT a request for approval (use task/review for that)
 - fyi: informational only — no action required of {user_name}; MUST have has_action=false and action_items=[]
-- noise: automated notifications, irrelevant to {user_name}
+- noise: automated notifications, irrelevant to {user_name}; MUST have has_action=false and action_items=[]
 
 Priority rules:
 - high: blocking someone, same-day, overdue, or directly requires {user_name}'s immediate action
@@ -588,8 +589,9 @@ def analyze(item: RawItem) -> Analysis:
         if i.get("fact")
     ]
 
-    category     = data.get("category", "fyi")
-    action_items = action_items if category != "fyi" else []
+    category  = data.get("category", "fyi")
+    task_type = data.get("task_type")  # "reply" | "review" | None
+    action_items = action_items if category not in ("fyi", "noise") else []
 
     # Jira fallback — always surface open tickets even if the LLM returns sparse
     # output or assigns category=fyi.  Must run after the fyi-clear above.
@@ -608,6 +610,7 @@ def analyze(item: RawItem) -> Analysis:
         timestamp         = item.timestamp,
         url               = item.url,
         category          = category,
+        task_type         = task_type,
         has_action        = bool(action_items),
         priority          = data.get("priority", "medium"),
         action_items      = action_items,
@@ -618,6 +621,9 @@ def analyze(item: RawItem) -> Analysis:
         project_tag       = _validated_project_tag(
                                data.get("project_tag") or item.metadata.get("project_tag")
                            ),
+        direction         = item.metadata.get("direction", "received"),
+        conversation_id   = item.metadata.get("conversation_id"),
+        conversation_topic = item.metadata.get("conversation_topic"),
         goals             = [g for g in data.get("goals", []) if isinstance(g, str) and g],
         key_dates         = [d for d in data.get("key_dates", []) if isinstance(d, dict)],
         body_preview      = _strip_caution(item.body)[:2000],
