@@ -53,7 +53,7 @@ User context:
 - Active projects: {projects_ctx}
 - Watch topics: {topics_ctx}
 - Noise/irrelevant topics: {noise_ctx} — if content is primarily about these with no direct relevance to {user_name}, set category="noise", priority="low", has_action=false
-{sender_hint}{replied_hint}{manual_tag_hint}{embedding_hint}
+{sender_hint}{replied_hint}{manual_tag_hint}{graph_hint}{embedding_hint}
 Analyze this item and extract structured information.
 
 Source: {source}
@@ -498,6 +498,17 @@ def analyze(item: RawItem) -> Analysis:
     else:
         replied_hint = ""
 
+    # Graph context — related prior items from the knowledge graph
+    graph_hint = ""
+    try:
+        import graph as _graph
+        ctx_items = _graph.get_context(item, max_n=4)
+        ctx_text  = _graph.format_context(ctx_items)
+        if ctx_text:
+            graph_hint = f"\n- {ctx_text}"
+    except Exception as e:
+        print(f"[agent] graph context failed: {e}")
+
     embedding_hint = ""
     body_text = item.body[:2000] or item.title
     if body_text:
@@ -545,6 +556,7 @@ def analyze(item: RawItem) -> Analysis:
                 sender_hint     = sender_hint,
                 replied_hint    = replied_hint,
                 manual_tag_hint = manual_tag_hint,
+                graph_hint      = graph_hint,
                 embedding_hint  = embedding_hint,
             ),
             "stream":  False,

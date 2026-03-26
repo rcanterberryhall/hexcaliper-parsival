@@ -11,45 +11,31 @@ Owns all situation-lifecycle logic extracted from app.py:
   _situation_response()      — build the API response dict for a situation
   _score_decay_loop()        — 30-minute daemon that decays situation scores
 
-All TinyDB table references and db_lock are injected via init() to avoid
-circular imports with app.py.  scan_state is also injected so situation
-formation can check the cancellation flag.
+Uses db.py directly for all persistence.  scan_state is injected via init()
+so situation formation can check the cancellation flag.
 """
 import json
 import threading
 import uuid as _uuid
 from datetime import datetime, timezone
 
-from tinydb import Query
-
 import config
 import correlator as _correlator
+import db
 
 # ── Module-level references, set by init() ────────────────────────────────────
 
-_analyses       = None
-_situations_tbl = None
-_intel_tbl      = None
-_db_lock        = None
-_scan_state     = None
-
-Q = Query()
+_scan_state: dict = {}
 
 
-def init(analyses, situations_tbl, intel_tbl, db_lock, scan_state):
+def init(scan_state: dict) -> None:
     """
-    Inject TinyDB table references and shared state from app.py.
+    Inject shared scan state from app.py and start the score-decay daemon.
 
-    Must be called once at startup, immediately after the TinyDB tables are
-    created, before any route handlers execute.  Starts the 30-minute score
-    decay daemon thread.
+    Must be called once at startup before any route handlers execute.
     """
-    global _analyses, _situations_tbl, _intel_tbl, _db_lock, _scan_state
-    _analyses       = analyses
-    _situations_tbl = situations_tbl
-    _intel_tbl      = intel_tbl
-    _db_lock        = db_lock
-    _scan_state     = scan_state
+    global _scan_state
+    _scan_state = scan_state
     threading.Thread(target=_score_decay_loop, daemon=True).start()
 
 
@@ -86,22 +72,19 @@ def _rescore_situation(sit_id: str) -> None:
     :type sit_id: str
     """
     try:
-        with _db_lock:
-            sit = _situations_tbl.get(Q.situation_id == sit_id)
+        with db.lock:
+            sit = db.get_situation(sit_id)
         if not sit:
             return
         item_ids = sit.get("item_ids", [])
-        with _db_lock:
-            cluster_records = [_analyses.get(Q.item_id == iid) for iid in item_ids]
+        with db.lock:
+            cluster_records = [db.get_item(iid) for iid in item_ids]
         cluster_records = [r for r in cluster_records if r]
         if not cluster_records:
             return
         score = _correlator.score_situation(item_ids, cluster_records)
-        with _db_lock:
-            _situations_tbl.update(
-                {"score": score, "score_updated_at": now_iso()},
-                Q.situation_id == sit_id,
-            )
+        with db.lock:
+            db.update_situation(sit_id, {"score": score, "score_updated_at": now_iso()})
     except Exception as e:
         print(f"[correlator] _rescore_situation({sit_id}): {e}")
 
@@ -110,16 +93,15 @@ def _rescore_all_situations() -> None:
     """
     Recompute urgency scores for all non-dismissed situations.
 
-    Iterates every situation in ``situations_tbl`` that is not marked
-    ``dismissed`` and calls ``_rescore_situation`` on each.  Exceptions for
-    individual situations are caught and logged so a single failure does not
-    abort the sweep.
+    Iterates every situation that is not marked ``dismissed`` and calls
+    ``_rescore_situation`` on each.  Exceptions for individual situations are
+    caught and logged so a single failure does not abort the sweep.
 
     Called every 30 minutes by the daemon thread started at module load time
     (``_score_decay_loop``).
     """
-    with _db_lock:
-        sit_ids = [s["situation_id"] for s in _situations_tbl.all() if not s.get("dismissed")]
+    with db.lock:
+        sit_ids = [s["situation_id"] for s in db.get_all_situations(include_dismissed=False)]
     for sid in sit_ids:
         try:
             _rescore_situation(sid)
@@ -146,9 +128,9 @@ def _update_situation_record(sit_id: str, item_ids: list) -> None:
 
     Fetches all analysis records for ``item_ids``, re-runs
     ``correlator.synthesize_situation`` (full LLM pass) and
-    ``correlator.score_situation``, then writes the updated fields back to
-    ``situations_tbl``.  Also re-links every item in ``item_ids`` to
-    ``sit_id`` via ``analyses.update`` in case new items were merged in.
+    ``correlator.score_situation``, then writes the updated fields back to the
+    situations table.  Also re-links every item in ``item_ids`` to ``sit_id``
+    in case new items were merged in.
 
     Called when a new item is merged into an existing situation and after
     ``POST /situations/{situation_id}/rescore``.
@@ -159,17 +141,14 @@ def _update_situation_record(sit_id: str, item_ids: list) -> None:
     :type item_ids: list
     """
     try:
-        with _db_lock:
-            cluster_records = [_analyses.get(Q.item_id == iid) for iid in item_ids]
+        with db.lock:
+            cluster_records = [db.get_item(iid) for iid in item_ids]
         cluster_records = [r for r in cluster_records if r]
         if not cluster_records:
             return
 
-        with _db_lock:
-            cluster_intel = [
-                i for i in _intel_tbl.all()
-                if i.get("item_id") in set(item_ids) and not i.get("dismissed")
-            ]
+        with db.lock:
+            cluster_intel = db.get_intel_for_items(list(set(item_ids)))
         synthesis   = _correlator.synthesize_situation(cluster_records, config.USER_NAME or "the user", intel_items=cluster_intel)
         score       = _correlator.score_situation(item_ids, cluster_records)
         max_pri     = max(cluster_records, key=lambda r: _pri_rank(r.get("priority", "low")))
@@ -195,10 +174,10 @@ def _update_situation_record(sit_id: str, item_ids: list) -> None:
             "project_tag":      proj_tags[0] if len(proj_tags) == 1 else None,
             "score_updated_at": now_iso(),
         }
-        with _db_lock:
-            _situations_tbl.update(updates, Q.situation_id == sit_id)
+        with db.lock:
+            db.update_situation(sit_id, updates)
             for iid in item_ids:
-                _analyses.update({"situation_id": sit_id}, Q.item_id == iid)
+                db.update_item(iid, {"situation_id": sit_id})
     except Exception as e:
         print(f"[correlator] _update_situation_record({sit_id}): {e}")
 
@@ -217,19 +196,19 @@ def _sync_situation_tags_for_item(item_id: str) -> None:
     :param item_id: Stable ID of the analysis whose tag just changed.
     :type item_id: str
     """
-    with _db_lock:
-        affected = [s for s in _situations_tbl.all() if item_id in s.get("item_ids", [])]
+    with db.lock:
+        affected = db.get_situations_containing_item(item_id)
     for sit in affected:
         sit_id   = sit.get("situation_id")
         mem_ids  = sit.get("item_ids", [])
-        with _db_lock:
-            members = [_analyses.get(Q.item_id == iid) for iid in mem_ids]
+        with db.lock:
+            members = [db.get_item(iid) for iid in mem_ids]
         members   = [m for m in members if m]
         proj_tags = list({m.get("project_tag") for m in members if m.get("project_tag")})
         new_tag   = proj_tags[0] if len(proj_tags) == 1 else None
         if new_tag != sit.get("project_tag"):
-            with _db_lock:
-                _situations_tbl.update({"project_tag": new_tag}, Q.situation_id == sit_id)
+            with db.lock:
+                db.update_situation(sit_id, {"project_tag": new_tag})
 
 
 def _sync_situation_tags_all() -> None:
@@ -240,19 +219,19 @@ def _sync_situation_tags_all() -> None:
     ``save_settings``).  Uses the same consensus rule as
     ``_sync_situation_tags_for_item``.
     """
-    with _db_lock:
-        all_sits = _situations_tbl.all()
+    with db.lock:
+        all_sits = db.get_all_situations(include_dismissed=True)
     for sit in all_sits:
         sit_id   = sit.get("situation_id")
         mem_ids  = sit.get("item_ids", [])
-        with _db_lock:
-            members = [_analyses.get(Q.item_id == iid) for iid in mem_ids]
+        with db.lock:
+            members = [db.get_item(iid) for iid in mem_ids]
         members   = [m for m in members if m]
         proj_tags = list({m.get("project_tag") for m in members if m.get("project_tag")})
         new_tag   = proj_tags[0] if len(proj_tags) == 1 else None
         if new_tag != sit.get("project_tag"):
-            with _db_lock:
-                _situations_tbl.update({"project_tag": new_tag}, Q.situation_id == sit_id)
+            with db.lock:
+                db.update_situation(sit_id, {"project_tag": new_tag})
 
 
 # ── Formation ──────────────────────────────────────────────────────────────────
@@ -277,8 +256,8 @@ def _maybe_form_situation(item_id: str) -> None:
        ``Situation`` document via ``correlator.synthesize_situation`` and
        ``correlator.score_situation``, then link all cluster items.
 
-    All TinyDB writes are serialised through ``_db_lock``.  Exceptions are
-    caught and logged so a single failing item does not block the ingest queue.
+    All writes are serialised through ``db.lock``.  Exceptions are caught and
+    logged so a single failing item does not block the ingest queue.
 
     :param item_id: Stable ID of the analysis item to process.
     :type item_id: str
@@ -286,9 +265,9 @@ def _maybe_form_situation(item_id: str) -> None:
     try:
         from embedder import get_item_vector
 
-        with _db_lock:
-            record       = _analyses.get(Q.item_id == item_id)
-            all_analyses = _analyses.all()
+        with db.lock:
+            record       = db.get_item(item_id)
+            all_analyses = db.get_all_items()
         if not record:
             return
 
@@ -310,52 +289,49 @@ def _maybe_form_situation(item_id: str) -> None:
             return
 
         # Check whether any candidate already belongs to a situation
-        with _db_lock:
+        with db.lock:
             sit_ids = set()
             for cid in candidates:
-                r = _analyses.get(Q.item_id == cid)
+                r = db.get_item(cid)
                 if r and r.get("situation_id"):
                     sit_ids.add(r["situation_id"])
 
         if sit_ids:
             # Merge into the highest-scoring existing situation
             target_sit_id = sit_ids.pop()
-            with _db_lock:
-                sit = _situations_tbl.get(Q.situation_id == target_sit_id)
+            with db.lock:
+                sit = db.get_situation(target_sit_id)
             if sit:
                 updated_ids = list(dict.fromkeys(sit.get("item_ids", []) + [item_id]))
                 # Merge any additional sit_ids
                 for extra_sid in sit_ids:
-                    with _db_lock:
-                        extra = _situations_tbl.get(Q.situation_id == extra_sid)
+                    with db.lock:
+                        extra = db.get_situation(extra_sid)
                     if extra:
                         updated_ids = list(dict.fromkeys(updated_ids + extra.get("item_ids", [])))
-                        with _db_lock:
-                            _situations_tbl.remove(Q.situation_id == extra_sid)
+                        with db.lock:
+                            db.delete_situation(extra_sid)
 
                 _update_situation_record(target_sit_id, updated_ids)
-                with _db_lock:
-                    _analyses.update({"situation_id": target_sit_id}, Q.item_id == item_id)
+                with db.lock:
+                    db.update_item(item_id, {"situation_id": target_sit_id})
                 return
 
         # No existing situation — check minimum cluster requirements
         all_ids = [item_id] + candidates
-        with _db_lock:
-            cluster_records = [_analyses.get(Q.item_id == iid) for iid in all_ids]
+        with db.lock:
+            cluster_records = [db.get_item(iid) for iid in all_ids]
         cluster_records = [r for r in cluster_records if r]
 
         if len(cluster_records) < 2:
             return
 
-        if _scan_state["cancelled"]:
+        if _scan_state.get("cancelled"):
             return
 
         # Create new situation
-        with _db_lock:
-            cluster_intel = [
-                i for i in _intel_tbl.all()
-                if i.get("item_id") in set(all_ids) and not i.get("dismissed")
-            ]
+        with db.lock:
+            cluster_intel = db.get_intel_for_items(list(set(all_ids)))
         synthesis   = _correlator.synthesize_situation(cluster_records, config.USER_NAME or "the user", intel_items=cluster_intel)
         score       = _correlator.score_situation(all_ids, cluster_records)
         max_pri     = max(cluster_records, key=lambda r: _pri_rank(r.get("priority", "low")))
@@ -385,10 +361,10 @@ def _maybe_form_situation(item_id: str) -> None:
             "score_updated_at": now_iso(),
             "dismissed":        False,
         }
-        with _db_lock:
-            _situations_tbl.insert(sit_doc)
+        with db.lock:
+            db.insert_situation(sit_doc)
             for iid in all_ids:
-                _analyses.update({"situation_id": sit_id}, Q.item_id == iid)
+                db.update_item(iid, {"situation_id": sit_id})
 
         print(f"[correlator] formed situation {sit_id[:8]} from {len(all_ids)} items")
 
@@ -407,14 +383,14 @@ def _spawn_situation_task(item_id: str) -> None:
     :param item_id: Stable ID of the analysis item to process.
     :type item_id: str
     """
-    with _db_lock:
+    with db.lock:
         _scan_state["situations_pending"] += 1
 
     def _run() -> None:
         try:
             _maybe_form_situation(item_id)
         finally:
-            with _db_lock:
+            with db.lock:
                 _scan_state["situations_pending"] = max(0, _scan_state["situations_pending"] - 1)
 
     threading.Thread(target=_run, daemon=True).start()
@@ -430,14 +406,14 @@ def _situation_response(sit: dict) -> dict:
     ``priority``, ``timestamp``) for each contributing analysis and includes
     it in the response as the ``items`` list.
 
-    :param sit: Raw situation document dict from TinyDB.
+    :param sit: Raw situation document dict from db.py.
     :type sit: dict
     :return: API-ready dict with all situation fields plus lightweight ``items``.
     :rtype: dict
     """
     item_ids = sit.get("item_ids", [])
-    with _db_lock:
-        items_raw = [_analyses.get(Q.item_id == iid) for iid in item_ids]
+    with db.lock:
+        items_raw = [db.get_item(iid) for iid in item_ids]
     items = [
         {
             "item_id":   r.get("item_id"),

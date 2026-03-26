@@ -6,9 +6,8 @@ Key responsibilities:
 
 - Receiving and deduplicating raw items via ``POST /ingest`` (sidecar path).
 - Orchestrating multi-source scans via ``POST /scan`` (frontend path).
-- Persisting ``Analysis`` and ``Todo`` records to TinyDB, including the
-  context-aware enrichment fields: ``hierarchy``, ``is_passdown``,
-  ``project_tag``, ``goals``, ``key_dates``, and ``body_preview``.
+- Persisting ``Analysis`` and ``Todo`` records to SQLite via ``db.py``,
+  including the context-aware enrichment fields.
 - Serving settings, stats, and Slack/Teams OAuth endpoints to the frontend.
 - Project and noise learning:
     - ``POST /analyses/{item_id}/tag`` — tags an item to a project and
@@ -34,22 +33,11 @@ All AI analysis is performed asynchronously via ``agent.analyze`` so that
 HTTP responses are returned immediately and the UI polls for results.
 
 Module-level singletons:
-    ``db``             — TinyDB instance at ``config.DB_PATH``.
-    ``analyses``       — TinyDB table storing ``Analysis`` records.
-    ``todos``          — TinyDB table storing todo/action-item rows.
-    ``scan_logs``      — TinyDB table storing scan run metadata.
-    ``settings_tbl``   — TinyDB table storing persisted settings (doc_id=1).
-    ``embeddings_tbl`` — TinyDB table storing item embedding vectors.
-    ``situations_tbl`` — TinyDB table storing ``Situation`` records.
-    ``intel_tbl``      — TinyDB table storing information-item rows.
-    ``db_lock``        — ``threading.Lock`` serialising all TinyDB writes.
-    ``_ollama_sem``    — ``threading.Semaphore(1)`` throttling concurrent LLM calls.
     ``scan_state``     — Shared dict updated in-place by all background jobs for
                          progress reporting via ``GET /scan/status``.
     ``_seed_job``      — Single-slot state dict for the seed background job.
 """
 import json
-import os
 import threading
 from datetime import datetime, timezone
 from typing import Optional
@@ -58,9 +46,9 @@ import requests as http_requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from tinydb import TinyDB, Query
 
 import config
+import db
 from agent import extract_keywords, extract_emails
 from models import RawItem, Analysis
 import correlator as _correlator
@@ -77,24 +65,328 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
-# Ensure data directory exists before TinyDB opens the file
-os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
-
-db             = TinyDB(config.DB_PATH)
-analyses       = db.table("analyses")
-todos          = db.table("todos")
-scan_logs      = db.table("scan_logs")
-settings_tbl   = db.table("settings")
-embeddings_tbl = db.table("embeddings")
-situations_tbl = db.table("situations")
-intel_tbl      = db.table("intel")
-Q            = Query()
-db_lock      = threading.Lock()
+# Initialise the SQLite connection and schema on startup
+db.conn()
 
 # Hot-load any previously saved settings on startup
-_saved_settings = settings_tbl.get(doc_id=1)
+_saved_settings = db.get_settings()
 if _saved_settings:
     config.apply_overrides(_saved_settings)
+
+
+# ── Compatibility shims (TinyDB-like API over SQLite for tests) ────────────────
+# These proxy objects expose a minimal TinyDB-compatible surface so existing
+# tests can use analyses.insert(), todos.get(doc_id=...), etc. without changes.
+
+class _QPredicate:
+    def __init__(self, field: str, val):
+        self.field = field
+        self.val   = val
+
+    def __and__(self, other):
+        return _QAndPredicate(self, other)
+
+
+class _QAndPredicate:
+    def __init__(self, left: _QPredicate, right: _QPredicate):
+        self.left  = left
+        self.right = right
+
+
+class _QField:
+    def __init__(self, field: str):
+        self.field = field
+
+    def __eq__(self, val):
+        return _QPredicate(self.field, val)
+
+
+class _Q:
+    def __getattr__(self, field: str) -> _QField:
+        return _QField(field)
+
+
+Q = _Q()
+
+
+def _extract_pred(pred) -> tuple:
+    """Return (field, val) from a _QPredicate or TinyDB QueryInstance, or (None, None)."""
+    if isinstance(pred, _QPredicate):
+        return pred.field, pred.val
+    # Support real TinyDB Query objects used in some test files:
+    #   Q.field == val  →  QueryInstance with _hash = ('==', ('field',), val)
+    h = getattr(pred, "_hash", None)
+    if h and len(h) == 3 and h[0] == "==":
+        field_path, val = h[1], h[2]
+        if isinstance(field_path, (tuple, list)) and len(field_path) == 1:
+            return field_path[0], val
+    return None, None
+
+
+_BOOL_COLS = frozenset({"done", "has_action", "is_passdown", "is_replied", "dismissed"})
+
+
+def _coerce_bools(row: dict | None) -> dict | None:
+    """Convert integer 0/1 SQLite values to Python bools for boolean columns."""
+    if row is None:
+        return None
+    for col in _BOOL_COLS:
+        if col in row and isinstance(row[col], int):
+            row[col] = bool(row[col])
+    return row
+
+
+class _AnalysesProxy:
+    """TinyDB-compatible proxy for the items table."""
+
+    def insert(self, data: dict):
+        with db.lock:
+            db.upsert_item(data)
+
+    def get(self, pred=None, doc_id=None):
+        if doc_id is not None:
+            return db.get_item(str(doc_id))
+        field, val = _extract_pred(pred)
+        if field == "item_id":
+            return db.get_item(val)
+        return None
+
+    def all(self):
+        return db.get_all_items()
+
+    def upsert(self, data: dict, pred=None):
+        db.upsert_item(data)
+
+    def update(self, updates: dict, pred=None, doc_ids=None):
+        if doc_ids:
+            for did in doc_ids:
+                db.update_item(str(did), updates)
+            return
+        field, val = _extract_pred(pred)
+        if field == "item_id":
+            db.update_item(val, updates)
+        elif field == "project_tag":
+            db.update_items_by_project(val, updates)
+
+    def remove(self, pred=None, doc_ids=None):
+        if doc_ids:
+            for did in doc_ids:
+                db.conn().execute("DELETE FROM items WHERE item_id = ?", (str(did),))
+            return
+        field, val = _extract_pred(pred)
+        if field == "item_id":
+            db.conn().execute("DELETE FROM items WHERE item_id = ?", (val,))
+
+    def truncate(self):
+        db.conn().execute("DELETE FROM items")
+
+
+class _TodosProxy:
+    """TinyDB-compatible proxy for the todos table."""
+
+    def insert(self, data: dict) -> int:
+        """Insert a todo and return its integer id (mirrors TinyDB doc_id)."""
+        # Normalise bool → int for SQLite
+        d = dict(data)
+        if "done" in d and isinstance(d["done"], bool):
+            d["done"] = 1 if d["done"] else 0
+        with db.lock:
+            return db.insert_todo(d)
+
+    def get(self, pred=None, doc_id=None):
+        if doc_id is not None:
+            row = db.get_todo_by_id(doc_id)
+            if row:
+                row["doc_id"] = row["id"]
+            return _coerce_bools(row)
+        field, val = _extract_pred(pred)
+        if field == "item_id":
+            rows = db.get_todos_for_item(val)
+            if rows:
+                rows[0]["doc_id"] = rows[0]["id"]
+                return _coerce_bools(rows[0])
+            return None
+        return None
+
+    def all(self):
+        rows = db.get_all_todos()
+        for r in rows:
+            r["doc_id"] = r["id"]
+        return rows
+
+    def update(self, updates: dict, pred=None, doc_ids=None):
+        u = dict(updates)
+        if "done" in u and isinstance(u["done"], bool):
+            u["done"] = 1 if u["done"] else 0
+        if doc_ids:
+            for did in doc_ids:
+                db.update_todo(did, u)
+            return
+        field, val = _extract_pred(pred)
+        if field == "item_id":
+            db.update_todos_for_item(val, u)
+
+    def remove(self, pred=None, doc_ids=None):
+        if doc_ids:
+            for did in doc_ids:
+                db.delete_todo_by_id(did)
+            return
+        field, val = _extract_pred(pred)
+        if field == "item_id":
+            db.delete_todos_for_item(val)
+
+    def truncate(self):
+        db.conn().execute("DELETE FROM todos")
+
+
+class _IntelProxy:
+    """TinyDB-compatible proxy for the intel table."""
+
+    def insert(self, data: dict):
+        d = dict(data)
+        if "dismissed" in d and isinstance(d["dismissed"], bool):
+            d["dismissed"] = 1 if d["dismissed"] else 0
+        with db.lock:
+            db.insert_intel(d)
+
+    def get(self, pred=None, doc_id=None):
+        if doc_id is not None:
+            rows = _rows_where_id(doc_id)
+            return rows
+        if isinstance(pred, _QAndPredicate):
+            f1, v1 = _extract_pred(pred.left)
+            f2, v2 = _extract_pred(pred.right)
+            if f1 == "item_id" and f2 == "fact":
+                return db.get_intel_for_item(v1)[0] if db.intel_exists(v1, v2) else None
+        field, val = _extract_pred(pred)
+        if field == "item_id":
+            rows = db.get_intel_for_item(val)
+            return rows[0] if rows else None
+        return None
+
+    def all(self):
+        rows = db.get_all_intel(dismissed=True)
+        for r in rows:
+            r["doc_id"] = r["id"]
+        return rows
+
+    def update(self, updates: dict, pred=None, doc_ids=None):
+        u = dict(updates)
+        if "dismissed" in u and isinstance(u["dismissed"], bool):
+            u["dismissed"] = 1 if u["dismissed"] else 0
+        if doc_ids:
+            for did in doc_ids:
+                db.update_intel_by_id(did, u)
+            return
+        field, val = _extract_pred(pred)
+        if field == "item_id":
+            if "project_tag" in u:
+                db.update_intel_project(val, u["project_tag"])
+            else:
+                db.conn().execute(
+                    "UPDATE intel SET " + ", ".join(f"{k}=?" for k in u) + " WHERE item_id = ?",
+                    list(u.values()) + [val],
+                )
+
+    def remove(self, pred=None, doc_ids=None):
+        if doc_ids:
+            for did in doc_ids:
+                db.delete_intel_by_id(did)
+            return
+        field, val = _extract_pred(pred)
+        if field == "item_id":
+            db.delete_intel_for_item(val)
+
+    def truncate(self):
+        db.conn().execute("DELETE FROM intel")
+
+
+def _rows_where_id(row_id):
+    row = db.conn().execute("SELECT * FROM intel WHERE id = ?", (row_id,)).fetchone()
+    if row:
+        d = dict(row)
+        d["doc_id"] = d["id"]
+        return d
+    return None
+
+
+class _SituationsProxy:
+    """TinyDB-compatible proxy for the situations table."""
+
+    def insert(self, data: dict):
+        d = dict(data)
+        if "dismissed" in d and isinstance(d["dismissed"], bool):
+            d["dismissed"] = 1 if d["dismissed"] else 0
+        with db.lock:
+            db.insert_situation(d)
+
+    def get(self, pred=None):
+        field, val = _extract_pred(pred)
+        if field == "situation_id":
+            return _coerce_bools(db.get_situation(val))
+        return None
+
+    def all(self):
+        return db.get_all_situations(include_dismissed=True)
+
+    def update(self, updates: dict, pred=None):
+        field, val = _extract_pred(pred)
+        if field == "situation_id":
+            db.update_situation(val, updates)
+
+    def remove(self, pred=None):
+        field, val = _extract_pred(pred)
+        if field == "situation_id":
+            db.delete_situation(val)
+
+    def truncate(self):
+        db.conn().execute("DELETE FROM situations")
+
+
+class _SettingsProxy:
+    """TinyDB-compatible proxy for the settings table."""
+
+    def get(self, pred=None, doc_id=None):
+        return db.get_settings() or None
+
+    def insert(self, data: dict):
+        db.save_settings(data)
+
+    def update(self, data: dict, pred=None, doc_ids=None):
+        db.save_settings(data)
+
+    def truncate(self):
+        db.conn().execute("DELETE FROM settings")
+
+
+class _ScanLogsProxy:
+    """TinyDB-compatible proxy for the scan_logs table."""
+
+    def insert(self, data: dict):
+        db.insert_scan_log(data)
+
+    def all(self):
+        return db.get_all_scan_logs()
+
+    def truncate(self):
+        db.conn().execute("DELETE FROM scan_logs")
+
+
+class _EmbeddingsProxy:
+    """TinyDB-compatible proxy for the embeddings table (truncate only)."""
+
+    def truncate(self):
+        db.conn().execute("DELETE FROM embeddings")
+
+
+# Expose as module-level names so tests can import them from app
+analyses       = _AnalysesProxy()
+todos          = _TodosProxy()
+intel_tbl      = _IntelProxy()
+situations_tbl = _SituationsProxy()
+settings_tbl   = _SettingsProxy()
+scan_logs      = _ScanLogsProxy()
+embeddings_tbl = _EmbeddingsProxy()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -119,7 +411,7 @@ def now_iso() -> str:
     """
     Return the current UTC time as an ISO 8601 string.
 
-    :return: Current UTC timestamp in ISO 8601 format, e.g. ``"2024-01-15T12:34:56.789012+00:00"``.
+    :return: Current UTC timestamp in ISO 8601 format.
     :rtype: str
     """
     return datetime.now(timezone.utc).isoformat()
@@ -139,16 +431,14 @@ scan_state: dict = {
     "situations_pending": 0,
 }
 
-situation_manager.init(analyses, situations_tbl, intel_tbl, db_lock, scan_state)
+situation_manager.init(scan_state)
 
 
 def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
     """
-    Upsert an ``Analysis`` into TinyDB and create todo/intel rows.
+    Upsert an ``Analysis`` into SQLite and create todo/intel rows.
 
-    Stores all base fields plus the context-aware enrichment fields:
-    ``hierarchy``, ``is_passdown``, ``project_tag``, ``goals`` (JSON),
-    ``key_dates`` (JSON), ``information_items`` (JSON), and ``body_preview``.
+    Stores all base fields plus the context-aware enrichment fields.
     Todo rows are only inserted for action items that do not already exist for
     the same ``item_id`` and ``description`` pair.  Intel rows are deduplicated
     on the same ``item_id`` and ``fact`` pair.
@@ -172,15 +462,14 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
                       item before inserting fresh ones.
     :type reanalyze: bool
     """
-    with db_lock:
-        existing = analyses.get(Q.item_id == a.item_id)
+    with db.lock:
+        existing              = db.get_item(a.item_id)
         existing_situation_id = (existing or {}).get("situation_id")
         if reanalyze:
-            todos.remove(Q.item_id == a.item_id)
-            intel_tbl.remove(Q.item_id == a.item_id)
+            db.delete_todos_for_item(a.item_id)
+            db.delete_intel_for_item(a.item_id)
 
         # Preserve user-edited fields so manual overrides survive re-scans.
-        # On reanalyze the LLM runs fresh, but user overrides still win.
         # Use `or` (not .get default) so a stored None falls through to the
         # LLM's freshly assigned value — items with no tag can get tagged.
         if existing:
@@ -197,48 +486,46 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
         # Extract cross-source references
         refs = _correlator.extract_references(a.title, a.body_preview or "")
 
-        analyses.upsert(
-            {
-                "item_id":       a.item_id,
-                "source":        a.source,
-                "title":         a.title,
-                "author":        a.author,
-                "timestamp":     a.timestamp,
-                "url":           a.url,
-                "has_action":    a.has_action,
-                "priority":      priority,
-                "category":      category,
-                "summary":       a.summary,
-                "urgency":       a.urgency_reason,
-                "action_items":  json.dumps([
-                    {"description": x.description, "deadline": x.deadline, "owner": x.owner}
-                    for x in a.action_items
-                ]),
-                "hierarchy":     a.hierarchy,
-                "is_passdown":   is_passdown,
-                "project_tag":   project_tag,
-                "goals":         json.dumps(a.goals),
-                "key_dates":        json.dumps(a.key_dates),
-                "information_items": json.dumps(a.information_items),
-                "body_preview":     a.body_preview,
-                "to_field":      a.to_field,
-                "cc_field":      a.cc_field,
-                "is_replied":    a.is_replied,
-                "replied_at":    a.replied_at,
-                "processed_at":  now_iso(),
-                "situation_id":  existing_situation_id,
-                "references":    json.dumps(refs),
-            },
-            Q.item_id == a.item_id,
-        )
+        db.upsert_item({
+            "item_id":            a.item_id,
+            "source":             a.source,
+            "direction":          a.direction,
+            "title":              a.title,
+            "author":             a.author,
+            "timestamp":          a.timestamp,
+            "url":                a.url,
+            "has_action":         1 if a.has_action else 0,
+            "priority":           priority,
+            "category":           category,
+            "task_type":          a.task_type,
+            "summary":            a.summary,
+            "urgency":            a.urgency_reason,
+            "action_items":       json.dumps([
+                {"description": x.description, "deadline": x.deadline, "owner": x.owner}
+                for x in a.action_items
+            ]),
+            "hierarchy":          a.hierarchy,
+            "is_passdown":        1 if is_passdown else 0,
+            "project_tag":        project_tag,
+            "conversation_id":    a.conversation_id,
+            "conversation_topic": a.conversation_topic,
+            "goals":              json.dumps(a.goals),
+            "key_dates":          json.dumps(a.key_dates),
+            "information_items":  json.dumps(a.information_items),
+            "body_preview":       a.body_preview,
+            "to_field":           a.to_field,
+            "cc_field":           a.cc_field,
+            "is_replied":         1 if a.is_replied else 0,
+            "replied_at":         a.replied_at,
+            "processed_at":       now_iso(),
+            "situation_id":       existing_situation_id,
+            "references":         json.dumps(refs),
+        })
 
         if a.has_action and a.category != "fyi":
             for item in a.action_items:
-                exists = todos.get(
-                    (Q.item_id == a.item_id) & (Q.description == item.description)
-                )
-                if not exists:
-                    todos.insert({
+                if not db.todo_exists(a.item_id, item.description):
+                    db.insert_todo({
                         "item_id":     a.item_id,
                         "source":      a.source,
                         "title":       a.title,
@@ -247,18 +534,15 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
                         "deadline":    item.deadline,
                         "owner":       item.owner,
                         "priority":    a.priority,
-                        "done":        False,
+                        "done":        0,
                         "created_at":  now_iso(),
                     })
 
         for item in a.information_items:
             if not item.get("fact"):
                 continue
-            exists = intel_tbl.get(
-                (Q.item_id == a.item_id) & (Q.fact == item["fact"])
-            )
-            if not exists:
-                intel_tbl.insert({
+            if not db.intel_exists(a.item_id, item["fact"]):
+                db.insert_intel({
                     "item_id":     a.item_id,
                     "source":      a.source,
                     "title":       a.title,
@@ -268,17 +552,15 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
                     "project_tag": a.project_tag,
                     "priority":    a.priority,
                     "timestamp":   a.timestamp,
-                    "dismissed":   False,
+                    "dismissed":   0,
                     "created_at":  now_iso(),
                 })
 
 
-orchestrator.init(analyses, todos, scan_logs, intel_tbl, db_lock, scan_state,
-                  save_analysis_fn=_save_analysis,
+orchestrator.init(scan_state, save_analysis_fn=_save_analysis,
                   spawn_situation_fn=situation_manager._spawn_situation_task)
 
-seeder.init(analyses, todos, settings_tbl, intel_tbl, situations_tbl,
-            embeddings_tbl, db_lock, scan_state,
+seeder.init(scan_state,
             run_scan_fn=orchestrator.run_scan,
             run_reanalyze_fn=orchestrator.run_reanalyze,
             maybe_form_situation_fn=situation_manager._maybe_form_situation)
@@ -362,21 +644,11 @@ def reset_db():
     """
     Truncate all data tables while preserving saved settings.
 
-    Clears: ``analyses``, ``todos``, ``intel_tbl``, ``scan_logs``,
-    ``embeddings_tbl``, and ``situations_tbl``.  The ``settings`` table
-    (doc_id=1) is intentionally left untouched so credentials and project
-    config survive a reset.
-
     :return: ``{"ok": True}``
     :rtype: dict
     """
-    with db_lock:
-        analyses.truncate()
-        todos.truncate()
-        intel_tbl.truncate()
-        scan_logs.truncate()
-        embeddings_tbl.truncate()
-        situations_tbl.truncate()
+    with db.lock:
+        db.reset_data_tables()
     return {"ok": True}
 
 
@@ -436,18 +708,12 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
       associated todos.
     - Changing ``priority`` syncs the new value to all associated todo rows.
     - Changing ``project_tag`` or ``category`` triggers a background embedding
-      update: if a new project is set, ``embedder.update_project`` is called;
-      if the project is cleared, ``embedder.remove_item`` is called.
+      update.
 
     :param item_id: Stable ID of the analysis item to update.
-    :type item_id: str
     :param body: Partial update dict; accepted keys: ``priority``, ``category``,
                  ``project_tag``, ``is_passdown``.
-    :type body: dict
-    :param background_tasks: FastAPI background task runner for async embedding updates.
-    :type background_tasks: BackgroundTasks
     :return: ``{"ok": True}`` plus all fields that were actually updated.
-    :rtype: dict
     :raises HTTPException 400: If no valid fields are present in ``body``.
     :raises HTTPException 404: If no item with ``item_id`` exists.
     """
@@ -459,24 +725,24 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
     if "category" in body and body["category"] in allowed_categories:
         updates["category"] = body["category"]
         if body["category"] == "noise":
-            updates["has_action"] = False
+            updates["has_action"] = 0
     if "project_tag" in body:
         updates["project_tag"] = body["project_tag"] or None
     if "is_passdown" in body and isinstance(body["is_passdown"], bool):
-        updates["is_passdown"] = body["is_passdown"]
+        updates["is_passdown"] = 1 if body["is_passdown"] else 0
     if not updates:
         raise HTTPException(status_code=400, detail="No valid fields to update.")
-    with db_lock:
-        old_record = analyses.get(Q.item_id == item_id)
+    with db.lock:
+        old_record = db.get_item(item_id)
         if not old_record:
             raise HTTPException(status_code=404, detail="Item not found")
-        analyses.update(updates, Q.item_id == item_id)
+        db.update_item(item_id, updates)
         if updates.get("category") == "noise":
-            todos.remove(Q.item_id == item_id)
+            db.delete_todos_for_item(item_id)
         elif "priority" in updates:
-            todos.update({"priority": updates["priority"]}, Q.item_id == item_id)
+            db.update_todos_for_item(item_id, {"priority": updates["priority"]})
         if "project_tag" in updates:
-            intel_tbl.update({"project_tag": updates["project_tag"]}, Q.item_id == item_id)
+            db.update_intel_project(item_id, updates["project_tag"])
 
     if "project_tag" in updates:
         situation_manager._sync_situation_tags_for_item(item_id)
@@ -491,8 +757,8 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
     if (project_changed or category_changed) and (new_project or old_project):
         def relearn() -> None:
             """Update embeddings when a project tag or category changes on an existing item."""
-            with db_lock:
-                record = analyses.get(Q.item_id == item_id)
+            with db.lock:
+                record = db.get_item(item_id)
             if not record:
                 return
             body_text = record.get("body_preview", "") or record.get("summary", "")
@@ -536,23 +802,18 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
     2. Extracts all email addresses from ``author``, ``to_field``, and
        ``cc_field``, strips the user's own address, and merges the remainder
        into the project's ``learned_senders`` list (capped at 50 entries).
-    3. Persists the updated project config back to ``settings_tbl`` and calls
+    3. Persists the updated project config back to settings and calls
        ``config.apply_overrides`` so future analyses benefit immediately.
     4. Calls ``embedder.update_project`` to add/update the item's vector in
        the project's embedding centroid.
 
     :param item_id: Stable ID of the analysis item to tag.
-    :type item_id: str
     :param body: Must contain a ``project`` field matching a configured project name.
-    :type body: TagRequest
-    :param background_tasks: FastAPI background task runner.
-    :type background_tasks: BackgroundTasks
     :return: ``{"ok": True, "project": project_name}``
-    :rtype: dict
     :raises HTTPException 404: If the item or project does not exist.
     """
-    with db_lock:
-        record = analyses.get(Q.item_id == item_id)
+    with db.lock:
+        record = db.get_item(item_id)
     if not record:
         raise HTTPException(status_code=404, detail="Item not found")
 
@@ -561,9 +822,9 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail="Project not found")
 
     # Update the stored analysis and any associated intel rows immediately
-    with db_lock:
-        analyses.update({"project_tag": project_name}, Q.item_id == item_id)
-        intel_tbl.update({"project_tag": project_name}, Q.item_id == item_id)
+    with db.lock:
+        db.update_item(item_id, {"project_tag": project_name})
+        db.update_intel_project(item_id, project_name)
     situation_manager._sync_situation_tags_for_item(item_id)
 
     def learn() -> None:
@@ -587,8 +848,8 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
         if not keywords and not senders:
             return
 
-        with db_lock:
-            saved = settings_tbl.get(doc_id=1) or {}
+        with db.lock:
+            saved = db.get_settings()
 
         projects = saved.get("projects", list(config.PROJECTS))
         for p in projects:
@@ -604,11 +865,8 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
                 break
 
         saved["projects"] = projects
-        with db_lock:
-            if settings_tbl.get(doc_id=1):
-                settings_tbl.update(saved, doc_ids=[1])
-            else:
-                settings_tbl.insert(saved)
+        with db.lock:
+            db.save_settings(saved)
         config.apply_overrides(saved)
         kw_total = len(p.get("learned_keywords", []))
         sr_total = len(p.get("learned_senders", []))
@@ -647,28 +905,20 @@ def mark_noise(item_id: str, background_tasks: BackgroundTasks):
     Sets ``category="noise"``, ``priority="low"``, and ``has_action=False``
     synchronously, and removes all associated todos.  Then runs a background
     task (``learn_noise``) that extracts keywords from the item and merges them
-    into ``config.NOISE_KEYWORDS`` (capped at 200), persisting back to
-    ``settings_tbl`` so future LLM prompts include the updated noise list.
+    into ``config.NOISE_KEYWORDS`` (capped at 200).
 
     :param item_id: Stable ID of the analysis item to mark as noise.
-    :type item_id: str
-    :param background_tasks: FastAPI background task runner.
-    :type background_tasks: BackgroundTasks
     :return: ``{"ok": True}``
-    :rtype: dict
     :raises HTTPException 404: If no item with ``item_id`` exists.
     """
-    with db_lock:
-        record = analyses.get(Q.item_id == item_id)
+    with db.lock:
+        record = db.get_item(item_id)
     if not record:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    with db_lock:
-        analyses.update(
-            {"category": "noise", "priority": "low", "has_action": False},
-            Q.item_id == item_id,
-        )
-        todos.remove(Q.item_id == item_id)
+    with db.lock:
+        db.update_item(item_id, {"category": "noise", "priority": "low", "has_action": 0})
+        db.delete_todos_for_item(item_id)
 
     def learn_noise() -> None:
         """Extract keywords from the noise-marked item and merge into the global noise filter."""
@@ -678,18 +928,15 @@ def mark_noise(item_id: str, background_tasks: BackgroundTasks):
         if not keywords:
             return
 
-        with db_lock:
-            saved = settings_tbl.get(doc_id=1) or {}
+        with db.lock:
+            saved = db.get_settings()
 
         existing = set(saved.get("noise_keywords", list(config.NOISE_KEYWORDS)))
         existing.update(k.lower() for k in keywords)
         saved["noise_keywords"] = list(existing)[:200]
 
-        with db_lock:
-            if settings_tbl.get(doc_id=1):
-                settings_tbl.update(saved, doc_ids=[1])
-            else:
-                settings_tbl.insert(saved)
+        with db.lock:
+            db.save_settings(saved)
         config.apply_overrides(saved)
         print(f"[noise] +{len(keywords)} keywords ({len(existing)} total)")
 
@@ -705,15 +952,7 @@ def get_settings():
     Return all current configuration values for the settings UI.
 
     Credential fields are partially masked via ``_mask`` so the frontend can
-    distinguish "set" from "not set" without exposing full secrets.  Fields
-    containing ``•`` in the response are placeholders that the frontend should
-    not re-POST (``save_settings`` filters them out).
-
-    Includes: Ollama URL/model, Cloudflare Access tokens, Slack/Teams OAuth
-    credentials, GitHub PAT/username, Jira credentials and JQL, lookback
-    hours, ``user_name``, ``user_email``, ``focus_topics`` (comma-separated
-    string), ``projects`` (list), ``noise_keywords`` (list), and
-    ``warnings`` from ``config.validate()``.
+    distinguish "set" from "not set" without exposing full secrets.
 
     :return: Dict of all current config values, with sensitive fields masked.
     :rtype: dict
@@ -744,7 +983,7 @@ def get_settings():
 @app.post("/settings")
 def save_settings(body: dict):
     """
-    Persist settings to TinyDB and hot-reload config.
+    Persist settings to SQLite and hot-reload config.
 
     Merges ``body`` into the existing settings record.  Any field whose value
     is a string containing ``•`` (the mask character) is skipped — this
@@ -754,17 +993,12 @@ def save_settings(body: dict):
     When the ``projects`` list changes, analyses tagged to removed projects
     have their ``project_tag`` cleared so no orphan tags remain in the DB.
 
-    Calls ``config.apply_overrides`` so all in-memory config values are
-    updated immediately without a container restart.
-
     :param body: Partial or full settings dict.  Unknown keys are stored as-is.
-    :type body: dict
-    :return: ``{"ok": True, "warnings": [...]}`` where warnings come from
-             ``config.validate()``.
+    :return: ``{"ok": True, "warnings": [...]}``
     :rtype: dict
     """
-    with db_lock:
-        existing = settings_tbl.get(doc_id=1) or {}
+    with db.lock:
+        existing = db.get_settings()
 
     old_project_names = {p.get("name") for p in existing.get("projects", [])}
 
@@ -775,15 +1009,14 @@ def save_settings(body: dict):
     new_project_names = {p.get("name") for p in existing.get("projects", [])}
     removed_projects  = old_project_names - new_project_names
 
-    with db_lock:
-        if settings_tbl.get(doc_id=1):
-            settings_tbl.update(existing, doc_ids=[1])
-        else:
-            settings_tbl.insert(existing)
+    with db.lock:
+        db.save_settings(existing)
         if removed_projects:
             for name in removed_projects:
-                analyses.update({"project_tag": None}, Q.project_tag == name)
-                intel_tbl.update({"project_tag": None}, Q.project_tag == name)
+                db.update_items_by_project(name, {"project_tag": None})
+                db.conn().execute(
+                    "UPDATE intel SET project_tag = NULL WHERE project_tag = ?", (name,)
+                )
             situation_manager._sync_situation_tags_all()
 
     config.apply_overrides(existing)
@@ -806,21 +1039,12 @@ def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
     """
     Receive raw items from host sidecar scripts (Outlook, Thunderbird, etc.).
 
-    Deduplicates by ``item_id`` against the analyses table — items that have
+    Deduplicates by ``item_id`` against the items table — items that have
     already been processed are silently skipped.  New items are queued as a
-    background task (``process``) so the HTTP response is returned immediately.
-
-    The background task respects ``scan_state["cancelled"]`` so it can be
-    halted via ``POST /analysis/stop``.  Tracks in-flight item count via
-    ``scan_state["ingest_pending"]``.  After each item is analysed, a
-    situation-formation task is spawned via ``_spawn_situation_task``.
+    background task so the HTTP response is returned immediately.
 
     :param body: List of raw item dicts.
-    :type body: IngestRequest
-    :param background_tasks: FastAPI background task runner.
-    :type background_tasks: BackgroundTasks
-    :return: ``{"received": N, "skipped": M}`` where ``received`` is the
-             number of new items queued and ``skipped`` is duplicates.
+    :return: ``{"received": N, "skipped": M}``
     :rtype: dict
     """
     raw: list[RawItem] = []
@@ -828,8 +1052,8 @@ def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         iid = i.get("item_id", "")
         if not iid:
             continue
-        with db_lock:
-            if analyses.get(Q.item_id == iid):
+        with db.lock:
+            if db.get_item(iid):
                 continue   # already processed
         raw.append(RawItem(
             source    = i.get("source", "outlook"),
@@ -864,14 +1088,10 @@ def start_scan(body: ScanRequest):
     """
     Start a multi-source scan in the background.
 
-    Fetches fresh items from each connector listed in ``body.sources`` and
-    runs LLM analysis on every item.  Returns immediately; poll
-    ``GET /scan/status`` for progress.
+    Returns immediately; poll ``GET /scan/status`` for progress.
 
     :param body: Scan request specifying which sources to include.
-    :type body: ScanRequest
     :return: ``{"status": "started", "sources": [...]}``
-    :rtype: dict
     :raises HTTPException 409: If a scan or re-analysis is already running.
     """
     if scan_state["running"]:
@@ -885,11 +1105,6 @@ def scan_status():
     """
     Return the current scan/ingest/reanalyze progress state.
 
-    The returned dict is the module-level ``scan_state`` singleton, updated
-    in-place by all background analysis jobs.  Key fields: ``running``
-    (bool), ``cancelled`` (bool), ``progress`` (int), ``total`` (int),
-    ``message`` (str), ``ingest_pending`` (int), ``situations_pending`` (int).
-
     :return: Current ``scan_state`` dict.
     :rtype: dict
     """
@@ -900,10 +1115,6 @@ def scan_status():
 def cancel_scan():
     """
     Signal a running scan to stop after the current item finishes.
-
-    Sets ``scan_state["cancelled"] = True``.  The scan loop checks this flag
-    between items and exits cleanly, writing a ``"cancelled"`` status to the
-    scan log.
 
     :return: ``{"ok": True}`` if a scan was running, else ``{"ok": False, ...}``.
     :rtype: dict
@@ -919,10 +1130,6 @@ def stop_all_analysis():
     """
     Gracefully halt all ongoing analysis activity.
 
-    Sets both ``scan_state["cancelled"]`` and ``_seed_job["cancelled"]`` so
-    that the scan loop, reanalyze loop, ingest worker, situation formation
-    tasks, and seed state machine all exit after their current item finishes.
-
     :return: ``{"ok": True}``
     :rtype: dict
     """
@@ -936,21 +1143,15 @@ def start_reanalyze():
     """
     Re-run LLM analysis on all stored items using the current config.
 
-    Reconstructs a ``RawItem`` from each stored record and passes it through
-    ``agent.analyze``, preserving the original ``body_preview``, email header
-    fields, and any manually set ``project_tag`` as a hint.  Useful after
-    updating project keywords, adding projects, or changing the user profile.
-
     Returns immediately; poll ``GET /scan/status`` for progress.
 
     :return: ``{"status": "started", "item_count": N}``
-    :rtype: dict
     :raises HTTPException 409: If a scan or re-analysis is already running.
     """
     if scan_state["running"]:
         raise HTTPException(status_code=409, detail="A scan or re-analysis is already running.")
-    with db_lock:
-        count = len(analyses.all())
+    with db.lock:
+        count = db.count_items()
     threading.Thread(target=orchestrator.run_reanalyze, daemon=True).start()
     return {"status": "started", "item_count": count}
 
@@ -960,14 +1161,11 @@ def reanalyze_count():
     """
     Return the number of stored items that would be processed by ``POST /reanalyze``.
 
-    Used by the frontend to show a confirmation count before the user triggers
-    a potentially long re-analysis run.
-
     :return: ``{"count": N}``
     :rtype: dict
     """
-    with db_lock:
-        return {"count": len(analyses.all())}
+    with db.lock:
+        return {"count": db.count_items()}
 
 
 # ── Todos ─────────────────────────────────────────────────────────────────────
@@ -983,37 +1181,23 @@ def get_todos(
 
     By default only open (``done=False``) items are returned.  Results are
     sorted by priority (high → medium → low) then by creation time ascending.
-    A ``doc_id`` field and a ``status`` field (back-filled for legacy records
-    that pre-date the status column) are added to every returned row.
+    A ``doc_id`` field is added to every returned row for use in PATCH/DELETE.
 
-    :param source: Filter to items from a specific connector, e.g. ``"slack"``.
-    :type source: str, optional
+    :param source: Filter to items from a specific connector.
     :param priority: Filter to items with a specific priority level.
-    :type priority: str, optional
-    :param done: If ``True``, include completed items.  Defaults to ``False``.
-    :type done: bool
+    :param done: If ``True``, include completed items.
     :return: List of todo dicts sorted by priority then creation time.
     :rtype: list[dict]
     """
-    with db_lock:
-        results = todos.all()
-
-    if not done:
-        results = [t for t in results if not t.get("done")]
-    if source:
-        results = [t for t in results if t.get("source") == source]
-    if priority:
-        results = [t for t in results if t.get("priority") == priority]
-
-    order = {"high": 0, "medium": 1, "low": 2}
-    results.sort(key=lambda t: (order.get(t.get("priority", "low"), 2), t.get("created_at", "")))
-
+    results = db.get_todos(
+        done=done,
+        source=source,
+        priority=priority,
+    )
     for t in results:
-        t["doc_id"] = t.doc_id
-        # Back-fill status for records created before this field existed
+        t["doc_id"] = t["id"]
         if "status" not in t:
             t["status"] = "done" if t.get("done") else "open"
-
     return results
 
 
@@ -1022,46 +1206,38 @@ def patch_todo(doc_id: int, body: dict):
     """
     Update a todo item's status and/or assignment.
 
-    The ``status`` field (``"open"``, ``"done"``, ``"assigned"``) takes
-    precedence over the legacy ``done`` boolean; both are kept in sync for
-    backward compatibility with older frontend builds.
-
-    :param doc_id: TinyDB document ID of the todo record.
-    :type doc_id: int
+    :param doc_id: Integer id of the todo record.
     :param body: Partial update dict; accepted keys: ``status``, ``done``,
                  ``assigned_to``.
-    :type body: dict
     :return: ``{"ok": True}``
     :rtype: dict
     """
     updates = {}
-    # status field takes precedence; "done" bool kept for backward compat
     if "status" in body and body["status"] in ("open", "done", "assigned"):
         updates["status"] = body["status"]
-        updates["done"]   = body["status"] == "done"
+        updates["done"]   = 1 if body["status"] == "done" else 0
     elif "done" in body:
         done = bool(body["done"])
-        updates["done"]   = done
+        updates["done"]   = 1 if done else 0
         updates["status"] = "done" if done else "open"
     if "assigned_to" in body:
         updates["assigned_to"] = body["assigned_to"] or None
     if updates:
-        with db_lock:
-            todos.update(updates, doc_ids=[doc_id])
+        with db.lock:
+            db.update_todo(doc_id, updates)
     return {"ok": True}
 
 
 @app.delete("/todos/{doc_id}")
 def delete_todo(doc_id: int):
     """
-    Permanently delete a todo item by its document ID.
+    Permanently delete a todo item by its integer id.
 
-    :param doc_id: TinyDB document ID of the todo record to remove.
-    :type doc_id: int
+    :param doc_id: Integer id of the todo record to remove.
     :return: HTTP 204 No Content.
     """
-    with db_lock:
-        todos.remove(doc_ids=[doc_id])
+    with db.lock:
+        db.delete_todo_by_id(doc_id)
     return Response(status_code=204)
 
 
@@ -1076,47 +1252,35 @@ def get_intel(
     """
     Return intel (information) items sorted by timestamp descending.
 
-    Intel items are factual observations and completed-action notes extracted
-    by the LLM that are worth knowing but are not action items for the user.
-    A ``doc_id`` field is added to each returned row for use in
-    ``DELETE /intel/{doc_id}`` and ``PATCH /intel/{doc_id}``.
+    A ``doc_id`` field is added to each returned row.
 
-    :param source: Filter to items from a specific connector, e.g. ``"outlook"``.
-    :type source: str, optional
+    :param source: Filter to items from a specific connector.
     :param project: Filter to items tagged to a specific project.
-    :type project: str, optional
-    :param include_dismissed: When ``True``, dismissed items are included in the
-        response (with ``dismissed: True`` set on each record).  Defaults to
-        ``False`` (dismissed items hidden).
-    :type include_dismissed: bool
+    :param include_dismissed: When ``True``, dismissed items are included.
     :return: List of intel dicts sorted newest-first.
     :rtype: list[dict]
     """
-    with db_lock:
-        results = intel_tbl.all()
-    if not include_dismissed:
-        results = [r for r in results if not r.get("dismissed")]
+    results = db.get_all_intel(dismissed=include_dismissed)
     if source:
         results = [r for r in results if r.get("source") == source]
     if project:
         results = [r for r in results if r.get("project_tag") == project]
     results.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
     for r in results:
-        r["doc_id"] = r.doc_id
+        r["doc_id"] = r["id"]
     return results
 
 
 @app.delete("/intel/{doc_id}")
 def delete_intel(doc_id: int):
     """
-    Permanently delete an intel item by its document ID.
+    Permanently delete an intel item by its integer id.
 
-    :param doc_id: TinyDB document ID of the intel record to remove.
-    :type doc_id: int
+    :param doc_id: Integer id of the intel record to remove.
     :return: HTTP 204 No Content.
     """
-    with db_lock:
-        intel_tbl.remove(doc_ids=[doc_id])
+    with db.lock:
+        db.delete_intel_by_id(doc_id)
     return Response(status_code=204)
 
 
@@ -1125,16 +1289,14 @@ def patch_intel(doc_id: int, body: dict):
     """
     Update an intel item, currently limited to toggling the ``dismissed`` flag.
 
-    :param doc_id: TinyDB document ID of the intel record.
-    :type doc_id: int
+    :param doc_id: Integer id of the intel record.
     :param body: Partial update dict; accepted key: ``dismissed`` (bool).
-    :type body: dict
     :return: ``{"ok": True}``
     :rtype: dict
     """
     if "dismissed" in body:
-        with db_lock:
-            intel_tbl.update({"dismissed": bool(body["dismissed"])}, doc_ids=[doc_id])
+        with db.lock:
+            db.update_intel_by_id(doc_id, {"dismissed": 1 if body["dismissed"] else 0})
     return {"ok": True}
 
 
@@ -1144,14 +1306,10 @@ def _deserialize_analysis(a: dict) -> dict:
     """
     Deserialize JSON-string fields and normalise legacy field names for the frontend.
 
-    TinyDB stores ``action_items``, ``goals``, ``key_dates``, and
-    ``information_items`` as JSON strings.  This helper parses them back to
-    Python objects so the API response contains proper arrays.
-
     Also renames the legacy ``"urgency"`` key to ``"urgency_reason"`` for any
     records written before that field was renamed.
 
-    :param a: Raw analysis record dict as returned by TinyDB.
+    :param a: Raw analysis record dict as returned by db.py.
     :type a: dict
     :return: The same dict with JSON fields parsed and field names normalised.
     :rtype: dict
@@ -1187,29 +1345,21 @@ def get_analyses(
     ``timestamp`` descending.  JSON-encoded fields are deserialized via
     ``_deserialize_analysis`` before returning.
 
-    :param source: Filter to a specific connector, e.g. ``"outlook"``.
-    :type source: str, optional
-    :param category: Filter by category (``"reply_needed"``, ``"task"``, etc.).
-    :type category: str, optional
-    :param hierarchy: Filter by hierarchy tier (``"user"``, ``"project"``, etc.).
-    :type hierarchy: str, optional
+    :param source: Filter to a specific connector.
+    :param category: Filter by category.
+    :param hierarchy: Filter by hierarchy tier.
     :param project: Filter by project tag.  Pass ``"__none__"`` to return only
                     untagged items.
-    :type project: str, optional
     :param q: Full-text search across ``title``, ``summary``, ``author``, and
               ``body_preview`` (case-insensitive substring match).
-    :type q: str, optional
     :param from_date: ISO 8601 lower bound on ``timestamp`` (inclusive).
-    :type from_date: str, optional
     :param to_date: ISO 8601 upper bound on ``timestamp`` (inclusive).
-    :type to_date: str, optional
     :param limit: Maximum number of results to return. Defaults to 1000.
-    :type limit: int
     :return: List of deserialized analysis dicts sorted newest-first.
     :rtype: list[dict]
     """
-    with db_lock:
-        results = analyses.all()
+    with db.lock:
+        results = db.get_all_items()
 
     if source:
         results = [a for a in results if a.get("source") == source]
@@ -1247,29 +1397,22 @@ def get_situations(
     Return situations, optionally filtered and sorted by score descending.
 
     :param project: Filter to situations tagged to a specific project.
-    :type project: str, optional
-    :param status: Filter by status (``"blocked"``, ``"in_progress"``, etc.).
-    :type status: str, optional
-    :param min_score: Minimum composite urgency score (inclusive).  Defaults
-                      to 0.0 (all situations returned).
-    :type min_score: float
+    :param status: Filter by status.
+    :param min_score: Minimum composite urgency score.
     :param include_dismissed: When ``True``, dismissed situations are included.
-        Defaults to ``False``.
-    :type include_dismissed: bool
     :return: List of situation response dicts sorted by score descending.
     :rtype: list[dict]
     """
-    with db_lock:
-        all_sits = situations_tbl.all()
-    results = all_sits if include_dismissed else [s for s in all_sits if not s.get("dismissed")]
+    with db.lock:
+        all_sits = db.get_all_situations(include_dismissed=include_dismissed)
     if project:
-        results = [s for s in results if s.get("project_tag") == project]
+        all_sits = [s for s in all_sits if s.get("project_tag") == project]
     if status:
-        results = [s for s in results if s.get("status") == status]
+        all_sits = [s for s in all_sits if s.get("status") == status]
     if min_score:
-        results = [s for s in results if s.get("score", 0) >= min_score]
-    results.sort(key=lambda s: s.get("score", 0), reverse=True)
-    return [situation_manager._situation_response(s) for s in results]
+        all_sits = [s for s in all_sits if s.get("score", 0) >= min_score]
+    all_sits.sort(key=lambda s: s.get("score", 0), reverse=True)
+    return [situation_manager._situation_response(s) for s in all_sits]
 
 
 @app.get("/situations/{situation_id}")
@@ -1277,25 +1420,19 @@ def get_situation(situation_id: str):
     """
     Return a single situation with all contributing analyses fully deserialized.
 
-    Unlike the list endpoint, the ``items`` field contains complete analysis
-    records (JSON fields parsed, field names normalised) rather than just
-    lightweight summaries.
-
     :param situation_id: UUID of the situation to retrieve.
-    :type situation_id: str
     :return: Full situation dict with deserialized ``items`` list.
-    :rtype: dict
     :raises HTTPException 404: If no situation with the given ID exists.
     """
-    with db_lock:
-        sit = situations_tbl.get(Q.situation_id == situation_id)
+    with db.lock:
+        sit = db.get_situation(situation_id)
     if not sit:
         raise HTTPException(status_code=404, detail="Situation not found")
     resp = situation_manager._situation_response(sit)
     # Replace lightweight items with fully deserialized analyses
     item_ids = sit.get("item_ids", [])
-    with db_lock:
-        full_items = [analyses.get(Q.item_id == iid) for iid in item_ids]
+    with db.lock:
+        full_items = [db.get_item(iid) for iid in item_ids]
     resp["items"] = [_deserialize_analysis(dict(r)) for r in full_items if r]
     return resp
 
@@ -1305,23 +1442,17 @@ def dismiss_situation(situation_id: str, body: dict = {}):
     """
     Mark a situation as dismissed.
 
-    Dismissed situations are excluded from ``GET /situations`` by default.
-    An optional ``reason`` field in ``body`` is stored as ``dismiss_reason``.
-
     :param situation_id: UUID of the situation to dismiss.
-    :type situation_id: str
     :param body: Optional dict with a ``reason`` key.
-    :type body: dict
     :return: ``{"ok": True}``
-    :rtype: dict
     :raises HTTPException 404: If no situation with the given ID exists.
     """
-    with db_lock:
-        if not situations_tbl.get(Q.situation_id == situation_id):
+    with db.lock:
+        if not db.get_situation(situation_id):
             raise HTTPException(status_code=404, detail="Situation not found")
-        situations_tbl.update(
-            {"dismissed": True, "dismiss_reason": body.get("reason")},
-            Q.situation_id == situation_id,
+        db.update_situation(
+            situation_id,
+            {"dismissed": 1, "dismiss_reason": body.get("reason")},
         )
     return {"ok": True}
 
@@ -1331,21 +1462,16 @@ def undismiss_situation(situation_id: str):
     """
     Restore a previously dismissed situation.
 
-    Clears the ``dismissed`` flag so the situation reappears in
-    ``GET /situations`` and the UI.
-
     :param situation_id: UUID of the situation to restore.
-    :type situation_id: str
     :return: ``{"ok": True}``
-    :rtype: dict
     :raises HTTPException 404: If no situation with the given ID exists.
     """
-    with db_lock:
-        if not situations_tbl.get(Q.situation_id == situation_id):
+    with db.lock:
+        if not db.get_situation(situation_id):
             raise HTTPException(status_code=404, detail="Situation not found")
-        situations_tbl.update(
-            {"dismissed": False, "dismiss_reason": None},
-            Q.situation_id == situation_id,
+        db.update_situation(
+            situation_id,
+            {"dismissed": 0, "dismiss_reason": None},
         )
     return {"ok": True}
 
@@ -1355,23 +1481,17 @@ def rescore_situation(situation_id: str):
     """
     Manually trigger a full score recomputation and LLM re-synthesis for a situation.
 
-    Delegates to ``_update_situation_record`` which re-runs both
-    ``correlator.score_situation`` and ``correlator.synthesize_situation``.
-    Returns the updated situation response.
-
     :param situation_id: UUID of the situation to rescore.
-    :type situation_id: str
     :return: Updated situation response dict.
-    :rtype: dict
     :raises HTTPException 404: If no situation with the given ID exists.
     """
-    with db_lock:
-        sit = situations_tbl.get(Q.situation_id == situation_id)
+    with db.lock:
+        sit = db.get_situation(situation_id)
     if not sit:
         raise HTTPException(status_code=404, detail="Situation not found")
     situation_manager._update_situation_record(situation_id, sit.get("item_ids", []))
-    with db_lock:
-        updated = situations_tbl.get(Q.situation_id == situation_id)
+    with db.lock:
+        updated = db.get_situation(situation_id)
     return situation_manager._situation_response(updated)
 
 
@@ -1380,16 +1500,12 @@ def patch_situation(situation_id: str, body: dict):
     """
     Manually override editable fields on a situation record.
 
-    Only ``title``, ``status``, and ``project_tag`` may be changed this way;
-    all other keys in ``body`` are silently ignored.
+    Only ``title``, ``status``, and ``project_tag`` may be changed this way.
 
     :param situation_id: UUID of the situation to update.
-    :type situation_id: str
     :param body: Partial update dict; accepted keys: ``title``, ``status``,
                  ``project_tag``.
-    :type body: dict
     :return: ``{"ok": True}`` plus all fields that were applied.
-    :rtype: dict
     :raises HTTPException 400: If no valid fields are present in ``body``.
     :raises HTTPException 404: If no situation with the given ID exists.
     """
@@ -1397,10 +1513,10 @@ def patch_situation(situation_id: str, body: dict):
     updates = {k: v for k, v in body.items() if k in allowed}
     if not updates:
         raise HTTPException(status_code=400, detail="No valid fields to update.")
-    with db_lock:
-        if not situations_tbl.get(Q.situation_id == situation_id):
+    with db.lock:
+        if not db.get_situation(situation_id):
             raise HTTPException(status_code=404, detail="Situation not found")
-        situations_tbl.update(updates, Q.situation_id == situation_id)
+        db.update_situation(situation_id, updates)
     return {"ok": True, **updates}
 
 
@@ -1411,24 +1527,13 @@ def get_stats():
     """
     Return aggregate statistics for the dashboard summary bar.
 
-    Counts: total analysis items, open todos, high-priority todos, open intel
-    items, todos by source, all items by category, open and high-score
-    situations, and the most recent scan log entry.
-
-    :return: Dict with counts and breakdowns.  Key fields: ``total_items``,
-             ``open_todos``, ``high_priority``, ``open_intel``,
-             ``open_situations``, ``high_score_situations``, ``by_source``
-             (list), ``by_category`` (list), ``last_scan`` (dict or None).
+    :return: Dict with counts and breakdowns.
     :rtype: dict
     """
-    with db_lock:
-        all_a      = analyses.all()
-        open_todos = [t for t in todos.all() if not t.get("done")]
-        logs       = sorted(
-            scan_logs.all(),
-            key=lambda l: l.get("finished_at", ""),
-            reverse=True,
-        )
+    with db.lock:
+        all_a      = db.get_all_items()
+        open_todos = db.get_todos(done=False)
+        logs       = db.get_all_scan_logs()
 
     by_source: dict[str, int] = {}
     for t in open_todos:
@@ -1440,9 +1545,11 @@ def get_stats():
         c = a.get("category", "unknown")
         by_category[c] = by_category.get(c, 0) + 1
 
-    with db_lock:
-        all_sits   = situations_tbl.all()
-        open_intel = [i for i in intel_tbl.all() if not i.get("dismissed")]
+    with db.lock:
+        all_sits   = db.get_all_situations(include_dismissed=True)
+        open_intel = db.get_all_intel(dismissed=False)
+
+    last_scan = logs[0] if logs else None
 
     return {
         "total_items":           len(all_a),
@@ -1451,7 +1558,7 @@ def get_stats():
         "open_intel":            len(open_intel),
         "by_source":             [{"source": k, "count": v} for k, v in by_source.items()],
         "by_category":           [{"category": k, "count": v} for k, v in by_category.items()],
-        "last_scan":             logs[0] if logs else None,
+        "last_scan":             last_scan,
         "open_situations":       len([s for s in all_sits if not s.get("dismissed")]),
         "high_score_situations": len([s for s in all_sits
                                       if not s.get("dismissed") and s.get("score", 0) >= 1.5]),
@@ -1472,9 +1579,6 @@ def slack_connect():
     """
     Begin the Slack OAuth2 user-token flow.
 
-    Redirects the user's browser to ``slack.com/oauth/v2/authorize`` with the
-    required user scopes and the configured ``SLACK_CLIENT_ID``.
-
     :return: HTTP 302 redirect to the Slack authorization page.
     :raises HTTPException 400: If ``SLACK_CLIENT_ID`` is not yet configured.
     """
@@ -1494,19 +1598,8 @@ def slack_callback(code: str = None, error: str = None):
     """
     Handle the Slack OAuth2 redirect callback.
 
-    Exchanges the authorization code for a user access token, then stores the
-    token alongside workspace metadata in ``settings_tbl`` (keyed by
-    ``team_id`` so re-connecting a workspace replaces the old token).  Calls
-    ``config.apply_overrides`` so the connector can start using the new token
-    immediately.
-
-    On success, redirects to ``/page/?slack_connected=1``.
-    On failure, redirects to ``/page/?slack_error=<reason>``.
-
     :param code: Authorization code returned by Slack.
-    :type code: str, optional
     :param error: Error identifier returned by Slack if the user denied access.
-    :type error: str, optional
     :return: HTTP 302 redirect.
     :raises HTTPException 400: If no ``code`` is provided and no ``error`` is set.
     """
@@ -1546,17 +1639,14 @@ def slack_callback(code: str = None, error: str = None):
         "token":   token,
     }
 
-    with db_lock:
-        existing = settings_tbl.get(doc_id=1) or {}
+    with db.lock:
+        existing = db.get_settings()
     tokens = [t for t in existing.get("slack_user_tokens", []) if t.get("team_id") != workspace["team_id"]]
     tokens.append(workspace)
     existing["slack_user_tokens"] = tokens
 
-    with db_lock:
-        if settings_tbl.get(doc_id=1):
-            settings_tbl.update(existing, doc_ids=[1])
-        else:
-            settings_tbl.insert(existing)
+    with db.lock:
+        db.save_settings(existing)
 
     config.apply_overrides(existing)
     return Response(status_code=302, headers={"Location": "/page/?slack_connected=1"})
@@ -1570,8 +1660,8 @@ def get_slack_workspaces():
     :return: List of dicts with ``team`` (display name) and ``team_id`` fields.
     :rtype: list[dict]
     """
-    with db_lock:
-        existing = settings_tbl.get(doc_id=1) or {}
+    with db.lock:
+        existing = db.get_settings()
     tokens = existing.get("slack_user_tokens", [])
     return [{"team": t.get("team", "Unknown"), "team_id": t.get("team_id", "")} for t in tokens]
 
@@ -1582,19 +1672,15 @@ def disconnect_slack_workspace(team_id: str):
     Remove a Slack workspace's user token from stored settings.
 
     :param team_id: Slack workspace team ID to disconnect.
-    :type team_id: str
     :return: ``{"ok": True}``
     :rtype: dict
     """
-    with db_lock:
-        existing = settings_tbl.get(doc_id=1) or {}
+    with db.lock:
+        existing = db.get_settings()
     tokens = [t for t in existing.get("slack_user_tokens", []) if t.get("team_id") != team_id]
     existing["slack_user_tokens"] = tokens
-    with db_lock:
-        if settings_tbl.get(doc_id=1):
-            settings_tbl.update(existing, doc_ids=[1])
-        else:
-            settings_tbl.insert(existing)
+    with db.lock:
+        db.save_settings(existing)
     config.apply_overrides(existing)
     return {"ok": True}
 
@@ -1609,10 +1695,6 @@ _TEAMS_SCOPES       = "Chat.Read ChannelMessage.Read.All Channel.ReadBasic.All o
 def teams_connect():
     """
     Begin the Microsoft Teams (Azure AD) OAuth2 user-token flow.
-
-    Redirects the user's browser to the Microsoft identity platform authorize
-    endpoint with the required Graph API scopes and the configured
-    ``TEAMS_CLIENT_ID``.
 
     :return: HTTP 302 redirect to the Microsoft authorization page.
     :raises HTTPException 400: If ``TEAMS_CLIENT_ID`` is not yet configured.
@@ -1635,21 +1717,9 @@ def teams_callback(code: str = None, error: str = None, error_description: str =
     """
     Handle the Microsoft Teams OAuth2 redirect callback.
 
-    Exchanges the authorization code for access and refresh tokens, then
-    resolves the user's display name and tenant via ``/me`` on the Microsoft
-    Graph API.  Stores the token bundle in ``settings_tbl`` (keyed by
-    ``account_id``).  Calls ``config.apply_overrides`` so the Teams connector
-    can use the new token immediately.
-
-    On success, redirects to ``/page/?teams_connected=1``.
-    On failure, redirects to ``/page/?teams_error=<reason>``.
-
     :param code: Authorization code returned by Microsoft.
-    :type code: str, optional
     :param error: Error identifier returned if the user denied access.
-    :type error: str, optional
     :param error_description: Human-readable error description.
-    :type error_description: str, optional
     :return: HTTP 302 redirect.
     :raises HTTPException 400: If no ``code`` is provided and no ``error`` is set.
     """
@@ -1709,17 +1779,14 @@ def teams_callback(code: str = None, error: str = None, error_description: str =
         "refresh_token": refresh_token or "",
     }
 
-    with db_lock:
-        existing = settings_tbl.get(doc_id=1) or {}
+    with db.lock:
+        existing = db.get_settings()
     tokens = [t for t in existing.get("teams_user_tokens", []) if t.get("account_id") != account_id]
     tokens.append(account)
     existing["teams_user_tokens"] = tokens
 
-    with db_lock:
-        if settings_tbl.get(doc_id=1):
-            settings_tbl.update(existing, doc_ids=[1])
-        else:
-            settings_tbl.insert(existing)
+    with db.lock:
+        db.save_settings(existing)
 
     config.apply_overrides(existing)
     return Response(status_code=302, headers={"Location": "/page/?teams_connected=1"})
@@ -1734,8 +1801,8 @@ def get_teams_workspaces():
              ``tenant`` fields.
     :rtype: list[dict]
     """
-    with db_lock:
-        existing = settings_tbl.get(doc_id=1) or {}
+    with db.lock:
+        existing = db.get_settings()
     tokens = existing.get("teams_user_tokens", [])
     return [
         {"display_name": t.get("display_name", "Unknown"), "account_id": t.get("account_id", ""), "tenant": t.get("tenant", "")}
@@ -1748,20 +1815,16 @@ def disconnect_teams_account(account_id: str):
     """
     Remove a Teams account's token bundle from stored settings.
 
-    :param account_id: Microsoft Graph user ID (``me.id``) of the account to disconnect.
-    :type account_id: str
+    :param account_id: Microsoft Graph user ID of the account to disconnect.
     :return: ``{"ok": True}``
     :rtype: dict
     """
-    with db_lock:
-        existing = settings_tbl.get(doc_id=1) or {}
+    with db.lock:
+        existing = db.get_settings()
     tokens = [t for t in existing.get("teams_user_tokens", []) if t.get("account_id") != account_id]
     existing["teams_user_tokens"] = tokens
-    with db_lock:
-        if settings_tbl.get(doc_id=1):
-            settings_tbl.update(existing, doc_ids=[1])
-        else:
-            settings_tbl.insert(existing)
+    with db.lock:
+        db.save_settings(existing)
     config.apply_overrides(existing)
     return {"ok": True}
 
@@ -1791,7 +1854,6 @@ async def seed_update_context(request: Request):
     ``waiting_for_ingest`` state.
 
     :param request: Request body must be JSON with a ``context`` key.
-    :type request: Request
     :return: ``{"ok": True}``
     :rtype: dict
     """
@@ -1818,9 +1880,6 @@ def seed_apply(body: dict, background_tasks: BackgroundTasks):
 
     :param body: Dict with keys ``projects`` (list), ``topics`` (list), and
                  optionally ``retag`` (bool, default ``True``).
-    :type body: dict
-    :param background_tasks: FastAPI background task runner.
-    :type background_tasks: BackgroundTasks
     :return: ``{"ok": True, "projects_added": N, "topics_added": M, "items_retagged": K}``
     :rtype: dict
     """
@@ -1834,7 +1893,6 @@ def seed_run_scan():
     run a full multi-source scan, then transition to ``done``.
 
     :return: ``{"ok": True}``
-    :rtype: dict
     :raises HTTPException 409: If a scan is already running.
     """
     return seeder.run_scan(scan_state)

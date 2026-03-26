@@ -12,55 +12,35 @@ configuration from an existing corpus using a map-reduce LLM pass:
   run_scan()       — start a full connector scan (POST /seed/scan)
   skip_scan()      — skip to done without scanning (POST /seed/skip_scan)
 
-All TinyDB table references, db_lock, scan_state, and the Ollama semaphore
-are injected via init().  run_scan_fn and run_reanalyze_fn are also injected
-so this module does not depend on app.py or orchestrator.py directly.
+Uses db.py directly for all persistence.  scan_state, run_scan_fn,
+run_reanalyze_fn, and maybe_form_situation_fn are injected via init().
 """
 import json
 import threading
-from datetime import datetime, timezone
 
 import requests as http_requests
 
 import config
+import db
 import orchestrator
-from agent import extract_keywords
 
 # ── Module-level references, set by init() ────────────────────────────────────
 
-_analyses       = None
-_todos          = None
-_settings_tbl   = None
-_intel_tbl      = None
-_situations_tbl = None
-_embeddings_tbl = None
-_db_lock        = None
-_scan_state     = None
-_run_scan       = None
-_run_reanalyze  = None
-_maybe_form_situation = None
+_scan_state:          dict = {}
+_run_scan                   = None
+_run_reanalyze              = None
+_maybe_form_situation       = None
 
 _seed_job: dict = {"status": "idle"}
 
 
-def init(analyses, todos, settings_tbl, intel_tbl, situations_tbl,
-         embeddings_tbl, db_lock, scan_state,
-         run_scan_fn, run_reanalyze_fn, maybe_form_situation_fn):
+def init(scan_state: dict, run_scan_fn, run_reanalyze_fn, maybe_form_situation_fn) -> None:
     """
-    Inject TinyDB table references and shared callables from app.py.
+    Inject shared state and callables from app.py.
 
     Must be called once at startup before any seed endpoints are invoked.
     """
-    global _analyses, _todos, _settings_tbl, _intel_tbl, _situations_tbl
-    global _embeddings_tbl, _db_lock, _scan_state
-    global _run_scan, _run_reanalyze, _maybe_form_situation
-    _analyses             = analyses
-    _todos                = todos
-    _settings_tbl         = settings_tbl
-    _intel_tbl            = intel_tbl
-    _situations_tbl       = situations_tbl
-    _embeddings_tbl       = embeddings_tbl
-    _db_lock              = db_lock
+    global _scan_state, _run_scan, _run_reanalyze, _maybe_form_situation
     _scan_state           = scan_state
     _run_scan             = run_scan_fn
     _run_reanalyze        = run_reanalyze_fn
@@ -126,8 +106,8 @@ def _run_seed_job(context: str) -> None:
         # ── State: waiting_for_ingest ─────────────────────────────────────────
         seen_items = False
         while True:
-            with _db_lock:
-                item_count = len(_analyses.all())
+            with db.lock:
+                item_count = db.count_items()
             pending = _scan_state.get("ingest_pending", 0)
             if item_count > 0:
                 seen_items = True
@@ -153,8 +133,8 @@ def _run_seed_job(context: str) -> None:
         context_block = f"Context about {user_name}: {context}" if context else ""
         _seed_job.update({"state": "analyzing", "progress": "Starting analysis…"})
 
-        with _db_lock:
-            all_items = _analyses.all()
+        with db.lock:
+            all_items = db.get_all_items()
 
         priority_rank = {"high": 3, "medium": 2, "low": 1}
 
@@ -178,7 +158,7 @@ def _run_seed_job(context: str) -> None:
         map_results  = []
         last_map_err = None
         for batch_num, batch_start in enumerate(range(0, n_items, batch_size), 1):
-            if _seed_job.get("cancelled") or _scan_state["cancelled"]:
+            if _seed_job.get("cancelled") or _scan_state.get("cancelled"):
                 _seed_job.update({"state": "idle", "status": "idle", "progress": "Cancelled."})
                 return
             _seed_job["progress"] = f"Map pass: batch {batch_num}/{n_batches}…"
@@ -357,8 +337,8 @@ def apply(body: dict, background_tasks) -> dict:
     suggested_topics   = body.get("topics", [])
     retag              = body.get("retag", True)
 
-    with _db_lock:
-        existing = _settings_tbl.get(doc_id=1) or {}
+    with db.lock:
+        existing = db.get_settings()
 
     current_projects: list[dict] = existing.get("projects", list(config.PROJECTS))
     current_names = {p.get("name", "").lower() for p in current_projects}
@@ -393,18 +373,15 @@ def apply(body: dict, background_tasks) -> dict:
 
     existing["projects"]     = current_projects
     existing["focus_topics"] = new_focus_topics
-    with _db_lock:
-        if _settings_tbl.get(doc_id=1):
-            _settings_tbl.update(existing, doc_ids=[1])
-        else:
-            _settings_tbl.insert(existing)
+    with db.lock:
+        db.save_settings(existing)
     config.apply_overrides(existing)
 
     items_retagged = 0
     if retag and projects_added > 0:
         new_projects = current_projects[-projects_added:]
-        with _db_lock:
-            all_items = _analyses.all()
+        with db.lock:
+            all_items = db.get_all_items()
 
         updates = []
         for item in all_items:
@@ -418,14 +395,14 @@ def apply(body: dict, background_tasks) -> dict:
             for proj in new_projects:
                 kws = proj.get("keywords", []) + proj.get("learned_keywords", [])
                 if any(kw.lower() in text for kw in kws if kw):
-                    updates.append((item.doc_id, proj["name"]))
+                    updates.append((item.get("item_id"), proj["name"]))
                     items_retagged += 1
                     break
 
         if updates:
-            with _db_lock:
-                for doc_id, tag in updates:
-                    _analyses.update({"project_tag": tag}, doc_ids=[doc_id])
+            with db.lock:
+                for item_id, tag in updates:
+                    db.update_item(item_id, {"project_tag": tag})
 
     def _seed_embed_and_correlate() -> None:
         """
@@ -435,8 +412,8 @@ def apply(body: dict, background_tasks) -> dict:
         print("[seed] starting embedding sweep...")
         try:
             from embedder import embed, update_project
-            with _db_lock:
-                all_items = _analyses.all()
+            with db.lock:
+                all_items = db.get_all_items()
             for item in all_items:
                 tag = item.get("project_tag")
                 if not tag:
@@ -468,10 +445,10 @@ def apply(body: dict, background_tasks) -> dict:
 
         print("[seed] starting situation formation sweep...")
         try:
-            with _db_lock:
-                all_items = _analyses.all()
+            with db.lock:
+                all_items = db.get_all_items()
             item_ids = [item.get("item_id") for item in all_items if item.get("item_id")]
-            with _db_lock:
+            with db.lock:
                 _scan_state["situations_pending"] += len(item_ids)
             for iid in item_ids:
                 try:
@@ -479,7 +456,7 @@ def apply(body: dict, background_tasks) -> dict:
                 except Exception as e:
                     print(f"[seed] situation sweep {iid}: {e}")
                 finally:
-                    with _db_lock:
+                    with db.lock:
                         _scan_state["situations_pending"] = max(0, _scan_state["situations_pending"] - 1)
             print(f"[seed] situation sweep complete ({len(item_ids)} items)")
         except Exception as e:

@@ -131,7 +131,7 @@ NOISE_KEYWORDS: list[str] = []
 # ── App ───────────────────────────────────────────────────────────────────────
 
 PAGE_API_PORT  = int(_get("PAGE_API_PORT", "8001"))
-DB_PATH        = _get("DB_PATH", "/app/data/page.db")
+DB_PATH        = _get("DB_PATH", "/app/data/squire.db")
 LOOKBACK_HOURS = int(_get("LOOKBACK_HOURS", "48"))
 
 

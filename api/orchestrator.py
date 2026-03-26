@@ -8,9 +8,9 @@ functions that drive item analysis:
   run_reanalyze()            — re-analyze all stored items with current config
   process_ingest_items(raw)  — analyze a pre-filtered list of new raw items
 
-All TinyDB table references, db_lock, scan_state, and the analysis helper
-callables are injected via init().  The module-level semaphore (_sem) is
-always available without init() so it can be used by seeder.py.
+scan_state and the analysis helper callables are injected via init().
+The module-level semaphore (_sem) is always available without init() so it
+can be used by seeder.py.
 
 The semaphore is exposed via get_sem() to support future multi-GPU dispatch
 without callers needing to access private state.
@@ -25,6 +25,8 @@ import connector_github
 import connector_jira
 import connector_outlook
 import connector_teams
+import db
+import graph
 
 # ── Ollama concurrency semaphore ───────────────────────────────────────────────
 # Set to 1 for single GPU; raise the count for multi-GPU dispatch.
@@ -40,31 +42,19 @@ CONNECTORS = {
 
 # ── Module-level references, set by init() ────────────────────────────────────
 
-_analyses       = None
-_todos          = None
-_scan_logs      = None
-_intel_tbl      = None
-_db_lock        = None
-_scan_state     = None
-_save_analysis  = None
-_spawn_situation_task = None
+_scan_state:          dict = {}
+_save_analysis              = None
+_spawn_situation_task       = None
 
 
-def init(analyses, todos, scan_logs, intel_tbl, db_lock, scan_state,
-         save_analysis_fn, spawn_situation_fn):
+def init(scan_state: dict, save_analysis_fn, spawn_situation_fn) -> None:
     """
-    Inject TinyDB table references and shared callables from app.py.
+    Inject shared state and callables from app.py.
 
     Must be called once at startup before any scan or ingest endpoints
     are invoked.
     """
-    global _analyses, _todos, _scan_logs, _intel_tbl
-    global _db_lock, _scan_state, _save_analysis, _spawn_situation_task
-    _analyses             = analyses
-    _todos                = todos
-    _scan_logs            = scan_logs
-    _intel_tbl            = intel_tbl
-    _db_lock              = db_lock
+    global _scan_state, _save_analysis, _spawn_situation_task
     _scan_state           = scan_state
     _save_analysis        = save_analysis_fn
     _spawn_situation_task = spawn_situation_fn
@@ -136,10 +126,11 @@ def run_scan(sources: list[str]) -> None:
         actions = sum(1 for r in results if r.has_action)
         for r in results:
             _save_analysis(r)
+            graph.index_item(r)
             _spawn_situation_task(r.item_id)
         status = "cancelled" if _scan_state["cancelled"] else "success"
-        with _db_lock:
-            _scan_logs.insert({
+        with db.lock:
+            db.insert_scan_log({
                 "started_at":    started,
                 "finished_at":   _now_iso(),
                 "sources":       ",".join(sources),
@@ -158,8 +149,8 @@ def run_scan(sources: list[str]) -> None:
                 f"{len(all_items)} items from {', '.join(sources)}."
             )
     except Exception as e:
-        with _db_lock:
-            _scan_logs.insert({
+        with db.lock:
+            db.insert_scan_log({
                 "started_at":    started,
                 "finished_at":   _now_iso(),
                 "sources":       ",".join(sources),
@@ -190,8 +181,8 @@ def run_reanalyze() -> None:
     })
     started = _now_iso()
     try:
-        with _db_lock:
-            all_records = _analyses.all()
+        with db.lock:
+            all_records = db.get_all_items()
 
         # Process passdowns first — they are the richest source of operational
         # current state and their intel should be available when situations
@@ -238,11 +229,12 @@ def run_reanalyze() -> None:
         actions = sum(1 for r in results if r.has_action)
         for r in results:
             _save_analysis(r, reanalyze=True)
+            graph.index_item(r)
             _spawn_situation_task(r.item_id)
 
         status = "cancelled" if _scan_state["cancelled"] else "success"
-        with _db_lock:
-            _scan_logs.insert({
+        with db.lock:
+            db.insert_scan_log({
                 "started_at":    started,
                 "finished_at":   _now_iso(),
                 "sources":       "reanalyze",
@@ -272,11 +264,11 @@ def process_ingest_items(raw: list[RawItem]) -> None:
     :param raw: List of deduplicated ``RawItem`` objects to analyse.
     :type raw: list[RawItem]
     """
-    with _db_lock:
+    with db.lock:
         _scan_state["ingest_pending"] += len(raw)
     for item in raw:
         if _scan_state["cancelled"]:
-            with _db_lock:
+            with db.lock:
                 _scan_state["ingest_pending"] = 0
             print("[ingest] cancelled — stopping after current item")
             return
@@ -284,8 +276,9 @@ def process_ingest_items(raw: list[RawItem]) -> None:
             with _sem:
                 result = analyze(item)
             _save_analysis(result)
+            graph.index_item(result)
             _spawn_situation_task(result.item_id)
         except Exception as e:
             print(f"[ingest] {item.item_id}: {e}")
-        with _db_lock:
+        with db.lock:
             _scan_state["ingest_pending"] = max(0, _scan_state["ingest_pending"] - 1)
