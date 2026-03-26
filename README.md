@@ -13,7 +13,7 @@ Browser (/page/)
                             ├── Microsoft Teams API (Graph)
                             ├── GitHub API
                             ├── Jira Cloud API
-                            └── TinyDB  (./data/page.db)
+                            └── SQLite WAL  (./data/squire.db)
 
 Email ingestion (host, not Docker):
   Windows  → scripts/outlook_sidecar.py      (win32com)
@@ -32,7 +32,7 @@ Runs alongside the existing Hexcaliper stack. Does not conflict with hexcaliper'
 |------------|-------------------------------------------------------------|
 | Frontend   | Vanilla JS + CSS, served by nginx                           |
 | API        | Python 3.12, FastAPI, uvicorn                               |
-| Storage    | TinyDB (flat JSON — same as Hexcaliper)                     |
+| Storage    | SQLite WAL (`squire.db`) with knowledge-graph tables        |
 | LLM        | Ollama via Hexcaliper appliance (Cloudflare Access)         |
 | Networking | Bridge (`app` network) — same pattern as Hexcaliper         |
 
@@ -40,7 +40,7 @@ Runs alongside the existing Hexcaliper stack. Does not conflict with hexcaliper'
 
 | Source           | How                                | What it pulls                                       |
 |------------------|------------------------------------|-----------------------------------------------------|
-| Outlook          | Host sidecar script (win32com)     | Recent inbox emails with To/CC recipients           |
+| Outlook          | Host sidecar script (win32com)     | Inbox and Sent emails with conversation threading   |
 | Thunderbird      | Host sidecar script (mbox/Maildir) | Recent inbox emails with To/CC recipients           |
 | Slack            | Per-user OAuth tokens              | @mentions, DMs, relevant channel messages           |
 | Microsoft Teams  | Per-user OAuth tokens (Graph API)  | @mentions, DMs, relevant channel messages           |
@@ -183,6 +183,25 @@ Every analysed item is assigned a `hierarchy` value indicating how directly it r
 
 The LLM assigns hierarchy based on prompt rules. The Slack and Teams connectors pre-compute hierarchy during channel pre-filtering and pass it as a hint in `item.metadata`.
 
+## Category schema
+
+Every analysed item is assigned a `category` and, for tasks, an optional `task_type`:
+
+| Category    | Meaning                                                                         |
+|-------------|---------------------------------------------------------------------------------|
+| `task`      | Requires action from you. Sub-typed by `task_type` (`reply` or `review`)       |
+| `approval`  | Needs your explicit approval or sign-off                                        |
+| `fyi`       | Informational — no action required                                              |
+| `noise`     | Irrelevant to you; suppressed from the main view                                |
+
+`task_type` values:
+
+| Value    | Meaning                                                                      |
+|----------|------------------------------------------------------------------------------|
+| `reply`  | The task is to compose and send a reply                                       |
+| `review` | The task is to read/review a document, PR, or ticket                         |
+| `null`   | General task not fitting either sub-type                                      |
+
 ## Project learning
 
 When you tag an item to a project via `POST /analyses/{item_id}/tag`, Squire:
@@ -192,7 +211,7 @@ When you tag an item to a project via `POST /analyses/{item_id}/tag`, Squire:
 3. Merges the new keywords (lowercased) into the project's `learned_keywords` list (capped at 100 entries).
 4. Extracts all email addresses from the item's sender (`From`) and recipient (`To`/`CC`) fields.
 5. Merges those addresses into the project's `learned_senders` list (capped at 50 entries), excluding your own address.
-6. Saves the updated settings to TinyDB and hot-reloads config.
+6. Saves the updated settings and hot-reloads config.
 
 On the next scan, learned keywords are included in both the LLM prompt and the Slack/Teams pre-filter. Learned senders are checked deterministically before the LLM runs — if the incoming item's sender or any recipient address matches a `learned_senders` entry, the project tag is applied automatically. This covers both individual contacts who regularly email about a project and shared distribution lists that receive project-related traffic.
 
@@ -233,6 +252,14 @@ python scripts/outlook_sidecar.py           # normal / scheduled run
 ```
 
 Cloudflare Access credentials are stored in Windows Credential Manager via `keyring` and never written to disk. Run `--setup` once to store them, then schedule the normal run with Windows Task Scheduler every 30–60 minutes.
+
+The sidecar fetches both **Inbox** and **Sent Items** and includes `conversation_id`, `conversation_topic`, and `direction` (`received`/`sent`) in each item's metadata. This allows the knowledge graph to link reply threads across sources and gives the LLM hierarchy context (sent items are treated as already-acted-upon).
+
+Use `--seed` for first-time historical ingestion (last 30 days, up to 500 emails):
+
+```bash
+python scripts/outlook_sidecar.py --seed
+```
 
 ### Ubuntu — Thunderbird
 
@@ -305,7 +332,7 @@ Interactive docs: `http://localhost:8001/docs`
 | Method  | Path                        | Description                                                                        |
 |---------|-----------------------------|------------------------------------------------------------------------------------|
 | `GET`   | `/analyses`                 | All analysed items, newest first (params: `source`, `category`). Returns up to 200 |
-| `PATCH` | `/analyses/{item_id}`       | Update `priority`, `category`, `project_tag`, or `is_passdown`. Setting `category="noise"` also clears `has_action` and removes associated todos; changing `priority` syncs to associated todo rows |
+| `PATCH` | `/analyses/{item_id}`       | Update `priority`, `category`, `task_type`, `project_tag`, or `is_passdown`. Setting `category="noise"` also clears `has_action` and removes associated todos; changing `priority` syncs to associated todo rows. Categories: `task`, `approval`, `fyi`, `noise` |
 | `POST`  | `/analyses/{item_id}/tag`   | Tag item to a project; triggers background keyword/sender learning                 |
 | `POST`  | `/analyses/{item_id}/noise` | Mark item as irrelevant; triggers background noise keyword learning                |
 
@@ -339,11 +366,12 @@ Intel items are key facts and completed-action notes extracted by the LLM that a
 
 ### Todos
 
-| Method   | Path          | Description                                                                |
-|----------|---------------|----------------------------------------------------------------------------|
-| `GET`    | `/todos`      | List action items (`source`, `priority`, `done`). Sorted by priority       |
-| `PATCH`  | `/todos/{id}` | Update a todo (`{"done": true}`)                                           |
-| `DELETE` | `/todos/{id}` | Delete a todo                                                              |
+| Method   | Path          | Description                                                                                             |
+|----------|---------------|---------------------------------------------------------------------------------------------------------|
+| `GET`    | `/todos`      | List action items (`source`, `priority`, `done`). Sorted by priority                                    |
+| `POST`   | `/todos`      | Create a manual action item (`{"description": "...", "priority": "high", "deadline": "2026-12-31", "project_tag": "..."}`) |
+| `PATCH`  | `/todos/{id}` | Update a todo — `done`, `description`, `deadline`, `priority`, `project_tag`                           |
+| `DELETE` | `/todos/{id}` | Delete a todo                                                                                           |
 
 ### Stats
 
@@ -382,12 +410,33 @@ Intel items are key facts and completed-action notes extracted by the LLM that a
 
 ## Data persistence
 
-Stored in `./data/page.db` (TinyDB JSON). Bind-mounted and survives restarts.
+Stored in `./data/squire.db` (SQLite WAL). Bind-mounted and survives restarts.
 
 ```bash
 docker compose down
-rm data/page.db   # wipe all data
+rm data/squire.db   # wipe all data
 docker compose up -d
 ```
 
 Alternatively, use `POST /reset` to clear analyses, todos, and scan logs while keeping your saved settings.
+
+### Migrating from an older TinyDB installation
+
+If you have an existing `data/page.db` from a TinyDB-based deployment, run the one-time migration script before starting the new container:
+
+```bash
+python scripts/migrate_to_sqlite.py --src data/page.db --dst data/squire.db
+```
+
+## Knowledge graph
+
+Every analysed item is indexed into a lightweight knowledge graph (`api/graph.py`) stored in the same SQLite database. Node types are `item`, `person`, `project`, and `conversation`. Edges carry typed relationships:
+
+| Edge type       | Weight | Meaning                                          |
+|-----------------|--------|--------------------------------------------------|
+| `in_conversation` | 1.00 | Two emails share the same Outlook ConversationID |
+| `in_situation`    | 0.80 | Two items grouped into the same situation        |
+| `tagged_to`       | 0.55 | Item tagged to a project                         |
+| `authored_by`     | 0.40 | Item sent or created by the same person          |
+
+When the LLM analyses an item, up to four related items are retrieved from the graph, scored by edge weight × recency decay (14-day half-life), and injected into the prompt as `GraphRAG context`. This lets the model reason about conversation threads and project workstreams across sources without re-scanning all history.
