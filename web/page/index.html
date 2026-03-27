@@ -12,7 +12,7 @@
   --border:  #3a1510;
   --border2: #241008;
   --text:    #f0e4e0;
-  --muted:   #6e5050;
+  --muted:   #a08070;
   --accent:  #d4a017;
   --gold:    #d4a017;
   --amber:   #ffb020;
@@ -238,7 +238,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .chip-deadline { color: var(--red); }
 .todo-actions { display: flex; gap: 3px; flex-shrink: 0; }
 .ia {
-  background: none; border: 1px solid transparent; color: var(--muted);
+  background: none; border: 1px solid var(--border2); color: var(--muted);
   cursor: pointer; padding: 2px 5px; font-size: 11px; border-radius: var(--r);
   transition: all .1s; font-family: var(--mono);
 }
@@ -526,7 +526,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .sit-src-dots { display: flex; gap: 3px; }
 .sit-src-dot  { width: 8px; height: 8px; border-radius: 50%; }
 .sit-actions  { flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
-.sit-dismiss  { background: none; border: 1px solid transparent; color: var(--muted); cursor: pointer; padding: 2px 6px; font-size: 10px; border-radius: var(--r); }
+.sit-dismiss  { background: none; border: 1px solid var(--border2); color: var(--muted); cursor: pointer; padding: 2px 6px; font-size: 10px; border-radius: var(--r); }
 .sit-dismiss:hover { border-color: var(--red); color: var(--red); }
 .sit-evidence { border-top: 1px solid var(--border2); padding: 0 12px; display: none; }
 .sit-evidence.open { display: block; }
