@@ -742,6 +742,8 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
         db.update_item(item_id, updates)
         if updates.get("category") == "noise":
             db.delete_todos_for_item(item_id)
+        if "category" in updates:
+            background_tasks.add_task(_learn_keywords_for_category, old_record, updates["category"])
         elif "priority" in updates:
             db.update_todos_for_item(item_id, {"priority": updates["priority"]})
         if "project_tag" in updates:
@@ -900,6 +902,39 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
     return {"ok": True, "project": project_name}
 
 
+_CATEGORY_KEYWORD_FIELD = {
+    "noise":    "noise_keywords",
+    "task":     "task_keywords",
+    "approval": "approval_keywords",
+    "fyi":      "fyi_keywords",
+}
+
+
+def _learn_keywords_for_category(record: dict, category: str) -> None:
+    """Extract keywords from an item and merge them into the learned keyword list for its category."""
+    settings_field = _CATEGORY_KEYWORD_FIELD.get(category)
+    if not settings_field:
+        return
+
+    title        = record.get("title", "")
+    body_preview = record.get("body_preview", "") or record.get("summary", "")
+    keywords     = extract_keywords(category, title, body_preview)
+    if not keywords:
+        return
+
+    with db.lock:
+        saved = db.get_settings()
+
+    existing = set(saved.get(settings_field, list(getattr(config, settings_field.upper(), []))))
+    existing.update(k.lower() for k in keywords)
+    saved[settings_field] = list(existing)[:200]
+
+    with db.lock:
+        db.save_settings(saved)
+    config.apply_overrides(saved)
+    print(f"[{category}] +{len(keywords)} keywords ({len(existing)} total)")
+
+
 @app.post("/analyses/{item_id}/noise")
 def mark_noise(item_id: str, background_tasks: BackgroundTasks):
     """
@@ -907,8 +942,8 @@ def mark_noise(item_id: str, background_tasks: BackgroundTasks):
 
     Sets ``category="noise"``, ``priority="low"``, and ``has_action=False``
     synchronously, and removes all associated todos.  Then runs a background
-    task (``learn_noise``) that extracts keywords from the item and merges them
-    into ``config.NOISE_KEYWORDS`` (capped at 200).
+    task (``_learn_noise_from_record``) that extracts keywords from the item
+    and merges them into ``config.NOISE_KEYWORDS`` (capped at 200).
 
     :param item_id: Stable ID of the analysis item to mark as noise.
     :return: ``{"ok": True}``
@@ -923,27 +958,7 @@ def mark_noise(item_id: str, background_tasks: BackgroundTasks):
         db.update_item(item_id, {"category": "noise", "priority": "low", "has_action": 0})
         db.delete_todos_for_item(item_id)
 
-    def learn_noise() -> None:
-        """Extract keywords from the noise-marked item and merge into the global noise filter."""
-        title        = record.get("title", "")
-        body_preview = record.get("body_preview", "") or record.get("summary", "")
-        keywords     = extract_keywords("noise filter", title, body_preview)
-        if not keywords:
-            return
-
-        with db.lock:
-            saved = db.get_settings()
-
-        existing = set(saved.get("noise_keywords", list(config.NOISE_KEYWORDS)))
-        existing.update(k.lower() for k in keywords)
-        saved["noise_keywords"] = list(existing)[:200]
-
-        with db.lock:
-            db.save_settings(saved)
-        config.apply_overrides(saved)
-        print(f"[noise] +{len(keywords)} keywords ({len(existing)} total)")
-
-    background_tasks.add_task(learn_noise)
+    background_tasks.add_task(_learn_keywords_for_category, record, "noise")
     return {"ok": True}
 
 

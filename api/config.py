@@ -126,7 +126,10 @@ try:
 except Exception:
     PROJECTS: list[dict] = []
 
-NOISE_KEYWORDS: list[str] = []
+NOISE_KEYWORDS:    list[str] = []
+TASK_KEYWORDS:     list[str] = []
+APPROVAL_KEYWORDS: list[str] = []
+FYI_KEYWORDS:      list[str] = []
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
@@ -187,6 +190,12 @@ def apply_overrides(d: dict) -> None:
         setattr(mod, "PROJECTS", d["projects"])
     if "noise_keywords" in d and isinstance(d["noise_keywords"], list):
         setattr(mod, "NOISE_KEYWORDS", d["noise_keywords"])
+    if "task_keywords" in d and isinstance(d["task_keywords"], list):
+        setattr(mod, "TASK_KEYWORDS", d["task_keywords"])
+    if "approval_keywords" in d and isinstance(d["approval_keywords"], list):
+        setattr(mod, "APPROVAL_KEYWORDS", d["approval_keywords"])
+    if "fyi_keywords" in d and isinstance(d["fyi_keywords"], list):
+        setattr(mod, "FYI_KEYWORDS", d["fyi_keywords"])
     if "lookback_hours" in d and d["lookback_hours"] is not None:
         setattr(mod, "LOOKBACK_HOURS", int(d["lookback_hours"]))
 

@@ -52,6 +52,9 @@ User context:
 - Email: {user_email}
 - Active projects: {projects_ctx}
 - Watch topics: {topics_ctx}
+- Task indicators: {task_ctx} — keywords from items previously confirmed as tasks requiring action from {user_name}
+- Approval indicators: {approval_ctx} — keywords from items previously confirmed as approval events affecting {user_name}
+- FYI indicators: {fyi_ctx} — keywords from items previously confirmed as informational only for {user_name}
 - Noise/irrelevant topics: {noise_ctx} — if content is primarily about these with no direct relevance to {user_name}, set category="noise", priority="low", has_action=false
 {sender_hint}{replied_hint}{manual_tag_hint}{graph_hint}{embedding_hint}
 Analyze this item and extract structured information.
@@ -128,7 +131,7 @@ Category rules:
   * task_type="review" — code/doc review, approval, or sign-off needed from {user_name}
   * task_type=null     — general assigned work, deadline, or other task
 - approval: an approval event that already occurred or affects {user_name} (PO approved, plan signed off, timesheets approved) — NOT a request for approval (use task/review for that)
-- fyi: informational only — no action required of {user_name}; MUST have has_action=false and action_items=[]
+- fyi: informational only — no action required of {user_name}; MUST have has_action=false and action_items=[]; use as the default when no strong indicators exist for task, approval, or noise
 - noise: automated notifications, irrelevant to {user_name}; MUST have has_action=false and action_items=[]
 
 Priority rules:
@@ -221,6 +224,36 @@ def _noise_ctx() -> str:
     :rtype: str
     """
     return ", ".join(config.NOISE_KEYWORDS[:30]) if config.NOISE_KEYWORDS else "none"
+
+
+def _task_ctx() -> str:
+    """
+    Build a comma-separated summary of learned task keywords for the LLM prompt.
+
+    :return: Comma-separated task keywords, or ``"none"`` if the list is empty.
+    :rtype: str
+    """
+    return ", ".join(config.TASK_KEYWORDS[:30]) if config.TASK_KEYWORDS else "none"
+
+
+def _approval_ctx() -> str:
+    """
+    Build a comma-separated summary of learned approval keywords for the LLM prompt.
+
+    :return: Comma-separated approval keywords, or ``"none"`` if the list is empty.
+    :rtype: str
+    """
+    return ", ".join(config.APPROVAL_KEYWORDS[:30]) if config.APPROVAL_KEYWORDS else "none"
+
+
+def _fyi_ctx() -> str:
+    """
+    Build a comma-separated summary of learned FYI keywords for the LLM prompt.
+
+    :return: Comma-separated FYI keywords, or ``"none"`` if the list is empty.
+    :rtype: str
+    """
+    return ", ".join(config.FYI_KEYWORDS[:30]) if config.FYI_KEYWORDS else "none"
 
 
 KEYWORD_PROMPT = """Extract 5 to 10 short keywords or phrases that best characterize this content for project "{project_name}".
@@ -549,9 +582,12 @@ def analyze(item: RawItem) -> Analysis:
                 body         = item.body,
                 user_name    = config.USER_NAME or "the user",
                 user_email   = config.USER_EMAIL or "",
-                projects_ctx = _projects_ctx(),
-                topics_ctx   = _topics_ctx(),
-                noise_ctx    = _noise_ctx(),
+                projects_ctx  = _projects_ctx(),
+                topics_ctx    = _topics_ctx(),
+                task_ctx      = _task_ctx(),
+                approval_ctx  = _approval_ctx(),
+                fyi_ctx       = _fyi_ctx(),
+                noise_ctx     = _noise_ctx(),
                 to_field     = to_field,
                 cc_field     = cc_field,
                 sender_hint     = sender_hint,
