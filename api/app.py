@@ -1204,14 +1204,68 @@ def get_todos(
     return results
 
 
+@app.post("/todos")
+def create_todo(body: dict):
+    """
+    Create a manual action item.
+
+    Manual todos are not tied to LLM analysis — they represent work the user
+    wants to track themselves.  The ``item_id`` field is optional; when
+    supplied the todo is associated with an existing analysis item.
+
+    :param body: Dict with required ``description`` and optional ``deadline``,
+                 ``priority``, ``project_tag``, ``item_id``.
+    :return: ``{"ok": True, "doc_id": <id>}``
+    :raises HTTPException 400: If ``description`` is missing or empty.
+    """
+    description = (body.get("description") or "").strip()
+    if not description:
+        raise HTTPException(status_code=400, detail="description is required")
+    allowed_priorities = {"high", "medium", "low"}
+    priority = body.get("priority", "medium")
+    if priority not in allowed_priorities:
+        priority = "medium"
+    now = datetime.now(timezone.utc).isoformat()
+    data = {
+        "description": description,
+        "priority":    priority,
+        "is_manual":   1,
+        "done":        0,
+        "status":      "open",
+        "created_at":  now,
+        "source":      "manual",
+        "title":       "",
+        "url":         "",
+        "owner":       "me",
+    }
+    if body.get("deadline"):
+        data["deadline"] = body["deadline"]
+    if body.get("project_tag"):
+        data["project_tag"] = body["project_tag"]
+    if body.get("item_id"):
+        data["item_id"] = body["item_id"]
+        with db.lock:
+            item = db.get_item(body["item_id"])
+        if item:
+            data["source"]      = item.get("source", "manual")
+            data["title"]       = item.get("title", "")
+            data["url"]         = item.get("url", "")
+            data["project_tag"] = data.get("project_tag") or item.get("project_tag")
+    with db.lock:
+        doc_id = db.insert_todo(data)
+    return {"ok": True, "doc_id": doc_id}
+
+
 @app.patch("/todos/{doc_id}")
 def patch_todo(doc_id: int, body: dict):
     """
-    Update a todo item's status and/or assignment.
+    Update a todo item.
+
+    Accepted fields: ``status``, ``done``, ``assigned_to``, ``description``,
+    ``deadline``, ``priority``, ``project_tag``.
 
     :param doc_id: Integer id of the todo record.
-    :param body: Partial update dict; accepted keys: ``status``, ``done``,
-                 ``assigned_to``.
+    :param body: Partial update dict.
     :return: ``{"ok": True}``
     :rtype: dict
     """
@@ -1225,6 +1279,16 @@ def patch_todo(doc_id: int, body: dict):
         updates["status"] = "done" if done else "open"
     if "assigned_to" in body:
         updates["assigned_to"] = body["assigned_to"] or None
+    if "description" in body:
+        desc = (body["description"] or "").strip()
+        if desc:
+            updates["description"] = desc
+    if "deadline" in body:
+        updates["deadline"] = body["deadline"] or None
+    if "priority" in body and body["priority"] in ("high", "medium", "low"):
+        updates["priority"] = body["priority"]
+    if "project_tag" in body:
+        updates["project_tag"] = body["project_tag"] or None
     if updates:
         with db.lock:
             db.update_todo(doc_id, updates)

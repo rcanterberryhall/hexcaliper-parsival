@@ -14,7 +14,8 @@ COPY app.py config.py models.py agent.py \
      connector_jira.py connector_outlook.py \
      connector_teams.py \
      embedder.py correlator.py \
-     orchestrator.py situation_manager.py seeder.py .
+     orchestrator.py situation_manager.py seeder.py \
+     db.py graph.py .
 
 EXPOSE 8001
 

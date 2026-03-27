@@ -151,6 +151,52 @@ def test_delete_todo(client):
     assert todos.get(doc_id=doc_id) is None
 
 
+def test_post_todo_creates_manual_item(client):
+    r = client.post("/todos", json={"description": "Manual task", "priority": "high"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert "doc_id" in body
+    row = todos.get(doc_id=body["doc_id"])
+    assert row is not None
+    assert row["description"] == "Manual task"
+    assert row["priority"]    == "high"
+    assert row["is_manual"]   == 1
+
+
+def test_post_todo_requires_description(client):
+    r = client.post("/todos", json={"priority": "low"})
+    assert r.status_code == 400
+
+
+def test_post_todo_sets_deadline_and_project(client):
+    r = client.post("/todos", json={
+        "description": "Deadline task",
+        "deadline":    "2026-12-31",
+        "project_tag": "Alpha",
+    })
+    assert r.status_code == 200
+    row = todos.get(doc_id=r.json()["doc_id"])
+    assert row["deadline"]    == "2026-12-31"
+    assert row["project_tag"] == "Alpha"
+
+
+def test_patch_todo_edits_description_and_deadline(client):
+    doc_id = _insert_todo(item_id="e1")
+    r = client.patch(f"/todos/{doc_id}", json={"description": "Updated desc", "deadline": "2026-06-01"})
+    assert r.status_code == 200
+    row = todos.get(doc_id=doc_id)
+    assert row["description"] == "Updated desc"
+    assert row["deadline"]    == "2026-06-01"
+
+
+def test_patch_todo_edits_priority(client):
+    doc_id = _insert_todo(item_id="e2", priority="low")
+    r = client.patch(f"/todos/{doc_id}", json={"priority": "high"})
+    assert r.status_code == 200
+    assert todos.get(doc_id=doc_id)["priority"] == "high"
+
+
 # ── /analyses ─────────────────────────────────────────────────────────────────
 
 def _insert_analysis(**kwargs):

@@ -1,35 +1,33 @@
 """
 migrate_to_sqlite.py — One-time migration from TinyDB page.db to SQLite.
 
-Reads the existing TinyDB JSON file (page.db) and imports every record into
-the new SQLite schema defined in api/db.py.  Safe to re-run: records are
+Reads the existing TinyDB JSON file (data/page.db) and imports every record
+into the new SQLite schema defined in api/db.py.  Safe to re-run: records are
 upserted so existing data is not duplicated.
 
 Usage (run from the repo root):
 
-    python scripts/migrate_to_sqlite.py [--source /path/to/page.db] [--dest /path/to/squire.db]
-
-Defaults:
-  --source  data/page.db
-  --dest    data/squire.db   (config.DB_PATH must point here after migration)
+    python scripts/migrate_to_sqlite.py
 """
-import argparse
 import json
 import os
 import sys
 
-# Allow importing db.py from the api directory
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
+_REPO_ROOT  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+SOURCE_PATH = os.path.join(_REPO_ROOT, "data", "page.db")
+DEST_PATH   = os.path.join(_REPO_ROOT, "data", "squire.db")
+
+# Set DB_PATH before importing api modules so config.py picks it up at load time
+os.makedirs(os.path.join(_REPO_ROOT, "data"), exist_ok=True)
+os.environ["DB_PATH"] = DEST_PATH
+sys.path.insert(0, os.path.join(_REPO_ROOT, "api"))
+
+import config  # noqa: E402
+config.DB_PATH = DEST_PATH
+import db      # noqa: E402
 
 
-def migrate(source_path: str, dest_path: str) -> None:
-    # Temporarily override DB_PATH before importing db
-    os.environ["DB_PATH"] = dest_path
-    import config
-    config.DB_PATH = dest_path
-
-    import db
-
+def migrate(source_path: str = SOURCE_PATH, dest_path: str = DEST_PATH) -> None:
     print(f"Source: {source_path}")
     print(f"Dest:   {dest_path}")
 
@@ -225,8 +223,4 @@ def migrate(source_path: str, dest_path: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Migrate Squire TinyDB → SQLite")
-    parser.add_argument("--source", default="data/page.db",  help="Path to TinyDB JSON file")
-    parser.add_argument("--dest",   default="data/squire.db", help="Path for new SQLite file")
-    args = parser.parse_args()
-    migrate(args.source, args.dest)
+    migrate()

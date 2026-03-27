@@ -425,7 +425,7 @@ Alternatively, use `POST /reset` to clear analyses, todos, and scan logs while k
 If you have an existing `data/page.db` from a TinyDB-based deployment, run the one-time migration script before starting the new container:
 
 ```bash
-python scripts/migrate_to_sqlite.py --src data/page.db --dst data/squire.db
+python scripts/migrate_to_sqlite.py
 ```
 
 ## Knowledge graph

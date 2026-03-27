@@ -29,7 +29,7 @@ services:
       JIRA_DOMAIN:      "yourcompany.atlassian.net"
       JIRA_JQL:         "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
       PAGE_API_PORT:    "8001"
-      DB_PATH:          "/app/data/page.db"
+      DB_PATH:          "/app/data/squire.db"
       LOOKBACK_HOURS:   "48"
     volumes:
       - ./data:/app/data

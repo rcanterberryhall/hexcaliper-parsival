@@ -829,6 +829,21 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
         </div>
         <label class="show-done" id="showDoneLbl"><input type="checkbox" id="showDone" onchange="loadTodos()"> Show completed</label>
         <label class="show-done"><input type="checkbox" id="showHidden" onchange="onShowHidden()"> Show hidden</label>
+        <button class="ia" id="addActionBtn" onclick="toggleAddAction()" title="Add manual action item" style="margin-left:auto;padding:3px 9px;font-size:11px">+ Add action</button>
+      </div>
+      <div id="addActionForm" style="display:none;padding:10px 14px;border-bottom:1px solid var(--border2);background:var(--surface);gap:8px;flex-wrap:wrap;align-items:flex-end" class="frow">
+        <input id="newTodoDesc"     type="text"   placeholder="Description…"  style="flex:2;min-width:180px;padding:4px 8px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px" onkeydown="if(event.key==='Enter')submitNewTodo()">
+        <input id="newTodoDeadline" type="date"   placeholder="Deadline"       style="padding:4px 8px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px">
+        <select id="newTodoPri" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px">
+          <option value="high">high</option>
+          <option value="medium" selected>medium</option>
+          <option value="low">low</option>
+        </select>
+        <select id="newTodoProj" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px">
+          <option value="">— no project —</option>
+        </select>
+        <button class="detail-save" onclick="submitNewTodo()" style="padding:4px 12px">Add</button>
+        <button class="ia" onclick="toggleAddAction()" style="padding:3px 8px;font-size:11px">Cancel</button>
       </div>
       <div id="todo-view"></div>
       <div id="intel-view"></div>
@@ -1433,6 +1448,8 @@ function makeTodo(t) {
     ? `<button class="ia" style="padding:2px 5px;font-size:11px" onclick="event.stopPropagation();showAssignPicker(${did},'${esc(t.item_id||'')}',this)" title="Assign to someone">⇒</button>`
     : '';
 
+  el.dataset.todoId = did;
+  const editBtn = `<button class="ia" onclick="event.stopPropagation();showTodoEdit(${did},${JSON.stringify(t.description)},${JSON.stringify(t.deadline||null)},${JSON.stringify(t.priority||'medium')})" title="Edit">✎</button>`;
   el.innerHTML = `
     <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding-top:1px;flex-shrink:0">
       <button class="cb" onclick="${cbClick}">${cbContent}</button>
@@ -1446,13 +1463,79 @@ function makeTodo(t) {
         ${proj}${dl}${own}${assignedChip}
       </div>
     </div>
-    <div class="todo-actions">${tagBtn}${link}<button class="ia del" onclick="deleteTodo(${did})" title="Delete">✕</button></div>`;
+    <div class="todo-actions">${editBtn}${tagBtn}${link}<button class="ia del" onclick="deleteTodo(${did})" title="Delete">✕</button></div>`;
   return el;
 }
 
 async function toggleDone(id, done) {
   try { await api(`/todos/${id}`, 'PATCH', { done }); loadTodos(); loadStats(); }
   catch (e) { console.warn('toggleDone:', e); }
+}
+
+function toggleAddAction() {
+  const form = $('addActionForm');
+  const visible = form.style.display !== 'none';
+  form.style.display = visible ? 'none' : 'flex';
+  if (!visible) {
+    // Populate project dropdown from current project list
+    const sel = $('newTodoProj');
+    sel.innerHTML = '<option value="">— no project —</option>' +
+      allProjects.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+    $('newTodoDesc').focus();
+  }
+}
+
+async function submitNewTodo() {
+  const desc = ($('newTodoDesc').value || '').trim();
+  if (!desc) { $('newTodoDesc').focus(); return; }
+  const body = {
+    description: desc,
+    priority:    $('newTodoPri').value,
+    deadline:    $('newTodoDeadline').value || undefined,
+    project_tag: $('newTodoProj').value    || undefined,
+  };
+  try {
+    await api('/todos', 'POST', body);
+    $('newTodoDesc').value = '';
+    $('newTodoDeadline').value = '';
+    $('addActionForm').style.display = 'none';
+    await loadTodos();
+    loadStats();
+  } catch(e) { $('statusMsg').textContent = 'Failed: ' + e.message; }
+}
+
+async function saveTodoEdit(docId) {
+  const row  = document.querySelector(`.todo-edit-row[data-id="${docId}"]`);
+  if (!row) return;
+  const desc     = row.querySelector('.te-desc').value.trim();
+  const deadline = row.querySelector('.te-dl').value || null;
+  const priority = row.querySelector('.te-pri').value;
+  if (!desc) return;
+  try {
+    await api(`/todos/${docId}`, 'PATCH', { description: desc, deadline, priority });
+    await loadTodos();
+  } catch(e) { console.warn('saveTodoEdit:', e); }
+}
+
+function showTodoEdit(docId, currentDesc, currentDl, currentPri) {
+  // Remove any existing edit row
+  document.querySelectorAll('.todo-edit-row').forEach(r => r.remove());
+  const row = document.createElement('div');
+  row.className = 'todo-edit-row';
+  row.dataset.id = docId;
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 10px;background:var(--surface);border-bottom:1px solid var(--border2)';
+  row.innerHTML = `
+    <input class="te-desc" type="text" value="${esc(currentDesc)}" style="flex:2;min-width:140px;padding:3px 7px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px" onkeydown="if(event.key==='Enter')saveTodoEdit(${docId})">
+    <input class="te-dl"   type="date" value="${currentDl||''}" style="padding:3px 7px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px">
+    <select class="te-pri" style="padding:3px 7px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px">
+      ${['high','medium','low'].map(p=>`<option value="${p}"${p===currentPri?' selected':''}>${p}</option>`).join('')}
+    </select>
+    <button class="detail-save" style="padding:3px 10px" onclick="saveTodoEdit(${docId})">Save</button>
+    <button class="ia" style="padding:2px 7px;font-size:11px" onclick="this.closest('.todo-edit-row').remove()">✕</button>`;
+  // Insert after the todo element with this id
+  const todoEl = document.querySelector(`[data-todo-id="${docId}"]`);
+  if (todoEl) todoEl.after(row);
+  row.querySelector('.te-desc').focus();
 }
 
 async function deleteTodo(id) {
