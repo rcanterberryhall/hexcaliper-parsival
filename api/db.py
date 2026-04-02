@@ -66,7 +66,15 @@ def conn() -> sqlite3.Connection:
         _conn.execute("PRAGMA foreign_keys=ON")
         _conn.execute("PRAGMA synchronous=NORMAL")
         _create_schema(_conn)
+        _migrate_schema(_conn)
     return _conn
+
+
+def _migrate_schema(c: sqlite3.Connection) -> None:
+    """Apply incremental schema migrations that cannot use CREATE IF NOT EXISTS."""
+    cols = {row[1] for row in c.execute("PRAGMA table_info(items)").fetchall()}
+    if "batch_job_id" not in cols:
+        c.execute("ALTER TABLE items ADD COLUMN batch_job_id TEXT")
 
 
 def _create_schema(c: sqlite3.Connection) -> None:
@@ -338,6 +346,23 @@ def update_items_by_project(project_tag: str, updates: dict) -> None:
 def count_items() -> int:
     """Return total item count."""
     return conn().execute("SELECT COUNT(*) FROM items").fetchone()[0]
+
+
+def get_items_with_pending_batch() -> list[dict]:
+    """Return all items that have a batch_job_id set (awaiting batch result)."""
+    return _rows_to_list(
+        conn().execute(
+            "SELECT * FROM items WHERE batch_job_id IS NOT NULL"
+        ).fetchall()
+    )
+
+
+def set_batch_job_id(item_id: str, batch_job_id: Optional[str]) -> None:
+    """Set or clear the batch_job_id on an item row."""
+    conn().execute(
+        "UPDATE items SET batch_job_id = ? WHERE item_id = ?",
+        (batch_job_id, item_id),
+    )
 
 
 # ── Todo operations ────────────────────────────────────────────────────────────

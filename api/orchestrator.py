@@ -16,21 +16,28 @@ The semaphore is exposed via get_sem() to support future multi-GPU dispatch
 without callers needing to access private state.
 """
 import threading
+import time
+from collections import deque
 from datetime import datetime, timezone
 
-from agent import analyze
+import requests as http_requests
+
+from agent import analyze, build_prompt
 from models import RawItem
 import connector_slack
 import connector_github
 import connector_jira
 import connector_outlook
 import connector_teams
+import config
 import db
 import graph
 
 # ── Ollama concurrency semaphore ───────────────────────────────────────────────
 # Set to 1 for single GPU; raise the count for multi-GPU dispatch.
 _sem = threading.Semaphore(1)
+
+_TIMING_WINDOW = 10  # rolling average over last N items
 
 CONNECTORS = {
     "slack":   connector_slack,
@@ -72,6 +79,148 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ── merLLM batch helpers ───────────────────────────────────────────────────────
+
+def _merllm_night_mode() -> bool:
+    """Return True if merLLM reports night mode active, False otherwise."""
+    try:
+        r = http_requests.get(
+            f"{config.MERLLM_URL}/api/merllm/status", timeout=5
+        )
+        r.raise_for_status()
+        return r.json().get("mode") == "night"
+    except Exception:
+        return False
+
+
+def _submit_batch_job(prompt: str) -> str | None:
+    """Submit a prompt to merLLM batch API; return the job ID or None on failure."""
+    try:
+        r = http_requests.post(
+            f"{config.MERLLM_URL}/api/batch/submit",
+            json={
+                "source_app": "parsival",
+                "prompt":     prompt,
+                "model":      config.OLLAMA_MODEL,
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json().get("job_id")
+    except Exception as e:
+        print(f"[batch] submit failed: {e}")
+        return None
+
+
+def _poll_batch_jobs() -> None:
+    """
+    Background thread: every 60 s poll merLLM for completed batch jobs and
+    apply their results to the corresponding items.
+    """
+    while True:
+        time.sleep(60)
+        try:
+            with db.lock:
+                pending = db.get_items_with_pending_batch()
+            for rec in pending:
+                job_id = rec.get("batch_job_id")
+                if not job_id:
+                    continue
+                try:
+                    r = http_requests.get(
+                        f"{config.MERLLM_URL}/api/batch/result/{job_id}",
+                        timeout=10,
+                    )
+                    if r.status_code == 404:
+                        continue
+                    r.raise_for_status()
+                    data = r.json()
+                    if data.get("status") != "complete":
+                        continue
+                    response_text = data.get("response", "")
+                except Exception as e:
+                    print(f"[batch] poll {job_id}: {e}")
+                    continue
+
+                # Parse the LLM response and re-save the item
+                try:
+                    import json as _json
+                    from agent import (
+                        _detect_passdown, _validated_project_tag,
+                        _detect_quarantine_noise,
+                    )
+                    from models import Analysis, ActionItem
+                    parsed = _json.loads(response_text)
+                    action_items = [
+                        ActionItem(
+                            description=a.get("description", ""),
+                            deadline=a.get("deadline"),
+                            owner=a.get("owner", "me"),
+                        )
+                        for a in parsed.get("action_items", [])
+                        if a.get("description")
+                    ]
+                    category = parsed.get("category", "fyi")
+                    if category in ("fyi", "noise"):
+                        action_items = []
+                    result = Analysis(
+                        item_id           = rec["item_id"],
+                        source            = rec.get("source", ""),
+                        title             = rec.get("title", ""),
+                        author            = rec.get("author", ""),
+                        timestamp         = rec.get("timestamp", _now_iso()),
+                        url               = rec.get("url", ""),
+                        category          = category,
+                        task_type         = parsed.get("task_type"),
+                        has_action        = bool(action_items),
+                        priority          = parsed.get("priority", "medium"),
+                        action_items      = action_items,
+                        summary           = parsed.get("summary", rec.get("title", "")),
+                        urgency_reason    = parsed.get("urgency_reason"),
+                        hierarchy         = parsed.get("hierarchy", rec.get("hierarchy", "general")),
+                        is_passdown       = bool(parsed.get("is_passdown", rec.get("is_passdown", False))),
+                        project_tag       = _validated_project_tag(
+                                               parsed.get("project_tag") or rec.get("project_tag")
+                                           ),
+                        direction         = rec.get("direction", "received"),
+                        conversation_id   = rec.get("conversation_id"),
+                        conversation_topic = rec.get("conversation_topic"),
+                        goals             = [g for g in parsed.get("goals", []) if isinstance(g, str) and g],
+                        key_dates         = [d for d in parsed.get("key_dates", []) if isinstance(d, dict)],
+                        body_preview      = rec.get("body_preview", ""),
+                        to_field          = rec.get("to_field", ""),
+                        cc_field          = rec.get("cc_field", ""),
+                        is_replied        = bool(rec.get("is_replied", False)),
+                        replied_at        = rec.get("replied_at"),
+                        information_items = [
+                            {"fact": i.get("fact", ""), "relevance": i.get("relevance", "")}
+                            for i in parsed.get("information_items", [])
+                            if i.get("fact")
+                        ],
+                    )
+                    _save_analysis(result, reanalyze=True)
+                    graph.index_item(result)
+                    _spawn_situation_task(result.item_id)
+                    with db.lock:
+                        db.set_batch_job_id(rec["item_id"], None)
+                    print(f"[batch] applied result for {rec['item_id']} (job {job_id})")
+                except Exception as e:
+                    print(f"[batch] apply {job_id}: {e}")
+        except Exception as e:
+            print(f"[batch] poll loop error: {e}")
+
+
+_batch_poll_thread_started = False
+
+
+def _ensure_batch_poll_thread() -> None:
+    """Start the batch-job polling thread once."""
+    global _batch_poll_thread_started
+    if not _batch_poll_thread_started:
+        _batch_poll_thread_started = True
+        threading.Thread(target=_poll_batch_jobs, daemon=True).start()
+
+
 # ── Pipeline functions ─────────────────────────────────────────────────────────
 
 def _generate_briefing_bg() -> None:
@@ -111,6 +260,8 @@ def run_scan(sources: list[str]) -> None:
     _scan_state.update({
         "running": True, "cancelled": False, "mode": "scan",
         "progress": 0, "total": 0, "message": "Starting...",
+        "total_items": 0, "completed_items": 0,
+        "estimated_minutes_remaining": 0,
     })
     started   = _now_iso()
     all_items: list[RawItem] = []
@@ -123,25 +274,34 @@ def run_scan(sources: list[str]) -> None:
         if connector:
             all_items.extend(connector.fetch())
 
-    _scan_state["total"]   = len(all_items)
-    _scan_state["message"] = f"Analyzing {len(all_items)} items..."
+    _scan_state["total"]       = len(all_items)
+    _scan_state["total_items"] = len(all_items)
+    _scan_state["message"]     = f"Analyzing {len(all_items)} items..."
 
     results = []
+    _timing: deque = deque(maxlen=_TIMING_WINDOW)
     try:
         for i, item in enumerate(all_items):
             if _scan_state["cancelled"]:
                 break
             _scan_state.update({
                 "progress":       i,
+                "completed_items": i,
                 "current_source": item.source,
                 "current_item":   item.title[:60],
                 "message":        f"[{item.source}] {i + 1}/{len(all_items)}: {item.title[:60]}",
             })
             try:
+                _t0 = time.monotonic()
                 with _sem:
                     results.append(analyze(item))
+                _timing.append(time.monotonic() - _t0)
             except Exception as e:
                 print(f"[agent] {item.item_id}: {e}")
+            if _timing:
+                avg_sec = sum(_timing) / len(_timing)
+                remaining = len(all_items) - (i + 1)
+                _scan_state["estimated_minutes_remaining"] = round(avg_sec * remaining / 60, 1)
 
         actions = sum(1 for r in results if r.has_action)
         for r in results:
@@ -182,8 +342,10 @@ def run_scan(sources: list[str]) -> None:
             })
         _scan_state["message"] = f"Error: {e}"
     finally:
-        _scan_state["running"]  = False
-        _scan_state["progress"] = _scan_state["total"]
+        _scan_state["running"]                    = False
+        _scan_state["progress"]                   = _scan_state["total"]
+        _scan_state["completed_items"]            = _scan_state["total_items"]
+        _scan_state["estimated_minutes_remaining"] = 0
 
 
 def run_reanalyze() -> None:
@@ -200,26 +362,47 @@ def run_reanalyze() -> None:
     _scan_state.update({
         "running": True, "cancelled": False, "mode": "reanalyze",
         "progress": 0, "total": 0, "message": "Loading stored items...",
+        "total_items": 0, "completed_items": 0,
+        "estimated_minutes_remaining": 0,
     })
     started = _now_iso()
     try:
         with db.lock:
             all_records = db.get_all_items()
 
-        # Process passdowns first — they are the richest source of operational
-        # current state and their intel should be available when situations
-        # form for subsequent items.
-        all_records.sort(key=lambda r: (0 if r.get("is_passdown") else 1, r.get("timestamp", "")))
+        # Priority ordering: user > project > topic > general.
+        # Within each tier: passdowns first (richest operational context),
+        # then newest items first by timestamp.
+        # Python's sort is stable, so three-pass cascade is equivalent to a
+        # compound key without needing string negation.
+        _HIER_RANK = {"user": 0, "project": 1, "topic": 2, "general": 3}
+        all_records.sort(
+            key=lambda r: r.get("timestamp") or r.get("processed_at") or "",
+            reverse=True,
+        )
+        all_records.sort(key=lambda r: 0 if r.get("is_passdown") else 1)
+        all_records.sort(
+            key=lambda r: _HIER_RANK.get(r.get("hierarchy", "general"), 3)
+        )
 
-        _scan_state["total"]   = len(all_records)
-        _scan_state["message"] = f"Re-analyzing {len(all_records)} items..."
+        _scan_state["total"]       = len(all_records)
+        _scan_state["total_items"] = len(all_records)
+        _scan_state["message"]     = f"Re-analyzing {len(all_records)} items..."
+
+        use_batch = _merllm_night_mode()
+        if use_batch:
+            print("[reanalyze] night mode active — routing to merLLM batch API")
+            _ensure_batch_poll_thread()
 
         results = []
+        _timing: deque = deque(maxlen=_TIMING_WINDOW)
+        batch_submitted = 0
         for i, rec in enumerate(all_records):
             if _scan_state["cancelled"]:
                 break
             _scan_state.update({
                 "progress":       i,
+                "completed_items": i,
                 "current_source": rec.get("source", ""),
                 "current_item":   (rec.get("title") or "")[:60],
                 "message":        f"[{rec.get('source','')}] {i + 1}/{len(all_records)}: {(rec.get('title') or '')[:60]}",
@@ -241,12 +424,34 @@ def run_reanalyze() -> None:
                     "hierarchy":   rec.get("hierarchy"),
                 },
             )
-            try:
-                with _sem:
-                    result = analyze(item)
-                results.append(result)
-            except Exception as e:
-                print(f"[reanalyze] {item.item_id}: {e}")
+            if use_batch:
+                try:
+                    prompt = build_prompt(item)
+                    job_id = _submit_batch_job(prompt)
+                    if job_id:
+                        with db.lock:
+                            db.set_batch_job_id(rec["item_id"], job_id)
+                        batch_submitted += 1
+                    else:
+                        # Batch submit failed; fall back to direct Ollama
+                        with _sem:
+                            result = analyze(item)
+                        results.append(result)
+                except Exception as e:
+                    print(f"[reanalyze] batch {item.item_id}: {e}")
+            else:
+                try:
+                    _t0 = time.monotonic()
+                    with _sem:
+                        result = analyze(item)
+                    _timing.append(time.monotonic() - _t0)
+                    results.append(result)
+                except Exception as e:
+                    print(f"[reanalyze] {item.item_id}: {e}")
+            if _timing:
+                avg_sec = sum(_timing) / len(_timing)
+                remaining = len(all_records) - (i + 1)
+                _scan_state["estimated_minutes_remaining"] = round(avg_sec * remaining / 60, 1)
 
         actions = sum(1 for r in results if r.has_action)
         for r in results:
@@ -264,18 +469,26 @@ def run_reanalyze() -> None:
                 "actions_found": actions,
                 "status":        status,
             })
-        _scan_state["message"] = (
-            f"Re-analysis complete — {len(results)} items processed, "
-            f"{actions} action items found. Generating briefing…"
-        )
+        if use_batch and batch_submitted:
+            _scan_state["message"] = (
+                f"Re-analysis queued — {batch_submitted} items sent to batch, "
+                f"{len(results)} processed directly. Results apply automatically."
+            )
+        else:
+            _scan_state["message"] = (
+                f"Re-analysis complete — {len(results)} items processed, "
+                f"{actions} action items found. Generating briefing…"
+            )
         if results:
             _generate_briefing_bg()
     except Exception as e:
         _scan_state["message"] = f"Re-analysis error: {e}"
         print(f"[reanalyze] {e}")
     finally:
-        _scan_state["running"]  = False
-        _scan_state["progress"] = _scan_state["total"]
+        _scan_state["running"]                    = False
+        _scan_state["progress"]                   = _scan_state["total"]
+        _scan_state["completed_items"]            = _scan_state["total_items"]
+        _scan_state["estimated_minutes_remaining"] = 0
 
 
 def process_ingest_items(raw: list[RawItem]) -> None:

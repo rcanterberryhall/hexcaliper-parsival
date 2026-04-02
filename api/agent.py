@@ -622,6 +622,121 @@ def _validated_project_tag(tag: str | None) -> str | None:
     return tag if tag in valid else None
 
 
+def build_prompt(item: RawItem) -> str:
+    """
+    Build the LLM analysis prompt for an item without submitting it.
+
+    Returns the fully formatted prompt string that ``analyze`` would send to
+    Ollama.  Used by the batch submission path in ``orchestrator.py`` to
+    construct the prompt when routing through merLLM's batch API.
+
+    :param item: The raw item to build a prompt for.
+    :type item: RawItem
+    :return: Fully formatted prompt string.
+    :rtype: str
+    """
+    to_field     = item.metadata.get("to", "")
+    cc_field     = item.metadata.get("cc", "")
+    is_replied   = bool(item.metadata.get("is_replied", False))
+    is_forwarded = bool(item.metadata.get("is_forwarded", False))
+    replied_at   = item.metadata.get("replied_at")
+    _user_name   = config.USER_NAME or "the user"
+
+    _sender_match = _match_sender(item)
+    if _sender_match:
+        sender_hint = (
+            f"\n- Sender/recipient hint: past items from this sender or group "
+            f"have been tagged to project \"{_sender_match}\". "
+            f"Use this as a signal but verify against the content."
+        )
+    else:
+        sender_hint = ""
+
+    _manual_tag = item.metadata.get("project_tag")
+    if _manual_tag:
+        manual_tag_hint = (
+            f"\n- Manual project tag: the user has tagged this item to project "
+            f"\"{_manual_tag}\". Treat this as a strong signal for project_tag "
+            f"and hierarchy assignment."
+        )
+    else:
+        manual_tag_hint = ""
+
+    if is_replied:
+        _when = f" (at {replied_at})" if replied_at else ""
+        replied_hint = (
+            f"\n- Status: {_user_name} has already replied to this email{_when}. "
+            f"Lower action urgency unless follow-up work is still clearly pending."
+        )
+    elif is_forwarded:
+        replied_hint = (
+            f"\n- Status: {_user_name} has forwarded this email. "
+            f"Consider whether further action is still required."
+        )
+    else:
+        replied_hint = ""
+
+    graph_hint = ""
+    try:
+        import graph as _graph
+        ctx_items = _graph.get_context(item, max_n=4)
+        ctx_text  = _graph.format_context(ctx_items)
+        if ctx_text:
+            graph_hint = f"\n- {ctx_text}"
+    except Exception as e:
+        print(f"[agent] graph context failed: {e}")
+
+    embedding_hint = ""
+    body_text = item.body[:2000] or item.title
+    if body_text:
+        try:
+            from embedder import embed, score_item
+            vector  = embed(body_text)
+            matches = score_item(vector, min_count=3)
+            if matches:
+                top = matches[0]
+                if top["score"] > 0.75:
+                    embedding_hint = (
+                        f"\n- Embedding classifier hint: this item is semantically similar to "
+                        f"past items tagged to project \"{top['project']}\" "
+                        f"(category: {top['category']}, confidence: {top['score']:.2f}, "
+                        f"based on {top['count']} training items). "
+                        f"Use this as a strong signal but verify against content."
+                    )
+                elif top["score"] > 0.55:
+                    embedding_hint = (
+                        f"\n- Embedding classifier hint: weak similarity to project "
+                        f"\"{top['project']}\" (score: {top['score']:.2f}). "
+                        f"Consider but do not rely on this signal."
+                    )
+        except Exception as e:
+            print(f"[agent] embedding score failed: {e}")
+
+    return PROMPT.format(
+        source       = item.source,
+        title        = item.title,
+        author       = item.author,
+        timestamp    = item.timestamp,
+        body         = item.body,
+        user_name    = config.USER_NAME or "the user",
+        user_email   = config.USER_EMAIL or "",
+        projects_ctx  = _projects_ctx(),
+        topics_ctx    = _topics_ctx(),
+        assignment_corrections_ctx = _assignment_corrections_ctx(),
+        task_ctx      = _task_ctx(),
+        approval_ctx  = _approval_ctx(),
+        fyi_ctx       = _fyi_ctx(),
+        noise_ctx     = _noise_ctx(),
+        to_field     = to_field,
+        cc_field     = cc_field,
+        sender_hint     = sender_hint,
+        replied_hint    = replied_hint,
+        manual_tag_hint = manual_tag_hint,
+        graph_hint      = graph_hint,
+        embedding_hint  = embedding_hint,
+    )
+
+
 def analyze(item: RawItem) -> Analysis:
     """
     Send a single item to Ollama and parse the structured JSON response.

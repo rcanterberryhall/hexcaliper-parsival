@@ -430,15 +430,18 @@ def now_iso() -> str:
 # ── Scan state ────────────────────────────────────────────────────────────────
 
 scan_state: dict = {
-    "running":            False,
-    "cancelled":          False,
-    "progress":           0,
-    "total":              0,
-    "current_source":     "",
-    "current_item":       "",
-    "message":            "idle",
-    "ingest_pending":     0,
-    "situations_pending": 0,
+    "running":                     False,
+    "cancelled":                   False,
+    "progress":                    0,
+    "total":                       0,
+    "current_source":              "",
+    "current_item":                "",
+    "message":                     "idle",
+    "ingest_pending":              0,
+    "situations_pending":          0,
+    "total_items":                 0,
+    "completed_items":             0,
+    "estimated_minutes_remaining": 0,
 }
 
 situation_manager.init(scan_state)
