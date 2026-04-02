@@ -138,7 +138,7 @@ ASSIGNMENT_CORRECTIONS: list[dict] = []
 # ── App ───────────────────────────────────────────────────────────────────────
 
 PAGE_API_PORT  = int(_get("PAGE_API_PORT", "8001"))
-DB_PATH        = _get("DB_PATH", "/app/data/squire.db")
+DB_PATH        = _get("DB_PATH", "/app/data/parsival.db")
 LOOKBACK_HOURS = int(_get("LOOKBACK_HOURS", "48"))
 
 

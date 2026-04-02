@@ -1,6 +1,6 @@
 services:
 
-  page-nginx:
+  parsival-nginx:
     image: nginx:1.27-alpine
     ports:
       - "127.0.0.1:8082:8082"
@@ -8,12 +8,12 @@ services:
       - ./nginx/page.conf:/etc/nginx/conf.d/page.conf:ro
       - ./web:/usr/share/nginx/html:ro
     depends_on:
-      - page-api
+      - parsival-api
     restart: unless-stopped
     networks:
       - app
 
-  page-api:
+  parsival-api:
     build: ./api
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -32,7 +32,9 @@ services:
       JIRA_DOMAIN:      "yourcompany.atlassian.net"
       JIRA_JQL:         "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
       PAGE_API_PORT:    "8001"
-      DB_PATH:          "/app/data/squire.db"
+      # If migrating from a prior install, rename data/squire.db to data/parsival.db
+      # or set DB_PATH explicitly: DB_PATH: "/app/data/squire.db"
+      DB_PATH:          "/app/data/parsival.db"
       LOOKBACK_HOURS:   "48"
     volumes:
       - ./data:/app/data

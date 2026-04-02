@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" fill="none">
+
+  <!-- Outer decorative gold ring -->
+  <circle cx="100" cy="100" r="89" stroke="#d4a017" stroke-width="1.2" fill="none" opacity="0.55"/>
+
+  <!-- Dark background circle -->
+  <circle cx="100" cy="100" r="76" fill="#0c0000" opacity="0.55"/>
+
+  <!-- ── Holy Grail chalice ── -->
+
+  <!-- Grail bowl — wide upper cup -->
+  <path d="M62 72 Q58 104 68 114 Q80 126 100 128 Q120 126 132 114 Q142 104 138 72 Z"
+        fill="#0c0000" stroke="#e8c04a" stroke-width="1.8"/>
+
+  <!-- Bowl interior sheen -->
+  <path d="M70 78 Q68 104 76 112 Q86 122 100 123 Q114 122 124 112 Q132 104 130 78 Z"
+        fill="#1a0800" opacity="0.8"/>
+  <path d="M75 80 Q73 100 79 109"
+        stroke="#e8c04a" stroke-width="0.8" stroke-linecap="round" opacity="0.35"/>
+
+  <!-- Gold rim of bowl -->
+  <path d="M62 72 Q100 78 138 72" stroke="#e8c04a" stroke-width="2.2" fill="none"/>
+  <!-- Inner rim line -->
+  <path d="M66 76 Q100 81 134 76" stroke="#d4a017" stroke-width="0.9" fill="none" opacity="0.6"/>
+
+  <!-- Stem -->
+  <rect x="93" y="128" width="14" height="22" rx="2"
+        fill="#0c0000" stroke="#e8c04a" stroke-width="1.6"/>
+  <!-- Stem highlight -->
+  <rect x="95.5" y="130" width="4" height="18" rx="1.5" fill="#d4a017" opacity="0.25"/>
+
+  <!-- Knop (decorative node on stem) -->
+  <ellipse cx="100" cy="142" rx="10" ry="5.5"
+           fill="#0c0000" stroke="#e8c04a" stroke-width="1.6"/>
+  <ellipse cx="100" cy="142" rx="6" ry="3" fill="#d4a017" opacity="0.4"/>
+
+  <!-- Base / foot -->
+  <path d="M78 150 Q100 154 122 150 L126 162 Q100 167 74 162 Z"
+        fill="#0c0000" stroke="#e8c04a" stroke-width="1.8"/>
+  <!-- Base top edge highlight -->
+  <path d="M80 150 Q100 154 120 150" stroke="#d4a017" stroke-width="0.9" fill="none" opacity="0.55"/>
+
+  <!-- ── Radiant glow emanating from grail cup ── -->
+  <line x1="100" y1="66" x2="100" y2="48" stroke="#e8c04a" stroke-width="1.1" opacity="0.45" stroke-linecap="round"/>
+  <line x1="82"  y1="68" x2="71"  y2="53" stroke="#e8c04a" stroke-width="0.9" opacity="0.35" stroke-linecap="round"/>
+  <line x1="118" y1="68" x2="129" y2="53" stroke="#e8c04a" stroke-width="0.9" opacity="0.35" stroke-linecap="round"/>
+  <line x1="68"  y1="76" x2="54"  y2="66" stroke="#e8c04a" stroke-width="0.8" opacity="0.25" stroke-linecap="round"/>
+  <line x1="132" y1="76" x2="146" y2="66" stroke="#e8c04a" stroke-width="0.8" opacity="0.25" stroke-linecap="round"/>
+
+  <!-- Stars / light points above grail -->
+  <circle cx="100" cy="44" r="1.8" fill="#e8c04a" opacity="0.75"/>
+  <circle cx="82"  cy="50" r="1.3" fill="#e8c04a" opacity="0.55"/>
+  <circle cx="118" cy="50" r="1.3" fill="#e8c04a" opacity="0.55"/>
+
+  <!-- Center bright glow dot at cup -->
+  <circle cx="100" cy="100" r="3.5" fill="#e8c04a" opacity="0.18"/>
+  <circle cx="100" cy="100" r="1.6" fill="#ffffff" opacity="0.12"/>
+
+  <!-- Outer ring stitching detail -->
+  <circle cx="100" cy="100" r="84" stroke="#d4a017" stroke-width="0.6" fill="none"
+          stroke-dasharray="2.5 4" opacity="0.35"/>
+
+</svg>

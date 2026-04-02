@@ -1,5 +1,5 @@
 """
-app.py — Hexcaliper Squire FastAPI application.
+app.py — Parsival FastAPI application.
 
 Exposes the REST API consumed by the frontend and the host sidecar scripts.
 Key responsibilities:
@@ -58,7 +58,7 @@ import situation_manager
 import orchestrator
 import seeder
 
-app = FastAPI(title="Hexcaliper Squire API", version="1.0.0")
+app = FastAPI(title="Parsival API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,

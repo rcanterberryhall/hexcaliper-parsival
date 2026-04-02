@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hexcaliper Squire</title>
+<title>Parsival</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -197,7 +197,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 #todo-view::before, #intel-view::before, #items-view::before, #situations-view::before {
   content: '';
   position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-  background: url('/page/squire-crest.svg') no-repeat center center;
+  background: url('/page/parsival-grail.svg') no-repeat center center;
   background-size: min(55%, 280px);
   opacity: 0.09;
   pointer-events: none;
@@ -751,14 +751,14 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 
   <div class="topbar">
     <div class="wordmark">
-      <img src="/page/squire-crest.svg" class="brand-icon" alt="Squire crest">
+      <img src="/page/parsival-grail.svg" class="brand-icon" alt="Parsival grail">
       <div class="wordmark-text">
         <div class="wordmark-main">
           <div class="status-pill" title="System status">
             <div class="hb" id="hbDot"></div>
             <span class="status-word" id="statusWord">READY</span>
           </div>
-          HEXCALIPER SQUIRE
+          PARSIVAL
         </div>
         <div class="wordmark-sub">OPS DASHBOARD</div>
       </div>
@@ -986,7 +986,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
         <div class="field"><label>Client ID</label><input type="text" id="s-slack_client_id" placeholder="your-app-client-id"></div>
         <div class="field"><label>Client Secret</label><span id="s-slack_client_secret-slot"></span></div>
       </div>
-      <div class="field-hint" style="margin-bottom:10px">Create a private Slack app at api.slack.com, add user token scopes, set redirect URL to https://squire.hexcaliper.com/page/api/slack/callback, then connect each workspace below.</div>
+      <div class="field-hint" style="margin-bottom:10px">Create a private Slack app at api.slack.com, add user token scopes, set redirect URL to https://parsival.hexcaliper.com/page/api/slack/callback, then connect each workspace below.</div>
       <div id="slack-workspaces"></div>
       <button class="connect-btn" onclick="connectSlack()">+ Connect Workspace</button>
     </div>
@@ -997,7 +997,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
         <div class="field"><label>Client ID</label><input type="text" id="s-teams_client_id" placeholder="your-azure-app-client-id"></div>
         <div class="field"><label>Client Secret</label><span id="s-teams_client_secret-slot"></span></div>
       </div>
-      <div class="field-hint" style="margin-bottom:10px">Register an app in Azure AD (portal.azure.com), add <em>Chat.Read</em>, <em>ChannelMessage.Read.All</em>, <em>Channel.ReadBasic.All</em> delegated permissions, set redirect URL to https://squire.hexcaliper.com/page/api/teams/callback, then connect your account below.</div>
+      <div class="field-hint" style="margin-bottom:10px">Register an app in Azure AD (portal.azure.com), add <em>Chat.Read</em>, <em>ChannelMessage.Read.All</em>, <em>Channel.ReadBasic.All</em> delegated permissions, set redirect URL to https://parsival.hexcaliper.com/page/api/teams/callback, then connect your account below.</div>
       <div id="teams-accounts"></div>
       <button class="connect-btn" onclick="connectTeams()">+ Connect Account</button>
     </div>
@@ -1041,7 +1041,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 
     <div class="help-section">
       <h3>Overview</h3>
-      <p>Squire ingests messages from Outlook, Slack, GitHub, Jira, and Microsoft Teams, runs each one through a local LLM, and surfaces what needs your attention. Every item gets a priority, category, action items, and a project tag.</p>
+      <p>Parsival ingests messages from Outlook, Slack, GitHub, Jira, and Microsoft Teams, runs each one through a local LLM, and surfaces what needs your attention. Every item gets a priority, category, action items, and a project tag.</p>
       <div class="help-tip">All analysis runs locally via Ollama — no data leaves your infrastructure.</div>
     </div>
 
@@ -1123,7 +1123,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 
     <div class="help-section">
       <h3>Project learning</h3>
-      <p>When you manually tag an item to a project (via ◈), Squire extracts keywords from the item in the background and adds them to the project's learned keyword list. It also records the sender's address in the project's learned senders list. Both feed into future scans automatically.</p>
+      <p>When you manually tag an item to a project (via ◈), Parsival extracts keywords from the item in the background and adds them to the project's learned keyword list. It also records the sender's address in the project's learned senders list. Both feed into future scans automatically.</p>
       <p>You can inspect and remove learned keywords and senders from the project row in Settings → Projects (click <strong>inspect</strong>).</p>
     </div>
 
