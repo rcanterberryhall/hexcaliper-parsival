@@ -13,6 +13,15 @@ with ``--setup`` once to store them:
 
     python outlook_sidecar.py --setup
 
+Verify the full pipeline (Outlook → API → ingest) before committing to a
+seed run:
+
+    python outlook_sidecar.py --test
+
+Then seed the database with 30 days of history:
+
+    python outlook_sidecar.py --seed
+
 Then run normally (or via Task Scheduler) to ingest emails:
 
     python outlook_sidecar.py
@@ -21,6 +30,8 @@ Usage::
 
     pip install requests pywin32 keyring
     python outlook_sidecar.py --setup   # first-time credential setup
+    python outlook_sidecar.py --test    # verify pipeline with 5 emails
+    python outlook_sidecar.py --seed    # seed 30 days of history
     python outlook_sidecar.py           # normal / scheduled run
 
 Schedule with Windows Task Scheduler to run every 30–60 minutes.
@@ -35,6 +46,8 @@ LOOKBACK_HOURS      = 48
 MAX_EMAILS          = 75
 SEED_LOOKBACK_HOURS = 720   # 30 days
 SEED_MAX_EMAILS     = 500
+TEST_LOOKBACK_HOURS = 24
+TEST_MAX_EMAILS     = 5
 
 # Windows Credential Manager service name used by keyring.
 _KEYRING_SERVICE = "hexcaliper-squire"
@@ -333,9 +346,45 @@ def post(items: list[dict], client_id: str, client_secret: str) -> None:
     print(f"Done — {len(items)} sent, {total_received} accepted, {total_skipped} skipped.")
 
 
+def _test() -> None:
+    """
+    Verify the end-to-end pipeline with a small batch before a seed run.
+
+    Fetches up to ``TEST_MAX_EMAILS`` from the last ``TEST_LOOKBACK_HOURS``
+    and POSTs them to ``/ingest``.  Prints a clear pass/fail summary so the
+    operator can confirm Outlook access, Cloudflare credentials, and API
+    reachability are all working before committing to a full seed.
+
+    :raises SystemExit: On any connection or API error (same as normal mode).
+    """
+    cf_id, cf_secret = _load_credentials()
+    print(
+        f"TEST MODE — fetching up to {TEST_MAX_EMAILS} emails "
+        f"from the last {TEST_LOOKBACK_HOURS}h...",
+        flush=True,
+    )
+    emails = fetch(lookback_hours=TEST_LOOKBACK_HOURS, max_emails=TEST_MAX_EMAILS)
+    print(f"Found {len(emails)} emails", flush=True)
+    if not emails:
+        print(
+            "WARNING: No emails found in the test window. "
+            "Try a longer lookback or check that Outlook has recent mail.",
+            flush=True,
+        )
+        return
+    post(emails, cf_id, cf_secret)
+    print(
+        "\nTest passed. Outlook access, credentials, and API are working.\n"
+        f"Run with --seed to ingest the last {SEED_LOOKBACK_HOURS // 24} days.",
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--setup":
         _setup()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--test":
+        _test()
     elif len(sys.argv) > 1 and sys.argv[1] == "--seed":
         cf_id, cf_secret = _load_credentials()
         print(f"SEED MODE — fetching Outlook emails (last {SEED_LOOKBACK_HOURS}h / {SEED_LOOKBACK_HOURS//24} days, cap {SEED_MAX_EMAILS})...", flush=True)
