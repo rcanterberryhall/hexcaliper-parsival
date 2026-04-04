@@ -550,6 +550,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .sit-actions  { flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
 .sit-dismiss  { background: none; border: 1px solid var(--border2); color: var(--muted); cursor: pointer; padding: 2px 6px; font-size: 10px; border-radius: var(--r); }
 .sit-dismiss:hover { border-color: var(--red); color: var(--red); }
+.deep-analysis-btn:hover { border-color: var(--gold); color: var(--gold); }
+.deep-analysis-btn:disabled { cursor: default; color: var(--muted); }
 .sit-evidence { border-top: 1px solid var(--border2); padding: 0 12px; display: none; }
 .sit-evidence.open { display: block; }
 .sit-evidence-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 11px; color: var(--muted); }
@@ -1958,7 +1960,8 @@ function situationCard(s) {
   const sitActions = s.dismissed
     ? `<button class="restore-btn" onclick="event.stopPropagation();restoreSituation('${esc(s.situation_id)}')" title="Restore">↩ restore</button>`
     : `<button class="sit-dismiss" onclick="event.stopPropagation();dismissSituation('${esc(s.situation_id)}')" title="Dismiss">✕</button>
-       <button class="ia" onclick="event.stopPropagation();resynthSituation('${esc(s.situation_id)}')" title="Re-synthesize">↺</button>`;
+       <button class="ia" onclick="event.stopPropagation();resynthSituation('${esc(s.situation_id)}')" title="Re-synthesize">↺</button>
+       <button class="ia deep-analysis-btn" id="da-btn-${esc(s.situation_id)}" onclick="event.stopPropagation();requestDeepAnalysis('${esc(s.situation_id)}')" title="Submit for extended-context deep analysis in merLLM night mode">⚗</button>`;
   return `
     <div class="situation-card ${sc}${s.dismissed ? ' row-hidden' : ''}" id="sit-${esc(s.situation_id)}">
       <div class="sit-header" onclick="toggleSituationEvidence('${esc(s.situation_id)}')">
@@ -2020,6 +2023,50 @@ async function resynthSituation(sitId) {
     renderSituations(allSituations);
     $('statusMsg').textContent = 'Situation updated.';
   } catch(e) { $('statusMsg').textContent = 'Resynth failed: ' + e.message; }
+}
+
+async function requestDeepAnalysis(sitId) {
+  const btn = $('da-btn-' + sitId);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; btn.title = 'Queuing…'; }
+  $('statusMsg').textContent = 'Submitting deep analysis…';
+  try {
+    const { job_id } = await api(`/situations/${encodeURIComponent(sitId)}/deep-analysis`, 'POST');
+    if (btn) btn.title = 'Deep analysis queued';
+    $('statusMsg').textContent = 'Deep analysis queued — will complete in night mode.';
+    _pollSituationDeepAnalysis(job_id, sitId, btn);
+  } catch(e) {
+    if (btn) { btn.disabled = false; btn.textContent = '⚗'; btn.title = 'Request deep analysis'; }
+    $('statusMsg').textContent = 'Deep analysis submit failed: ' + e.message;
+  }
+}
+
+function _pollSituationDeepAnalysis(jobId, sitId, btn) {
+  const MAX = 360; // 30 min at 5s intervals
+  let n = 0;
+  const iv = setInterval(async () => {
+    if (++n > MAX) {
+      clearInterval(iv);
+      if (btn) { btn.textContent = '⚗'; btn.title = 'Timed out'; btn.disabled = false; }
+      return;
+    }
+    try {
+      const s = await api(`/batch/status/${encodeURIComponent(jobId)}`);
+      if (s.status === 'completed') {
+        clearInterval(iv);
+        await api(`/situations/${encodeURIComponent(sitId)}/deep-analysis/save`, 'POST',
+                  { job_id: jobId });
+        if (btn) { btn.textContent = '✓'; btn.title = 'Deep analysis stored in intel'; }
+        $('statusMsg').textContent = 'Deep analysis complete — result added to intel.';
+        await loadIntel();
+      } else if (s.status === 'failed') {
+        clearInterval(iv);
+        if (btn) { btn.disabled = false; btn.textContent = '⚗'; btn.title = 'Deep analysis failed'; }
+        $('statusMsg').textContent = 'Deep analysis failed: ' + (s.error || 'unknown');
+      } else {
+        if (btn) btn.textContent = s.status === 'running' ? '⚙' : '⏳';
+      }
+    } catch(_) { /* network hiccup — keep polling */ }
+  }, 5000);
 }
 
 // ── Briefing (Current State) ───────────────────────────────────────────────────

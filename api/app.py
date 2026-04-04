@@ -1798,6 +1798,136 @@ def patch_situation(situation_id: str, body: dict):
     return {"ok": True, **updates}
 
 
+@app.post("/situations/{situation_id}/deep-analysis")
+def submit_deep_analysis(situation_id: str):
+    """
+    Submit a situation for extended-context deep analysis via merLLM's batch API.
+
+    Builds a prompt from the situation's title, summary, and contributing items,
+    then queues it for processing during night mode (qwen3:32b, 32K+ context).
+
+    :param situation_id: UUID of the situation to analyse.
+    :return: ``{"ok": True, "job_id": "..."}``
+    :raises HTTPException 404: If no situation with the given ID exists.
+    :raises HTTPException 502: If merLLM is unreachable.
+    """
+    with db.lock:
+        sit = db.get_situation(situation_id)
+    if not sit:
+        raise HTTPException(status_code=404, detail="Situation not found")
+
+    item_ids = sit.get("item_ids", [])
+    with db.lock:
+        items = [db.get_item(iid) for iid in item_ids if db.get_item(iid)]
+
+    items_text = "\n".join(
+        f"- [{i.get('source','?')}] {i.get('title','')}: {i.get('summary','')}"
+        for i in items if i
+    )
+    actions_text = "\n".join(
+        f"- {a.get('description','')}" for a in (sit.get("open_actions") or [])
+    ) or "None identified."
+
+    prompt = (
+        f"You are analysing an operational situation. Provide a deep, thorough analysis — "
+        f"explore implications, root causes, risks, and recommended actions. "
+        f"Do not summarize; go deeper than the existing summary.\n\n"
+        f"Situation: {sit.get('title','')}\n"
+        f"Summary: {sit.get('summary','')}\n"
+        f"Score: {sit.get('score', 0):.2f}  Priority: {sit.get('priority','unknown')}\n\n"
+        f"Contributing items ({len(items)}):\n{items_text or 'None.'}\n\n"
+        f"Open actions:\n{actions_text}"
+    )
+
+    try:
+        r = http_requests.post(
+            f"{config.MERLLM_URL}/api/batch/submit",
+            json={"source_app": "parsival", "prompt": prompt},
+            timeout=10,
+        )
+        r.raise_for_status()
+        job_id = r.json().get("id")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"merLLM unreachable: {exc}")
+
+    return {"ok": True, "job_id": job_id}
+
+
+@app.post("/situations/{situation_id}/deep-analysis/save")
+def save_deep_analysis(situation_id: str, body: dict):
+    """
+    Fetch a completed batch job result from merLLM and store it as an intel item
+    linked to the situation.
+
+    :param situation_id: UUID of the situation.
+    :param body: Must contain ``job_id``.
+    :return: ``{"ok": True}``
+    :raises HTTPException 404: If situation or job not found.
+    :raises HTTPException 409: If job is not yet completed.
+    :raises HTTPException 502: If merLLM is unreachable.
+    """
+    job_id = (body.get("job_id") or "").strip()
+    if not job_id:
+        raise HTTPException(status_code=422, detail="job_id is required")
+
+    with db.lock:
+        sit = db.get_situation(situation_id)
+    if not sit:
+        raise HTTPException(status_code=404, detail="Situation not found")
+
+    try:
+        r = http_requests.get(
+            f"{config.MERLLM_URL}/api/batch/results/{job_id}", timeout=10
+        )
+        if r.status_code == 404:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if r.status_code == 409:
+            raise HTTPException(status_code=409, detail="Job not yet completed")
+        r.raise_for_status()
+        result_text = r.json().get("result", "")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"merLLM unreachable: {exc}")
+
+    item_ids = sit.get("item_ids", [])
+    anchor_item_id = item_ids[0] if item_ids else None
+    with db.lock:
+        db.insert_intel({
+            "item_id":    anchor_item_id,
+            "source":     "deep_analysis",
+            "fact":       result_text,
+            "relevance":  f"Extended-context deep analysis of situation: {sit.get('title','')}",
+            "project_tag": sit.get("project_tag"),
+            "dismissed":  0,
+        })
+
+    return {"ok": True}
+
+
+@app.get("/batch/status/{job_id}")
+def proxy_batch_status(job_id: str):
+    """
+    Proxy GET /api/batch/status/{job_id} to merLLM.
+
+    :param job_id: Batch job UUID.
+    :return: Job status dict from merLLM.
+    :raises HTTPException 404: If job not found.
+    :raises HTTPException 502: If merLLM is unreachable.
+    """
+    try:
+        r = http_requests.get(
+            f"{config.MERLLM_URL}/api/batch/status/{job_id}", timeout=5
+        )
+        if r.status_code == 404:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return r.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"merLLM unreachable: {exc}")
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 @app.get("/stats")
