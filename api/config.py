@@ -108,8 +108,9 @@ TEAMS_USER_TOKENS: list[dict] = []
 
 # ── GitHub ────────────────────────────────────────────────────────────────────
 
-GITHUB_PAT      = _get("GITHUB_PAT")
-GITHUB_USERNAME = _get("GITHUB_USERNAME")
+GITHUB_PAT              = _get("GITHUB_PAT")
+GITHUB_USERNAME         = _get("GITHUB_USERNAME")
+GITHUB_MAX_NOTIFICATIONS = int(_get("GITHUB_MAX_NOTIFICATIONS", "500"))
 
 # ── Jira Cloud ────────────────────────────────────────────────────────────────
 

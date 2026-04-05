@@ -54,14 +54,18 @@ def test_github_fetch_returns_items(monkeypatch):
             return []
         return {}
 
+    def fake_get_paginated(path, params=None, max_items=500):
+        return fake_get(path, params) if isinstance(fake_get(path, params), list) else []
+
     with patch("connector_github.requests.get") as mock_get:
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
         mock_resp.json.side_effect = fake_get
-        # Match path to response
+        mock_resp.headers = {}
         mock_get.return_value = mock_resp
 
-        with patch("connector_github._get", side_effect=fake_get):
+        with patch("connector_github._get", side_effect=fake_get), \
+             patch("connector_github._get_paginated", side_effect=fake_get_paginated):
             items = connector_github.fetch()
 
     assert len(items) == 1

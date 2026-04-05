@@ -50,6 +50,47 @@ def _get(path: str, params: dict = None) -> dict | list:
     return r.json()
 
 
+def _get_paginated(path: str, params: dict = None, max_items: int = 500) -> list:
+    """
+    Fetch all pages from a GitHub list endpoint, following ``Link: rel="next"`` headers.
+
+    :param path: API path relative to ``BASE``.
+    :type path: str
+    :param params: Optional query parameters for the first request.
+    :type params: dict
+    :param max_items: Stop fetching after collecting this many items.
+    :type max_items: int
+    :return: Concatenated list of all items across pages.
+    :rtype: list
+    """
+    results: list = []
+    url = f"{BASE}{path}"
+    p = dict(params or {})
+    if "per_page" not in p:
+        p["per_page"] = 100
+
+    while url and len(results) < max_items:
+        r = requests.get(url, headers=_h(), params=p, timeout=15)
+        r.raise_for_status()
+        page = r.json()
+        if isinstance(page, list):
+            results.extend(page)
+        # Follow Link: <url>; rel="next" if present
+        link = r.headers.get("Link", "")
+        url = None
+        p = {}  # subsequent pages use the full URL from Link header
+        for part in link.split(","):
+            part = part.strip()
+            if 'rel="next"' in part:
+                url = part.split(";")[0].strip().strip("<>")
+                break
+
+    fetched = len(results)
+    if fetched > 0:
+        print(f"[github] paginated fetch from {path}: {fetched} items")
+    return results[:max_items]
+
+
 def _ts(iso: str) -> str:
     """
     Normalise a GitHub ISO 8601 timestamp to a Python-parseable format.
@@ -86,7 +127,9 @@ def fetch() -> list[RawItem]:
 
     # ── 1. Notifications (mentions, review requests, assignments, CI) ─────────
     try:
-        for n in _get("/notifications", {"all": False, "participating": True, "per_page": 50}):
+        for n in _get_paginated("/notifications",
+                                {"all": False, "participating": True},
+                                max_items=config.GITHUB_MAX_NOTIFICATIONS):
             if datetime.fromisoformat(_ts(n["updated_at"])) < cutoff:
                 continue
             subj     = n.get("subject", {})
