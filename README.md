@@ -347,6 +347,14 @@ Situations are cross-source groupings of related analyses identified automatical
 | `POST`   | `/situations/{id}/dismiss`            | Mark situation as dismissed. Optional `{"reason": "..."}` body stores a dismiss reason |
 | `POST`   | `/situations/{id}/rescore`            | Manually trigger score recomputation and LLM re-synthesis for a situation          |
 | `PATCH`  | `/situations/{id}`                    | Update `title`, `status`, or `project_tag` on a situation                          |
+| `POST`   | `/situations/{id}/deep-analysis`      | Submit the situation for extended-context deep analysis via merLLM night-mode batch. Returns `{"ok": true, "job_id": "..."}`. Prompt includes situation title, summary, all item summaries, and open actions. |
+| `POST`   | `/situations/{id}/deep-analysis/save` | Fetch completed batch result and store it as an intel item linked to the situation. Body: `{"job_id": "..."}`. Returns 409 if the job is not yet complete. |
+
+### Batch status proxy
+
+| Method | Path                    | Description                                                      |
+|--------|-------------------------|------------------------------------------------------------------|
+| `GET`  | `/batch/status/{job_id}` | Proxy `GET /api/batch/status/{job_id}` to merLLM. Returns the job record or 404. |
 
 ### Intel
 
