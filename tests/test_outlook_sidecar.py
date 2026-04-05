@@ -331,3 +331,131 @@ def test_post_prints_received_and_skipped_counts(capsys):
     out = capsys.readouterr().out
     assert "accepted 1" in out
     assert "skipped 1"  in out
+
+
+# ── _seed_and_infer() ─────────────────────────────────────────────────────────
+
+def _mock_post_resp(json_body: dict) -> MagicMock:
+    r = MagicMock()
+    r.raise_for_status.return_value = None
+    r.json.return_value = json_body
+    return r
+
+
+def _mock_get_resp(json_body: dict) -> MagicMock:
+    r = MagicMock()
+    r.raise_for_status.return_value = None
+    r.json.return_value = json_body
+    return r
+
+
+def test_seed_and_infer_reaches_review_and_prints_ui_url(capsys):
+    """Happy path: ingest completes, seed SM reaches review, UI URL is printed."""
+    mock_keyring = MagicMock()
+    mock_keyring.get_password.side_effect = lambda svc, key: (
+        "test-id" if key == "cf_client_id" else "test-secret"
+    )
+    mock_pythoncom, mock_win32com = _make_win32_stack([_make_msg()])
+
+    ingest_resp = _mock_post_resp({"received": 1, "skipped": 0})
+    seed_start_resp = _mock_post_resp({"state": "waiting_for_ingest"})
+    poll_analyzing  = _mock_get_resp({"state": "analyzing",  "progress": "Analysing…"})
+    poll_review     = _mock_get_resp({"state": "review",     "progress": "Analysis complete."})
+
+    with patch.dict(sys.modules, {
+        "keyring": mock_keyring,
+        "pythoncom": mock_pythoncom,
+        "win32com": mock_win32com,
+        "win32com.client": mock_win32com.client,
+    }):
+        sidecar = _sidecar()
+        with patch("outlook_sidecar.requests.post", side_effect=[ingest_resp, seed_start_resp]), \
+             patch("outlook_sidecar.requests.get",  side_effect=[poll_analyzing, poll_review]), \
+             patch("outlook_sidecar.time.sleep"):
+            sidecar._seed_and_infer()
+
+    out = capsys.readouterr().out
+    assert "review"   in out.lower()
+    assert "/page/"   in out
+
+
+def test_seed_and_infer_exits_on_error_state(capsys):
+    """If the seed SM reaches error state, _seed_and_infer exits with an error."""
+    mock_keyring = MagicMock()
+    mock_keyring.get_password.side_effect = lambda svc, key: (
+        "test-id" if key == "cf_client_id" else "test-secret"
+    )
+    mock_pythoncom, mock_win32com = _make_win32_stack([_make_msg()])
+
+    ingest_resp     = _mock_post_resp({"received": 1, "skipped": 0})
+    seed_start_resp = _mock_post_resp({"state": "waiting_for_ingest"})
+    poll_error      = _mock_get_resp({"state": "error", "progress": "All map batches failed"})
+
+    with patch.dict(sys.modules, {
+        "keyring": mock_keyring,
+        "pythoncom": mock_pythoncom,
+        "win32com": mock_win32com,
+        "win32com.client": mock_win32com.client,
+    }):
+        sidecar = _sidecar()
+        with patch("outlook_sidecar.requests.post", side_effect=[ingest_resp, seed_start_resp]), \
+             patch("outlook_sidecar.requests.get",  return_value=poll_error), \
+             patch("outlook_sidecar.time.sleep"), \
+             pytest.raises(SystemExit):
+            sidecar._seed_and_infer()
+
+
+def test_seed_and_infer_exits_when_api_unreachable():
+    """If POST /seed is unreachable, exits cleanly."""
+    import requests as req
+    mock_keyring = MagicMock()
+    mock_keyring.get_password.side_effect = lambda svc, key: (
+        "test-id" if key == "cf_client_id" else "test-secret"
+    )
+    mock_pythoncom, mock_win32com = _make_win32_stack([_make_msg()])
+
+    ingest_resp = _mock_post_resp({"received": 1, "skipped": 0})
+
+    with patch.dict(sys.modules, {
+        "keyring": mock_keyring,
+        "pythoncom": mock_pythoncom,
+        "win32com": mock_win32com,
+        "win32com.client": mock_win32com.client,
+    }):
+        sidecar = _sidecar()
+        # First call (POST /ingest) succeeds; second (POST /seed) raises ConnectionError
+        with patch("outlook_sidecar.requests.post",
+                   side_effect=[ingest_resp, req.ConnectionError]), \
+             pytest.raises(SystemExit):
+            sidecar._seed_and_infer()
+
+
+def test_seed_and_infer_tolerates_poll_error_and_retries(capsys):
+    """A transient GET /seed/status error is printed but polling continues."""
+    import requests as req
+    mock_keyring = MagicMock()
+    mock_keyring.get_password.side_effect = lambda svc, key: (
+        "test-id" if key == "cf_client_id" else "test-secret"
+    )
+    mock_pythoncom, mock_win32com = _make_win32_stack([_make_msg()])
+
+    ingest_resp     = _mock_post_resp({"received": 1, "skipped": 0})
+    seed_start_resp = _mock_post_resp({"state": "waiting_for_ingest"})
+    poll_review     = _mock_get_resp({"state": "review", "progress": "Done."})
+
+    with patch.dict(sys.modules, {
+        "keyring": mock_keyring,
+        "pythoncom": mock_pythoncom,
+        "win32com": mock_win32com,
+        "win32com.client": mock_win32com.client,
+    }):
+        sidecar = _sidecar()
+        with patch("outlook_sidecar.requests.post", side_effect=[ingest_resp, seed_start_resp]), \
+             patch("outlook_sidecar.requests.get",
+                   side_effect=[req.ConnectionError("timeout"), poll_review]), \
+             patch("outlook_sidecar.time.sleep"):
+            sidecar._seed_and_infer()
+
+    out = capsys.readouterr().out
+    assert "poll error" in out
+    assert "/page/"     in out

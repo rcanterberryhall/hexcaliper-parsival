@@ -261,6 +261,12 @@ Use `--seed` for first-time historical ingestion (last 30 days, up to 500 emails
 python scripts/outlook_sidecar.py --seed
 ```
 
+Use `--seed-and-infer` to ingest history **and** automatically start LLM project inference. This calls `POST /seed` after ingest completes, runs the map-reduce analysis, and polls until the LLM has proposed projects — then prints the UI URL for you to review and confirm them. Re-analysis of all items runs automatically after you apply.
+
+```bash
+python scripts/outlook_sidecar.py --seed-and-infer
+```
+
 ### Ubuntu — Thunderbird
 
 ```bash

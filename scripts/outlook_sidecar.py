@@ -22,6 +22,14 @@ Then seed the database with 30 days of history:
 
     python outlook_sidecar.py --seed
 
+To seed AND automatically start LLM project inference, use:
+
+    python outlook_sidecar.py --seed-and-infer
+
+This ingests emails, then calls POST /seed to kick off the map-reduce
+project discovery workflow.  It polls until the LLM has proposed projects
+and is waiting for your review, then prints the UI URL.
+
 Then run normally (or via Task Scheduler) to ingest emails:
 
     python outlook_sidecar.py
@@ -29,15 +37,17 @@ Then run normally (or via Task Scheduler) to ingest emails:
 Usage::
 
     pip install requests pywin32 keyring
-    python outlook_sidecar.py --setup   # first-time credential setup
-    python outlook_sidecar.py --test    # verify pipeline with 5 emails
-    python outlook_sidecar.py --seed    # seed 30 days of history
-    python outlook_sidecar.py           # normal / scheduled run
+    python outlook_sidecar.py --setup          # first-time credential setup
+    python outlook_sidecar.py --test           # verify pipeline with 5 emails
+    python outlook_sidecar.py --seed           # seed 30 days of history
+    python outlook_sidecar.py --seed-and-infer # seed + auto-start project inference
+    python outlook_sidecar.py                  # normal / scheduled run
 
 Schedule with Windows Task Scheduler to run every 30–60 minutes.
 """
 import re
 import sys
+import time
 import requests
 from datetime import datetime, timedelta
 
@@ -380,11 +390,87 @@ def _test() -> None:
     )
 
 
+def _seed_and_infer() -> None:
+    """
+    Seed 30 days of history, then automatically start the LLM project
+    inference workflow (POST /seed) and poll until the state machine
+    reaches the ``review`` state.
+
+    The user must visit the UI to review and confirm the proposed projects
+    before they are applied.  This function does not block past the
+    ``review`` state — it simply removes the manual step of remembering
+    to start inference after a seed run.
+    """
+    cf_id, cf_secret = _load_credentials()
+
+    print(
+        f"SEED+INFER MODE — fetching Outlook emails "
+        f"(last {SEED_LOOKBACK_HOURS}h / {SEED_LOOKBACK_HOURS // 24} days, "
+        f"cap {SEED_MAX_EMAILS})...",
+        flush=True,
+    )
+    emails = fetch(lookback_hours=SEED_LOOKBACK_HOURS, max_emails=SEED_MAX_EMAILS)
+    print(f"Found {len(emails)} emails", flush=True)
+    post(emails, cf_id, cf_secret)
+
+    headers = {
+        "CF-Access-Client-Id":     cf_id,
+        "CF-Access-Client-Secret": cf_secret,
+    }
+
+    print("\nStarting project inference (POST /seed)...", flush=True)
+    try:
+        r = requests.post(f"{PAGE_API_URL}/seed", json={}, headers=headers, timeout=30)
+        r.raise_for_status()
+    except requests.ConnectionError:
+        sys.exit(f"ERROR: Could not reach API at {PAGE_API_URL} — is the appliance reachable?")
+    except Exception as e:
+        sys.exit(f"ERROR starting seed state machine: {e}")
+
+    terminal_states = {"review", "error", "done", "idle"}
+    last_progress   = ""
+    while True:
+        time.sleep(5)
+        try:
+            r = requests.get(f"{PAGE_API_URL}/seed/status", headers=headers, timeout=15)
+            r.raise_for_status()
+            job = r.json()
+        except Exception as e:
+            print(f"  (poll error: {e})", flush=True)
+            continue
+
+        state    = job.get("state", "")
+        progress = job.get("progress", "")
+
+        if progress != last_progress:
+            print(f"  [{state}] {progress}", flush=True)
+            last_progress = progress
+
+        if state in terminal_states:
+            break
+
+    if state == "review":
+        print(
+            "\nProject inference complete — the LLM has proposed projects for review.\n"
+            "Open the Squire UI to review, edit, and confirm:\n"
+            f"  {PAGE_API_URL.replace('/page/api', '/page/')}\n"
+            "After confirming, Squire will re-analyse all items with the new project config.",
+            flush=True,
+        )
+    elif state == "error":
+        progress = job.get("progress", "unknown error")
+        sys.exit(f"ERROR: Seed inference failed — {progress}")
+    else:
+        print(f"Seed state machine ended in state '{state}'.", flush=True)
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--setup":
         _setup()
     elif len(sys.argv) > 1 and sys.argv[1] == "--test":
         _test()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--seed-and-infer":
+        _seed_and_infer()
     elif len(sys.argv) > 1 and sys.argv[1] == "--seed":
         cf_id, cf_secret = _load_credentials()
         print(f"SEED MODE — fetching Outlook emails (last {SEED_LOOKBACK_HOURS}h / {SEED_LOOKBACK_HOURS//24} days, cap {SEED_MAX_EMAILS})...", flush=True)
