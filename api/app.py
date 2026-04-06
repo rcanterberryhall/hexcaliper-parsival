@@ -1132,9 +1132,27 @@ def attention_summary():
     """
     Return the attention model summary for the merLLM 'My Day' panel.
 
-    Includes cold-start flag, centroid counts, and a message for UI display.
+    Includes cold-start flag, centroid counts, active situation counts,
+    and overdue follow-up count.
     """
-    return _attn.get_summary()
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    active_situations = db.get_active_situations()
+    overdue_count = sum(
+        1 for s in active_situations
+        if s.get("follow_up_date") and s["follow_up_date"] < today
+    )
+    new_investigating = sum(
+        1 for s in active_situations
+        if s.get("lifecycle_status") in ("new", "investigating")
+    )
+
+    summary = _attn.get_summary()
+    summary["active_situations"]    = len(active_situations)
+    summary["new_investigating"]    = new_investigating
+    summary["overdue_followups"]    = overdue_count
+    return summary
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
