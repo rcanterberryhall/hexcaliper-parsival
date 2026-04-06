@@ -44,6 +44,7 @@ import time
 import threading
 
 _req_log = logging.getLogger("parsival.requests")
+_log = logging.getLogger("parsival")
 import psutil as _psutil
 _psutil.cpu_percent()  # prime interval counter so first real call is accurate
 from datetime import datetime, timezone
@@ -96,6 +97,24 @@ async def request_logging(request: Request, call_next):
 # Initialise the SQLite connection and schema on startup
 db.conn()
 
+# Startup diagnostics: validate database integrity
+try:
+    _integrity = db.conn().execute("PRAGMA integrity_check").fetchone()
+    if _integrity and _integrity[0] != "ok":
+        _log.error("database integrity check failed: %s", _integrity[0])
+    else:
+        _log.info("database integrity check passed")
+except Exception as _exc:
+    _log.error("database integrity check error: %s", _exc)
+
+# Startup diagnostics: check Ollama reachability
+try:
+    import requests as _req
+    _r = _req.get(f"{config.OLLAMA_URL.rstrip('/generate')}/api/tags", timeout=5)
+    _log.info("Ollama reachable (%d models)", len(_r.json().get("models", [])))
+except Exception as _exc:
+    _log.warning("Ollama unreachable at startup: %s", _exc)
+
 # Hot-load any previously saved settings on startup
 _saved_settings = db.get_settings()
 if _saved_settings:
@@ -104,7 +123,7 @@ if _saved_settings:
 # Resume polling for any batch jobs that were in-flight before a restart
 _pending_on_startup = db.get_items_with_pending_batch()
 if _pending_on_startup:
-    print(f"[startup] {len(_pending_on_startup)} item(s) have pending batch jobs — resuming poll thread")
+    _log.info("%d item(s) have pending batch jobs — resuming poll thread", len(_pending_on_startup))
     orchestrator._ensure_batch_poll_thread()
 
 # Arm auto-scan timers from saved settings

@@ -20,7 +20,10 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 
+import logging
 import requests as http_requests
+
+log = logging.getLogger(__name__)
 
 from agent import analyze, build_prompt
 from models import RawItem
@@ -145,7 +148,7 @@ def _submit_batch_job(prompt: str) -> str | None:
         r.raise_for_status()
         return r.json().get("job_id")
     except Exception as e:
-        print(f"[batch] submit failed: {e}")
+        log.error("batch submit failed: %s", e)
         return None
 
 
@@ -177,14 +180,14 @@ def _poll_batch_jobs() -> None:
                     )
                     if r.status_code == 404:
                         # Job unknown — clear so item is retried on next reanalyze
-                        print(f"[batch] job {job_id} not found in merLLM — clearing for retry")
+                        log.warning("batch job %s not found in merLLM — clearing for retry", job_id)
                         with db.lock:
                             db.set_batch_job_id(rec["item_id"], None)
                         continue
                     if r.status_code == 409:
                         detail = r.json().get("detail", "")
                         if "failed" in detail:
-                            print(f"[batch] job {job_id} failed in merLLM — clearing for retry")
+                            log.warning("batch job %s failed in merLLM — clearing for retry", job_id)
                             with db.lock:
                                 db.set_batch_job_id(rec["item_id"], None)
                         # queued or running — still in progress, keep waiting
@@ -195,7 +198,7 @@ def _poll_batch_jobs() -> None:
                     if not response_text:
                         continue
                 except Exception as e:
-                    print(f"[batch] poll {job_id}: {e}")
+                    log.error("batch poll %s: %s", job_id, e)
                     continue
 
                 # Parse the LLM response and re-save the item
@@ -259,11 +262,11 @@ def _poll_batch_jobs() -> None:
                     _spawn_situation_task(result.item_id)
                     with db.lock:
                         db.set_batch_job_id(rec["item_id"], None)
-                    print(f"[batch] applied result for {rec['item_id']} (job {job_id})")
+                    log.info("batch applied result for %s (job %s)", rec['item_id'], job_id)
                 except Exception as e:
-                    print(f"[batch] apply {job_id}: {e}")
+                    log.error("batch apply %s: %s", job_id, e)
         except Exception as e:
-            print(f"[batch] poll loop error: {e}")
+            log.error("batch poll loop error: %s", e)
 
 
 _batch_poll_thread_started = False
@@ -291,9 +294,9 @@ def _generate_briefing_bg() -> None:
         content = _generate_briefing()
         with db.lock:
             db.save_briefing(content)
-        print(f"[briefing] generated {len(content.get('sections', []))} sections")
+        log.info("briefing generated %d sections", len(content.get('sections', [])))
     except Exception as e:
-        print(f"[briefing] error: {e}")
+        log.error("briefing error: %s", e)
 
 
 def run_scan(sources: list[str]) -> None:
@@ -360,7 +363,7 @@ def run_scan(sources: list[str]) -> None:
                     results.append(analyze(item))
                 _timing.append(time.monotonic() - _t0)
             except Exception as e:
-                print(f"[agent] {item.item_id}: {e}")
+                log.error("agent %s: %s", item.item_id, e)
             if _timing:
                 avg_sec = sum(_timing) / len(_timing)
                 remaining = len(all_items) - (i + 1)
@@ -455,7 +458,7 @@ def run_reanalyze() -> None:
 
         use_batch = _merllm_night_mode()
         if use_batch:
-            print("[reanalyze] night mode active — routing to merLLM batch API")
+            log.info("reanalyze: night mode active — routing to merLLM batch API")
             _ensure_batch_poll_thread()
 
         results = []
@@ -502,7 +505,7 @@ def run_reanalyze() -> None:
                             result = analyze(item)
                         results.append(result)
                 except Exception as e:
-                    print(f"[reanalyze] batch {item.item_id}: {e}")
+                    log.error("reanalyze batch %s: %s", item.item_id, e)
             else:
                 try:
                     _t0 = time.monotonic()
@@ -511,7 +514,7 @@ def run_reanalyze() -> None:
                     _timing.append(time.monotonic() - _t0)
                     results.append(result)
                 except Exception as e:
-                    print(f"[reanalyze] {item.item_id}: {e}")
+                    log.error("reanalyze %s: %s", item.item_id, e)
             if _timing:
                 avg_sec = sum(_timing) / len(_timing)
                 remaining = len(all_records) - (i + 1)
@@ -547,7 +550,7 @@ def run_reanalyze() -> None:
             _generate_briefing_bg()
     except Exception as e:
         _scan_state["message"] = f"Re-analysis error: {e}"
-        print(f"[reanalyze] {e}")
+        log.error("reanalyze: %s", e)
     finally:
         _scan_state["running"]                    = False
         _scan_state["progress"]                   = _scan_state["total"]
@@ -572,7 +575,7 @@ def process_ingest_items(raw: list[RawItem]) -> None:
         if _scan_state["cancelled"]:
             with db.lock:
                 _scan_state["ingest_pending"] = 0
-            print("[ingest] cancelled — stopping after current item")
+            log.info("ingest cancelled — stopping after current item")
             return
         matched, rule_type = _nf.should_filter(item, noise_rules)
         if matched:
@@ -587,7 +590,7 @@ def process_ingest_items(raw: list[RawItem]) -> None:
             graph.index_item(result)
             _spawn_situation_task(result.item_id)
         except Exception as e:
-            print(f"[ingest] {item.item_id}: {e}")
+            log.error("ingest %s: %s", item.item_id, e)
         with db.lock:
             _scan_state["ingest_pending"] = max(0, _scan_state["ingest_pending"] - 1)
 

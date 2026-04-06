@@ -9,11 +9,14 @@ the analysis pipeline.
 Requires ``config.JIRA_EMAIL``, ``config.JIRA_TOKEN``, and
 ``config.JIRA_DOMAIN`` to be set.
 """
+import logging
 import requests
 from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta, timezone
 from models import RawItem
 import config
+
+log = logging.getLogger(__name__)
 
 
 def _auth() -> HTTPBasicAuth:
@@ -69,10 +72,10 @@ def fetch() -> list[RawItem]:
     :rtype: list[RawItem]
     """
     if not config.JIRA_TOKEN or not config.JIRA_DOMAIN:
-        print("[jira] not configured — skipping")
+        log.info("not configured — skipping")
         return []
     if config.JIRA_DOMAIN == "yourcompany.atlassian.net":
-        print("[jira] domain is placeholder — skipping")
+        log.info("domain is placeholder — skipping")
         return []
 
     items: list[RawItem] = []
@@ -137,7 +140,7 @@ def fetch() -> list[RawItem]:
             ))
 
     except Exception as e:
-        print(f"[jira] error: {e}")
+        log.error("error: %s", e)
 
-    print(f"[jira] {len(items)} issues")
+    log.info("%d issues", len(items))
     return items

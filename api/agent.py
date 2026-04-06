@@ -38,10 +38,13 @@ Key helpers:
         learning endpoints in ``app.py``.
 """
 import json
+import logging
 import re
 import requests
 from models import RawItem, Analysis, ActionItem
 import config
+
+log = logging.getLogger(__name__)
 
 # ── Prompt template ───────────────────────────────────────────────────────────
 
@@ -343,7 +346,7 @@ def generate_project_briefing(
         response.raise_for_status()
         return response.json().get("response", "").strip()
     except Exception as e:
-        print(f"[agent] generate_project_briefing({project_name}): {e}")
+        log.error("generate_project_briefing(%s): %s", project_name, e)
         return ""
 
 
@@ -394,7 +397,7 @@ def extract_keywords(project_name: str, title: str, body: str) -> list[str]:
                 if isinstance(v, list):
                     return [str(k).strip() for k in v if k and len(str(k).strip()) > 2]
     except Exception as e:
-        print(f"[agent] extract_keywords: {e}")
+        log.error("extract_keywords: %s", e)
     return []
 
 
@@ -684,7 +687,7 @@ def build_prompt(item: RawItem) -> str:
         if ctx_text:
             graph_hint = f"\n- {ctx_text}"
     except Exception as e:
-        print(f"[agent] graph context failed: {e}")
+        log.warning("graph context failed: %s", e)
 
     embedding_hint = ""
     body_text = item.body[:2000] or item.title
@@ -710,7 +713,7 @@ def build_prompt(item: RawItem) -> str:
                         f"Consider but do not rely on this signal."
                     )
         except Exception as e:
-            print(f"[agent] embedding score failed: {e}")
+            log.warning("embedding score failed: %s", e)
 
     return PROMPT.format(
         source       = item.source,
@@ -818,7 +821,7 @@ def analyze(item: RawItem) -> Analysis:
         if ctx_text:
             graph_hint = f"\n- {ctx_text}"
     except Exception as e:
-        print(f"[agent] graph context failed: {e}")
+        log.warning("graph context failed: %s", e)
 
     embedding_hint = ""
     body_text = item.body[:2000] or item.title
@@ -844,7 +847,7 @@ def analyze(item: RawItem) -> Analysis:
                         f"Consider but do not rely on this signal."
                     )
         except Exception as e:
-            print(f"[agent] embedding score failed: {e}")
+            log.warning("embedding score failed: %s", e)
 
     response = requests.post(
         config.OLLAMA_URL,
@@ -977,5 +980,5 @@ def analyze_batch(items: list[RawItem], progress_cb=None) -> list[Analysis]:
         try:
             results.append(analyze(item))
         except Exception as e:
-            print(f"[agent] {item.item_id}: {e}")
+            log.error("%s: %s", item.item_id, e)
     return results

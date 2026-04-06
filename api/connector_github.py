@@ -10,10 +10,13 @@ Pulls three categories of actionable items for the configured user:
 All items are filtered to the lookback window defined in
 ``config.LOOKBACK_HOURS`` and deduplicated by GitHub object ID.
 """
+import logging
 import requests
 from datetime import datetime, timedelta, timezone
 from models import RawItem
 import config
+
+log = logging.getLogger(__name__)
 
 # GitHub REST API v3 base URL.
 BASE = "https://api.github.com"
@@ -87,7 +90,7 @@ def _get_paginated(path: str, params: dict = None, max_items: int = 500) -> list
 
     fetched = len(results)
     if fetched > 0:
-        print(f"[github] paginated fetch from {path}: {fetched} items")
+        log.info("paginated fetch from %s: %d items", path, fetched)
     return results[:max_items]
 
 
@@ -118,7 +121,7 @@ def fetch() -> list[RawItem]:
     :rtype: list[RawItem]
     """
     if not config.GITHUB_PAT or config.GITHUB_PAT.startswith("ghp_your"):
-        print("[github] not configured — skipping")
+        log.info("not configured — skipping")
         return []
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=config.LOOKBACK_HOURS)
@@ -158,7 +161,7 @@ def fetch() -> list[RawItem]:
                 metadata  = {"reason": reason, "type": subj.get("type", ""), "repo": repo},
             ))
     except Exception as e:
-        print(f"[github] notifications: {e}")
+        log.error("notifications: %s", e)
 
     # ── 2. Open PRs requesting my review ─────────────────────────────────────
     try:
@@ -185,7 +188,7 @@ def fetch() -> list[RawItem]:
                 metadata  = {"type": "pull_request", "number": pr["number"]},
             ))
     except Exception as e:
-        print(f"[github] PR search: {e}")
+        log.error("PR search: %s", e)
 
     # ── 3. Open issues assigned to me ────────────────────────────────────────
     try:
@@ -213,7 +216,7 @@ def fetch() -> list[RawItem]:
                 metadata  = {"type": "issue", "repo": repo},
             ))
     except Exception as e:
-        print(f"[github] issues: {e}")
+        log.error("issues: %s", e)
 
-    print(f"[github] {len(items)} items")
+    log.info("%d items", len(items))
     return items

@@ -20,10 +20,13 @@ The resulting ``hierarchy`` and ``project_tag`` values are stored in
 Each call to ``fetch()`` returns a deduplicated list of ``RawItem`` objects
 covering the lookback window defined in ``config.LOOKBACK_HOURS``.
 """
+import logging
 import requests
 from datetime import datetime, timedelta, timezone
 from models import RawItem
 import config
+
+log = logging.getLogger(__name__)
 
 # Slack Web API base URL.
 BASE = "https://slack.com/api"
@@ -175,10 +178,10 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
         my_uid = auth.get("user_id", "")
         team   = auth.get("team", "")
     except Exception as e:
-        print(f"[slack] auth.test failed: {e}")
+        log.error("auth.test failed: %s", e)
         return []
 
-    print(f"[slack:{team}] my_uid={my_uid}, cutoff={datetime.fromtimestamp(cutoff_ts, tz=timezone.utc).isoformat()}")
+    log.info("%s: my_uid=%s, cutoff=%s", team, my_uid, datetime.fromtimestamp(cutoff_ts, tz=timezone.utc).isoformat())
 
     # ── 1. @mentions via search API ──────────────────────────────────────────
     try:
@@ -189,7 +192,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
             "sort_dir": "desc",
         })
         matches = search_result.get("messages", {}).get("matches", [])
-        print(f"[slack:{team}] mentions search: {len(matches)} total matches")
+        log.info("%s: mentions search: %d total matches", team, len(matches))
 
         for m in matches:
             ts = float(m.get("ts", 0))
@@ -211,7 +214,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 metadata  = {"channel": ch.get("name", ""), "workspace": team, "type": "mention"},
             ))
     except Exception as e:
-        print(f"[slack:{team}] mentions: {e}")
+        log.error("%s: mentions: %s", team, e)
 
     # ── 2. Direct messages and group DMs ─────────────────────────────────────
     # DMs are not filtered by cutoff — always surface the most recent thread.
@@ -221,7 +224,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
             "exclude_archived": True,
             "limit":            50,
         }).get("channels", [])
-        print(f"[slack:{team}] DM conversations found: {len(channels)}")
+        log.info("%s: DM conversations found: %d", team, len(channels))
 
         for ch in channels:
             ch_id = ch["id"]
@@ -258,7 +261,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 metadata  = {"workspace": team, "type": "dm"},
             ))
     except Exception as e:
-        print(f"[slack:{team}] DMs: {e}")
+        log.error("%s: DMs: %s", team, e)
 
     # ── 3. Channels where I participated or was mentioned ────────────────────
     try:
@@ -267,7 +270,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
             "exclude_archived": True,
             "limit":            200,
         }).get("channels", [])
-        print(f"[slack:{team}] channel memberships: {len(channels)}")
+        log.info("%s: channel memberships: %d", team, len(channels))
 
         filtering = bool(config.PROJECTS or config.FOCUS_TOPICS)
 
@@ -310,7 +313,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 if not msgs:
                     continue
 
-            print(f"[slack:{team}] #{ch_name}: {len(msgs)} msgs — including")
+            log.info("%s: #%s: %d msgs — including", team, ch_name, len(msgs))
 
             lines = []
             for msg in reversed(msgs):
@@ -339,9 +342,9 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 },
             ))
     except Exception as e:
-        print(f"[slack:{team}] channels: {e}")
+        log.error("%s: channels: %s", team, e)
 
-    print(f"[slack:{team}] {len(items)} items")
+    log.info("%s: %d items", team, len(items))
     return items
 
 
@@ -370,15 +373,15 @@ def fetch() -> list[RawItem]:
             try:
                 all_items.extend(_fetch_for_token(token, cutoff_ts))
             except Exception as e:
-                print(f"[slack] workspace {ws.get('team','?')}: {e}")
+                log.error("workspace %s: %s", ws.get('team', '?'), e)
         return all_items
 
     # ── Legacy bot token fallback ─────────────────────────────────────────────
     if not config.SLACK_BOT_TOKEN or config.SLACK_BOT_TOKEN.startswith("xoxb-your"):
-        print("[slack] not configured — skipping")
+        log.info("not configured — skipping")
         return []
 
-    print("[slack] using legacy bot token")
+    log.info("using legacy bot token")
     token      = config.SLACK_BOT_TOKEN
     cutoff_str = str(cutoff_ts)
     cache: dict          = {}
@@ -407,7 +410,7 @@ def fetch() -> list[RawItem]:
                     "limit":   50,
                 }).get("messages", [])
             except Exception as e:
-                print(f"[slack] #{ch_name}: {e}")
+                log.error("#%s: %s", ch_name, e)
                 continue
 
             for msg in msgs:
@@ -435,7 +438,7 @@ def fetch() -> list[RawItem]:
                     metadata  = {"channel": ch_name, "is_dm": is_im},
                 ))
     except Exception as e:
-        print(f"[slack] legacy error: {e}")
+        log.error("legacy error: %s", e)
 
-    print(f"[slack] {len(items)} items (legacy)")
+    log.info("%d items (legacy)", len(items))
     return items

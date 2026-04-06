@@ -15,12 +15,15 @@ Uses db.py directly for all persistence.  scan_state is injected via init()
 so situation formation can check the cancellation flag.
 """
 import json
+import logging
 import threading
 import uuid as _uuid
 from datetime import datetime, timezone
 
 import config
 import correlator as _correlator
+
+log = logging.getLogger(__name__)
 import db
 
 # ── Module-level references, set by init() ────────────────────────────────────
@@ -86,7 +89,7 @@ def _rescore_situation(sit_id: str) -> None:
         with db.lock:
             db.update_situation(sit_id, {"score": score, "score_updated_at": now_iso()})
     except Exception as e:
-        print(f"[correlator] _rescore_situation({sit_id}): {e}")
+        log.error("_rescore_situation(%s): %s", sit_id, e)
 
 
 def _rescore_all_situations() -> None:
@@ -106,7 +109,7 @@ def _rescore_all_situations() -> None:
         try:
             _rescore_situation(sid)
         except Exception as e:
-            print(f"[score_decay] {sid}: {e}")
+            log.error("score_decay %s: %s", sid, e)
 
 
 def _score_decay_loop():
@@ -117,7 +120,7 @@ def _score_decay_loop():
         try:
             _rescore_all_situations()
         except Exception as e:
-            print(f"[score_decay] {e}")
+            log.error("score_decay: %s", e)
 
 
 # ── Situation record management ────────────────────────────────────────────────
@@ -179,7 +182,7 @@ def _update_situation_record(sit_id: str, item_ids: list) -> None:
             for iid in item_ids:
                 db.update_item(iid, {"situation_id": sit_id})
     except Exception as e:
-        print(f"[correlator] _update_situation_record({sit_id}): {e}")
+        log.error("_update_situation_record(%s): %s", sit_id, e)
 
 
 def _sync_situation_tags_for_item(item_id: str) -> None:
@@ -368,10 +371,10 @@ def _maybe_form_situation(item_id: str) -> None:
             for iid in all_ids:
                 db.update_item(iid, {"situation_id": sit_id})
 
-        print(f"[correlator] formed situation {sit_id[:8]} from {len(all_ids)} items")
+        log.info("formed situation %s from %d items", sit_id[:8], len(all_ids))
 
     except Exception as e:
-        print(f"[correlator] _maybe_form_situation({item_id}): {e}")
+        log.error("_maybe_form_situation(%s): %s", item_id, e)
 
 
 def _spawn_situation_task(item_id: str) -> None:

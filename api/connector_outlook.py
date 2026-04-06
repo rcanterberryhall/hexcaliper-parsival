@@ -10,7 +10,10 @@ scripts in ``/scripts``:
 
 Both sidecars POST directly to the ``/ingest`` endpoint.
 """
+import logging
 from models import RawItem
+
+log = logging.getLogger(__name__)
 
 
 def fetch() -> list[RawItem]:
@@ -20,5 +23,5 @@ def fetch() -> list[RawItem]:
     :return: Empty list.
     :rtype: list[RawItem]
     """
-    print("[outlook] running in Docker — use host sidecar to ingest emails")
+    log.info("running in Docker — use host sidecar to ingest emails")
     return []
