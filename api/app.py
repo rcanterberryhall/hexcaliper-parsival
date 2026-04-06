@@ -1084,7 +1084,26 @@ def mark_noise(item_id: str, background_tasks: BackgroundTasks):
         db.delete_todos_for_item(item_id)
 
     background_tasks.add_task(_learn_keywords_for_category, record, "noise")
-    return {"ok": True}
+
+    # Build filter suggestions based on the item's fields
+    suggestions = []
+    if record.get("author"):
+        suggestions.append({"type": "sender_contains", "value": record["author"]})
+    if record.get("title"):
+        suggestions.append({"type": "subject_contains", "value": record["title"][:60]})
+    source = record.get("source", "")
+    if source == "github":
+        repo = (record.get("metadata") or {}).get("repo") or ""
+        if isinstance(record.get("metadata"), str):
+            import json as _json
+            try:
+                repo = _json.loads(record["metadata"]).get("repo", "")
+            except Exception:
+                repo = ""
+        if repo:
+            suggestions.append({"type": "source_repo", "value": repo})
+
+    return {"ok": True, "filter_suggestions": suggestions}
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -1120,6 +1139,7 @@ def get_settings():
         "projects":             config.PROJECTS,
         "noise_keywords":       config.NOISE_KEYWORDS,
         "scan_schedule":        (db.get_settings() or {}).get("scan_schedule", {}),
+        "noise_filters":        (db.get_settings() or {}).get("noise_filters", []),
         "warnings":             config.validate(),
     }
 
@@ -1167,6 +1187,70 @@ def save_settings(body: dict):
     if "scan_schedule" in body:
         orchestrator.scheduler_update(body["scan_schedule"])
     return {"ok": True, "warnings": config.validate()}
+
+
+# ── Noise filters ─────────────────────────────────────────────────────────────
+
+import noise_filter as _nf_mod
+
+
+@app.get("/noise-filters")
+def get_noise_filters():
+    """Return the current list of noise filter rules."""
+    with db.lock:
+        settings = db.get_settings() or {}
+    return settings.get("noise_filters", [])
+
+
+@app.post("/noise-filters")
+def add_noise_filter(body: dict):
+    """
+    Append a noise filter rule.
+
+    :param body: ``{"type": "sender_contains", "value": "noreply@"}``
+    :return: Updated filter list.
+    :raises HTTPException 422: If the rule is invalid.
+    """
+    err = _nf_mod.validate_rule(body)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+    with db.lock:
+        settings = db.get_settings() or {}
+        rules: list = settings.get("noise_filters", [])
+        rules.append({"type": body["type"], "value": body["value"].strip()})
+        settings["noise_filters"] = rules
+        db.save_settings(settings)
+    return rules
+
+
+@app.delete("/noise-filters/{index}")
+def delete_noise_filter(index: int):
+    """
+    Remove a noise filter rule by its zero-based index.
+
+    :param index: Zero-based index of the rule to remove.
+    :return: Updated filter list.
+    :raises HTTPException 404: If index is out of range.
+    """
+    with db.lock:
+        settings = db.get_settings() or {}
+        rules: list = settings.get("noise_filters", [])
+        if index < 0 or index >= len(rules):
+            raise HTTPException(status_code=404, detail="Filter index out of range.")
+        rules.pop(index)
+        settings["noise_filters"] = rules
+        db.save_settings(settings)
+    return rules
+
+
+@app.get("/noise-filters/count")
+def count_filtered_items():
+    """Return the number of items stored with category='filtered'."""
+    with db.lock:
+        n = db.conn().execute(
+            "SELECT COUNT(*) FROM items WHERE category='filtered'"
+        ).fetchone()[0]
+    return {"count": n}
 
 
 # ── Ingest (POST target for host sidecar scripts) ─────────────────────────────

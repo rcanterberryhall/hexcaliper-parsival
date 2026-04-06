@@ -32,6 +32,7 @@ import connector_teams
 import config
 import db
 import graph
+import noise_filter as _nf
 
 # ── Ollama concurrency semaphore ───────────────────────────────────────────────
 # Set to 1 for single GPU; raise the count for multi-GPU dispatch.
@@ -77,6 +78,42 @@ def get_sem() -> threading.Semaphore:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ── Noise filter helpers ───────────────────────────────────────────────────────
+
+def _get_noise_rules() -> list[dict]:
+    """Return the current noise filter rules from settings."""
+    with db.lock:
+        settings = db.get_settings() or {}
+    return settings.get("noise_filters", [])
+
+
+def _save_filtered_item(item: RawItem, matched_rule: str) -> None:
+    """
+    Persist a filtered item to the items table as category='filtered'.
+    No LLM analysis is run; the item is auditable but invisible in the normal UI.
+    """
+    with db.lock:
+        existing = db.get_item(item.item_id)
+    if existing:
+        return  # already stored (possibly from a previous scan)
+    with db.lock:
+        db.upsert_item({
+            "item_id":         item.item_id,
+            "source":          item.source,
+            "title":           item.title,
+            "author":          item.author,
+            "timestamp":       item.timestamp,
+            "url":             item.url,
+            "has_action":      0,
+            "priority":        "low",
+            "category":        "filtered",
+            "summary":         f"[filtered by {matched_rule}]",
+            "urgency":         None,
+            "action_items":    "[]",
+            "processed_at":    _now_iso(),
+        })
 
 
 # ── merLLM batch helpers ───────────────────────────────────────────────────────
@@ -299,6 +336,8 @@ def run_scan(sources: list[str]) -> None:
 
     results = []
     _timing: deque = deque(maxlen=_TIMING_WINDOW)
+    noise_rules    = _get_noise_rules()
+    filtered_count = 0
     try:
         for i, item in enumerate(all_items):
             if _scan_state["cancelled"]:
@@ -310,6 +349,11 @@ def run_scan(sources: list[str]) -> None:
                 "current_item":   item.title[:60],
                 "message":        f"[{item.source}] {i + 1}/{len(all_items)}: {item.title[:60]}",
             })
+            matched, rule_type = _nf.should_filter(item, noise_rules)
+            if matched:
+                _save_filtered_item(item, rule_type)
+                filtered_count += 1
+                continue
             try:
                 _t0 = time.monotonic()
                 with _sem:
@@ -328,6 +372,7 @@ def run_scan(sources: list[str]) -> None:
             graph.index_item(r)
             _spawn_situation_task(r.item_id)
         status = "cancelled" if _scan_state["cancelled"] else "success"
+        filter_note = f", {filtered_count} filtered" if filtered_count else ""
         with db.lock:
             db.insert_scan_log({
                 "started_at":    started,
@@ -340,12 +385,12 @@ def run_scan(sources: list[str]) -> None:
         if _scan_state["cancelled"]:
             _scan_state["message"] = (
                 f"Stopped — {actions} action items found in "
-                f"{len(results)}/{len(all_items)} items processed."
+                f"{len(results)}/{len(all_items)} items processed{filter_note}."
             )
         else:
             _scan_state["message"] = (
                 f"Done — {actions} action items found across "
-                f"{len(all_items)} items from {', '.join(sources)}. Generating briefing…"
+                f"{len(all_items)} items from {', '.join(sources)}{filter_note}. Generating briefing…"
             )
             if results:
                 _generate_briefing_bg()
@@ -520,6 +565,7 @@ def process_ingest_items(raw: list[RawItem]) -> None:
     :param raw: List of deduplicated ``RawItem`` objects to analyse.
     :type raw: list[RawItem]
     """
+    noise_rules = _get_noise_rules()
     with db.lock:
         _scan_state["ingest_pending"] += len(raw)
     for item in raw:
@@ -528,6 +574,12 @@ def process_ingest_items(raw: list[RawItem]) -> None:
                 _scan_state["ingest_pending"] = 0
             print("[ingest] cancelled — stopping after current item")
             return
+        matched, rule_type = _nf.should_filter(item, noise_rules)
+        if matched:
+            _save_filtered_item(item, rule_type)
+            with db.lock:
+                _scan_state["ingest_pending"] = max(0, _scan_state["ingest_pending"] - 1)
+            continue
         try:
             with _sem:
                 result = analyze(item)

@@ -565,6 +565,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .status-informational  { background: rgba(110,80,80,.1);    color: var(--muted); border: 1px solid var(--border); }
 .stat-situations { grid-column: 1 / -1; }
 .stat-intel      { grid-column: 1 / -1; }
+.noise-filter-row { display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:var(--r); background:var(--surface); margin-bottom:4px; }
 .sit-lc-sel { font-size:10px; padding:2px 4px; border-radius:var(--r); border:1px solid var(--border2); background:var(--surface); color:var(--text); cursor:pointer; }
 .lc-new          { border-color:var(--border2); }
 .lc-investigating { border-color:var(--blue);   color:var(--blue); }
@@ -1043,6 +1044,24 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
       </div>
     </div>
 
+    <div class="settings-section">
+      <div class="section-head">Noise Filters <span id="filter-count-badge" style="font-size:10px;color:var(--muted);font-weight:normal"></span></div>
+      <p style="font-size:11px;color:var(--muted);margin:0 0 10px">Rules evaluated before LLM analysis. Matching items are stored as <code>filtered</code> and skipped.</p>
+      <div id="noise-filter-list" style="margin-bottom:8px"></div>
+      <div class="frow" style="gap:6px;flex-wrap:wrap;align-items:center">
+        <select id="new-filter-type" style="font-size:11px;padding:3px 6px;border-radius:var(--r);border:1px solid var(--border2);background:var(--surface);color:var(--text)">
+          <option value="sender_contains">Sender contains</option>
+          <option value="subject_contains">Subject contains</option>
+          <option value="source_repo">GitHub repo (exact)</option>
+          <option value="distribution_list">Distribution list contains</option>
+        </select>
+        <input id="new-filter-value" type="text" placeholder="Value…"
+          style="flex:1;min-width:140px;font-size:11px;padding:3px 8px;border-radius:var(--r);border:1px solid var(--border2);background:var(--bg);color:var(--text)"
+          onkeydown="if(event.key==='Enter')addNoiseFilter()">
+        <button class="ia" onclick="addNoiseFilter()" style="padding:3px 10px;font-size:11px">+ Add</button>
+      </div>
+    </div>
+
   </div>
   <div class="modal-foot">
     <span class="settings-msg" id="settings-msg"></span>
@@ -1286,7 +1305,7 @@ async function removeProjectTag(itemId, evt) {
 async function markNoise(itemId) {
   if (!confirm('Mark as irrelevant? This will train the noise filter with keywords from this item.')) return;
   try {
-    await api(`/analyses/${encodeURIComponent(itemId)}/noise`, 'POST');
+    const result = await api(`/analyses/${encodeURIComponent(itemId)}/noise`, 'POST');
     $('statusMsg').textContent = 'Marked irrelevant — noise filter updating in background…';
     const a = allAnalyses.find(x => x.item_id === itemId);
     if (a) a.category = 'noise';
@@ -1294,6 +1313,27 @@ async function markNoise(itemId) {
     renderItems(allAnalyses);
     const vt = _filterTodos(allTodos); renderTodos(vt); updateCounts(vt);
     if ($('detailPanel').classList.contains('open') && a) openDetail(a);
+
+    // Offer to create a pre-scan filter rule
+    const suggestions = result.filter_suggestions || [];
+    if (suggestions.length && confirm(
+      `Create a pre-scan filter rule to skip similar items in future scans?\n\n` +
+      suggestions.map(s => `${s.type.replace(/_/g,' ')}: "${s.value}"`).join('\n') +
+      `\n\nPress OK to open Filters in Settings.`
+    )) {
+      openSettings();
+      // Pre-fill the first suggestion
+      const s = suggestions[0];
+      setTimeout(() => {
+        const typeEl = $('new-filter-type');
+        const valEl  = $('new-filter-value');
+        if (typeEl) typeEl.value = s.type;
+        if (valEl)  valEl.value  = s.value;
+        valEl?.focus();
+        // Scroll filter section into view
+        valEl?.scrollIntoView({behavior:'smooth', block:'center'});
+      }, 300);
+    }
   } catch(e) {
     $('statusMsg').textContent = 'Failed: ' + e.message;
   }
@@ -2685,6 +2725,10 @@ function openSettings() {
   _injectSecretFields();
   loadSettings();
   loadProjectList();
+  api('/noise-filters/count').then(cnt => {
+    const badge = $('filter-count-badge');
+    if (badge) badge.textContent = cnt.count ? `(${cnt.count} items filtered)` : '';
+  }).catch(() => {});
 }
 
 function closeSettings() {
@@ -2746,9 +2790,47 @@ async function loadSettings() {
     $('noise-clear-btn').style.display = nc > 0 ? '' : 'none';
     updateSectionDots(s.warnings || []);
     _renderScheduleFields(s.scan_schedule || {});
+    _renderNoiseFilters(s.noise_filters || []);
     loadSlackWorkspaces();
     loadTeamsAccounts();
   } catch(e) { console.warn('loadSettings:', e); }
+}
+
+function _renderNoiseFilters(rules) {
+  const el = $('noise-filter-list');
+  if (!el) return;
+  if (!rules.length) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:4px 0">No filters configured.</div>';
+    return;
+  }
+  el.innerHTML = rules.map((r, i) =>
+    `<div class="noise-filter-row">
+      <span class="badge b-${r.type.split('_')[0]}" style="font-size:9px;flex-shrink:0">${r.type.replace(/_/g,' ')}</span>
+      <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.value)}</span>
+      <button class="ia" onclick="removeNoiseFilter(${i})" style="padding:1px 6px;font-size:10px;color:var(--red)" title="Remove">✕</button>
+    </div>`
+  ).join('');
+}
+
+async function addNoiseFilter() {
+  const typeEl  = $('new-filter-type');
+  const valueEl = $('new-filter-value');
+  if (!typeEl || !valueEl || !valueEl.value.trim()) return;
+  try {
+    const rules = await api('/noise-filters', 'POST', {type: typeEl.value, value: valueEl.value.trim()});
+    valueEl.value = '';
+    _renderNoiseFilters(rules);
+    const cnt = await api('/noise-filters/count');
+    const badge = $('filter-count-badge');
+    if (badge) badge.textContent = cnt.count ? `(${cnt.count} items filtered)` : '';
+  } catch(e) { $('settings-msg').textContent = 'Add filter failed: ' + e.message; }
+}
+
+async function removeNoiseFilter(index) {
+  try {
+    const rules = await api(`/noise-filters/${index}`, 'DELETE');
+    _renderNoiseFilters(rules);
+  } catch(e) { $('settings-msg').textContent = 'Remove filter failed: ' + e.message; }
 }
 
 async function loadSlackWorkspaces() {
