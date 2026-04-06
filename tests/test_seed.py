@@ -69,26 +69,23 @@ def _seed_corpus():
 
 
 def _ollama_mock(response_dict):
-    """Return a mock requests.post response that yields the given dict as JSON."""
-    m = MagicMock()
-    m.raise_for_status = MagicMock()
-    m.json.return_value = {"response": json.dumps(response_dict)}
-    return m
+    """Return a mock llm.generate response string."""
+    return json.dumps(response_dict)
 
 
 def _seed(client, body=None, mock_fn=None):
     """
     POST /seed then poll GET /seed/status until done or error.
-    ``mock_fn`` is called as the ``side_effect`` for ``app.http_requests.post``
+    ``mock_fn`` is called as the ``side_effect`` for ``seeder.llm.generate``
     if provided; otherwise a default no-op mock is used.
     Returns the final status dict.
     """
     import time
-    default_mock = _ollama_mock({"projects": [], "topics": []})
+    default_rv   = _ollama_mock({"projects": [], "topics": []})
     side_effect  = mock_fn if mock_fn else None
-    rv           = default_mock if not mock_fn else None
+    rv           = default_rv if not mock_fn else None
 
-    with patch("seeder.http_requests.post", side_effect=side_effect, return_value=rv):
+    with patch("seeder.llm.generate", side_effect=side_effect, return_value=rv):
         r = client.post("/seed", json=body or {})
         assert r.status_code == 200
 
@@ -172,11 +169,11 @@ def test_seed_passdowns_appear_first_in_batches(client):
     _seed_corpus()
     first_batch_prompts = []
 
-    def fake_post(url, **kwargs):
-        first_batch_prompts.append(kwargs.get("json", {}).get("prompt", ""))
+    def fake_generate(prompt, **kwargs):
+        first_batch_prompts.append(prompt)
         return _ollama_mock({"projects": [], "concerns": [], "topics": []})
 
-    _seed(client, mock_fn=fake_post)
+    _seed(client, mock_fn=fake_generate)
 
     # The very first map batch should contain at least one passdown marker
     assert first_batch_prompts, "No Ollama calls were made"

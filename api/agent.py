@@ -43,6 +43,7 @@ import re
 import requests
 from models import RawItem, Analysis, ActionItem
 import config
+import llm
 
 log = logging.getLogger(__name__)
 
@@ -326,25 +327,17 @@ def generate_project_briefing(
         return "\n".join(f"- {i}" for i in items[:limit]) if items else "- (none)"
 
     try:
-        response = requests.post(
-            config.OLLAMA_URL,
-            headers=config.ollama_headers(),
-            json={
-                "model":   config.OLLAMA_MODEL,
-                "prompt":  BRIEFING_PROMPT.format(
-                    user_name    = config.USER_NAME or "the user",
-                    project_name = project_name,
-                    intel_facts  = _fmt(intel_facts,  10),
-                    situations   = _fmt(situations,    5),
-                    action_items = _fmt(action_items,  8),
-                ),
-                "stream":  False,
-                "options": {"temperature": 0.3, "num_predict": 256, "num_ctx": 8192},
-            },
-            timeout=60,
+        text = llm.generate(
+            BRIEFING_PROMPT.format(
+                user_name    = config.USER_NAME or "the user",
+                project_name = project_name,
+                intel_facts  = _fmt(intel_facts,  10),
+                situations   = _fmt(situations,    5),
+                action_items = _fmt(action_items,  8),
+            ),
+            format=None, temperature=0.3, num_predict=256, timeout=60,
         )
-        response.raise_for_status()
-        return response.json().get("response", "").strip()
+        return text.strip()
     except Exception as e:
         log.error("generate_project_briefing(%s): %s", project_name, e)
         return ""
@@ -372,24 +365,15 @@ def extract_keywords(project_name: str, title: str, body: str) -> list[str]:
     :return: List of keyword strings, empty list on failure.
     """
     try:
-        response = requests.post(
-            config.OLLAMA_URL,
-            headers=config.ollama_headers(),
-            json={
-                "model":   config.OLLAMA_MODEL,
-                "prompt":  KEYWORD_PROMPT.format(
-                    project_name = project_name,
-                    title        = title,
-                    body         = body[:2000],
-                ),
-                "stream":  False,
-                "format":  "json",
-                "options": {"temperature": 0.1, "num_predict": 256, "num_ctx": 8192},
-            },
-            timeout=60,
+        text = llm.generate(
+            KEYWORD_PROMPT.format(
+                project_name = project_name,
+                title        = title,
+                body         = body[:2000],
+            ),
+            format="json", temperature=0.1, num_predict=256, timeout=60,
         )
-        response.raise_for_status()
-        data = json.loads(response.json().get("response", "[]"))
+        data = json.loads(text or "[]")
         if isinstance(data, list):
             return [str(k).strip() for k in data if k and len(str(k).strip()) > 2]
         if isinstance(data, dict):
@@ -849,44 +833,35 @@ def analyze(item: RawItem) -> Analysis:
         except Exception as e:
             log.warning("embedding score failed: %s", e)
 
-    response = requests.post(
-        config.OLLAMA_URL,
-        headers=config.ollama_headers(),
-        json={
-            "model":   config.OLLAMA_MODEL,
-            "prompt":  PROMPT.format(
-                source       = item.source,
-                title        = item.title,
-                author       = item.author,
-                timestamp    = item.timestamp,
-                body         = item.body,
-                user_name    = config.USER_NAME or "the user",
-                user_email   = config.USER_EMAIL or "",
-                projects_ctx  = _projects_ctx(),
-                topics_ctx    = _topics_ctx(),
-                assignment_corrections_ctx = _assignment_corrections_ctx(),
-                task_ctx      = _task_ctx(),
-                approval_ctx  = _approval_ctx(),
-                fyi_ctx       = _fyi_ctx(),
-                noise_ctx     = _noise_ctx(),
-                to_field     = to_field,
-                cc_field     = cc_field,
-                sender_hint     = sender_hint,
-                replied_hint    = replied_hint,
-                manual_tag_hint = manual_tag_hint,
-                graph_hint      = graph_hint,
-                embedding_hint  = embedding_hint,
-            ),
-            "stream":  False,
-            "format":  "json",
-            "options": {"temperature": 0.1, "num_predict": 768, "num_ctx": 8192},
-        },
-        timeout=90,
+    text = llm.generate(
+        PROMPT.format(
+            source       = item.source,
+            title        = item.title,
+            author       = item.author,
+            timestamp    = item.timestamp,
+            body         = item.body,
+            user_name    = config.USER_NAME or "the user",
+            user_email   = config.USER_EMAIL or "",
+            projects_ctx  = _projects_ctx(),
+            topics_ctx    = _topics_ctx(),
+            assignment_corrections_ctx = _assignment_corrections_ctx(),
+            task_ctx      = _task_ctx(),
+            approval_ctx  = _approval_ctx(),
+            fyi_ctx       = _fyi_ctx(),
+            noise_ctx     = _noise_ctx(),
+            to_field     = to_field,
+            cc_field     = cc_field,
+            sender_hint     = sender_hint,
+            replied_hint    = replied_hint,
+            manual_tag_hint = manual_tag_hint,
+            graph_hint      = graph_hint,
+            embedding_hint  = embedding_hint,
+        ),
+        format="json", temperature=0.1, num_predict=768, timeout=90,
     )
-    response.raise_for_status()
 
     try:
-        data = json.loads(response.json().get("response", "{}"))
+        data = json.loads(text or "{}")
     except json.JSONDecodeError:
         data = {}
 

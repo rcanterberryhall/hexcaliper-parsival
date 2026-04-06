@@ -9,7 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
-COPY app.py config.py models.py agent.py \
+COPY app.py config.py models.py agent.py llm.py \
      connector_slack.py connector_github.py \
      connector_jira.py connector_outlook.py \
      connector_teams.py \

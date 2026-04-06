@@ -83,6 +83,16 @@ MERLLM_URL   = _get("MERLLM_URL",   "http://host.docker.internal:11400")
 CF_CLIENT_ID     = _get("CF_CLIENT_ID")
 CF_CLIENT_SECRET = _get("CF_CLIENT_SECRET")
 
+# ── Escalation provider ──────────────────────────────────────────────────────
+# Controls which LLM provider Parsival uses for analysis.
+# provider: "ollama" (local via merLLM proxy), "ollama_cloud" (Ollama paid API),
+#           "claude" (Anthropic Claude API)
+# When "ollama" (default), uses OLLAMA_URL + OLLAMA_MODEL as before.
+ESCALATION_PROVIDER  = _get("ESCALATION_PROVIDER", "ollama")
+ESCALATION_MODEL     = _get("ESCALATION_MODEL", "")       # blank = use OLLAMA_MODEL
+ESCALATION_API_KEY   = _get("ESCALATION_API_KEY", "")
+ESCALATION_API_URL   = _get("ESCALATION_API_URL", "")     # e.g. https://api.anthropic.com
+
 # ── Slack ─────────────────────────────────────────────────────────────────────
 
 SLACK_CLIENT_ID     = _get("SLACK_CLIENT_ID")
@@ -185,6 +195,10 @@ def apply_overrides(d: dict) -> None:
         "jira_jql":             "JIRA_JQL",
         "user_name":            "USER_NAME",
         "user_email":           "USER_EMAIL",
+        "escalation_provider":  "ESCALATION_PROVIDER",
+        "escalation_model":     "ESCALATION_MODEL",
+        "escalation_api_key":   "ESCALATION_API_KEY",
+        "escalation_api_url":   "ESCALATION_API_URL",
     }
     for key, var in str_fields.items():
         if key in d and d[key] is not None:
@@ -227,6 +241,11 @@ def apply_overrides(d: dict) -> None:
         setattr(mod, "ASSIGNMENT_CORRECTIONS", d["assignment_corrections"])
     if "lookback_hours" in d and d["lookback_hours"] is not None:
         setattr(mod, "LOOKBACK_HOURS", int(d["lookback_hours"]))
+
+
+def effective_model() -> str:
+    """Return the model name to use for analysis, respecting escalation config."""
+    return ESCALATION_MODEL or OLLAMA_MODEL
 
 
 def ollama_headers() -> dict:

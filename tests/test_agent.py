@@ -28,7 +28,7 @@ def test_analyze_parses_full_response():
         "summary": "Deploy the release",
         "urgency_reason": "overdue",
     }
-    with patch("agent.requests.post", return_value=_mock_response(payload)):
+    with patch("agent.llm.generate", return_value=json.dumps(payload)):
         result = agent.analyze(_raw())
 
     assert result.has_action is True
@@ -41,7 +41,7 @@ def test_analyze_parses_full_response():
 
 
 def test_analyze_defaults_on_empty_response():
-    with patch("agent.requests.post", return_value=_mock_response({})):
+    with patch("agent.llm.generate", return_value="{}"):
         result = agent.analyze(_raw(title="Fallback title"))
 
     assert result.priority == "medium"
@@ -57,7 +57,7 @@ def test_analyze_jira_fallback_creates_action_item():
         body="", url="", author="", timestamp="2024-01-01",
         metadata={"due": "2024-04-01"},
     )
-    with patch("agent.requests.post", return_value=_mock_response({})):
+    with patch("agent.llm.generate", return_value="{}"):
         result = agent.analyze(item)
 
     assert len(result.action_items) == 1
@@ -74,7 +74,7 @@ def test_analyze_skips_action_items_without_description():
         "summary": "Nothing to do",
         "urgency_reason": None,
     }
-    with patch("agent.requests.post", return_value=_mock_response(payload)):
+    with patch("agent.llm.generate", return_value=json.dumps(payload)):
         result = agent.analyze(_raw())
 
     assert result.action_items == []
@@ -84,7 +84,7 @@ def test_analyze_batch_calls_progress_cb():
     items = [_raw(item_id=str(i)) for i in range(3)]
     calls = []
 
-    with patch("agent.requests.post", return_value=_mock_response({})):
+    with patch("agent.llm.generate", return_value="{}"):
         agent.analyze_batch(items, progress_cb=lambda i, t, s, title: calls.append(i))
 
     assert calls == [0, 1, 2]
@@ -93,12 +93,7 @@ def test_analyze_batch_calls_progress_cb():
 def test_analyze_batch_skips_failed_items():
     items = [_raw(item_id="ok"), _raw(item_id="bad"), _raw(item_id="ok2")]
 
-    def side_effect(*args, **kwargs):
-        m = MagicMock()
-        m.raise_for_status.side_effect = Exception("network error")
-        return m
-
-    with patch("agent.requests.post", side_effect=side_effect):
+    with patch("agent.llm.generate", side_effect=Exception("network error")):
         results = agent.analyze_batch(items)
 
     # Errors are swallowed; no results but no crash

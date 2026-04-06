@@ -22,6 +22,7 @@ import requests as http_requests
 
 import config
 import db
+import llm
 import orchestrator
 
 # ── Module-level references, set by init() ────────────────────────────────────
@@ -181,20 +182,11 @@ def _run_seed_job(context: str) -> None:
             )
             try:
                 with orchestrator.get_sem():
-                    resp = http_requests.post(
-                        config.OLLAMA_URL,
-                        headers=config.ollama_headers(),
-                        json={
-                            "model":   config.OLLAMA_MODEL,
-                            "prompt":  prompt,
-                            "stream":  False,
-                            "format":  "json",
-                            "options": {"temperature": 0.2, "num_predict": 300},
-                        },
-                        timeout=120,
+                    text = llm.generate(
+                        prompt, format="json", temperature=0.2,
+                        num_predict=300, timeout=120,
                     )
-                resp.raise_for_status()
-                data = json.loads(resp.json().get("response", "{}"))
+                data = json.loads(text or "{}")
                 map_results.append(data)
             except Exception as e:
                 last_map_err = str(e)
@@ -233,20 +225,11 @@ def _run_seed_job(context: str) -> None:
 
         try:
             with orchestrator.get_sem():
-                resp = http_requests.post(
-                    config.OLLAMA_URL,
-                    headers=config.ollama_headers(),
-                    json={
-                        "model":   config.OLLAMA_MODEL,
-                        "prompt":  reduce_prompt,
-                        "stream":  False,
-                        "format":  "json",
-                        "options": {"temperature": 0.2, "num_predict": 400},
-                    },
-                    timeout=120,
+                text = llm.generate(
+                    reduce_prompt, format="json", temperature=0.2,
+                    num_predict=400, timeout=120,
                 )
-            resp.raise_for_status()
-            final    = json.loads(resp.json().get("response", "{}"))
+            final    = json.loads(text or "{}")
             projects = final.get("projects", [])
             topics   = final.get("topics", [])
         except Exception as e:

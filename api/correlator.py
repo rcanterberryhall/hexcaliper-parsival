@@ -13,6 +13,7 @@ import re
 from datetime import datetime, timezone
 
 import requests
+import llm
 
 import config
 
@@ -223,24 +224,15 @@ def synthesize_situation(item_records: list, user_name: str, intel_items: list =
         return fallback
 
     try:
-        response = requests.post(
-            config.OLLAMA_URL,
-            headers=config.ollama_headers(),
-            json={
-                "model":   config.OLLAMA_MODEL,
-                "prompt":  SYNTHESIS_PROMPT.format(
-                    user_name   = user_name or "the user",
-                    items_block = items_block,
-                    intel_block = intel_block,
-                ),
-                "stream":  False,
-                "format":  "json",
-                "options": {"temperature": 0.1, "num_predict": 512},
-            },
-            timeout=60,
+        text = llm.generate(
+            SYNTHESIS_PROMPT.format(
+                user_name   = user_name or "the user",
+                items_block = items_block,
+                intel_block = intel_block,
+            ),
+            format="json", temperature=0.1, num_predict=512, timeout=60,
         )
-        response.raise_for_status()
-        data = json.loads(response.json().get("response", "{}"))
+        data = json.loads(text or "{}")
         return {
             "title":        data.get("title")        or fallback["title"],
             "summary":      data.get("summary")      or fallback["summary"],

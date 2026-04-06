@@ -1002,6 +1002,25 @@ tr.attn-low  { opacity:0.65; }
     </div>
 
     <div class="settings-section">
+      <div class="section-head"><div class="sdot2" id="dot-escalation"></div>Analysis Provider</div>
+      <div class="field-hint" style="margin-bottom:8px">Choose which LLM provider runs analysis. Default uses the local Ollama model above via merLLM.</div>
+      <div class="field-row">
+        <div class="field"><label>Provider</label>
+          <select id="s-escalation_provider" onchange="toggleEscalationFields()">
+            <option value="ollama">Ollama (local / merLLM)</option>
+            <option value="ollama_cloud">Ollama Cloud (paid)</option>
+            <option value="claude">Claude (Anthropic API)</option>
+          </select>
+        </div>
+        <div class="field"><label>Model Override</label><input type="text" id="s-escalation_model" placeholder="(uses Ollama Model above)"></div>
+      </div>
+      <div class="field-row" id="escalation-cloud-fields" style="display:none">
+        <div class="field"><label>API URL</label><input type="text" id="s-escalation_api_url" placeholder="https://api.anthropic.com"></div>
+        <div class="field"><label>API Key</label><span id="s-escalation_api_key-slot"></span></div>
+      </div>
+    </div>
+
+    <div class="settings-section">
       <div class="section-head"><div class="sdot2" id="dot-slack"></div>Slack</div>
       <div class="field-row">
         <div class="field"><label>Client ID</label><input type="text" id="s-slack_client_id" placeholder="your-app-client-id"></div>
@@ -1200,6 +1219,17 @@ tr.attn-low  { opacity:0.65; }
         <dt>Visual weight</dt><dd>High-attention items have a bolder border — no numbers or badges to add noise.</dd>
         <dt>Cold start</dt><dd>Until 50 actions are recorded, the system uses the LLM's priority tier and shows "Learning your attention patterns — prioritization will improve as you use the tool."</dd>
         <dt>Adaptation</dt><dd>The model adapts as your focus shifts — actions older than 30 days contribute at 50% weight, older than 60 days at 25%. No configuration needed.</dd>
+      </dl>
+    </div>
+
+    <div class="help-section">
+      <h3>Analysis provider</h3>
+      <p>Choose which LLM runs Parsival's analysis pipeline. By default, prompts go to the local Ollama instance via merLLM. You can switch to a paid Ollama cloud account or Anthropic's Claude API for higher-quality analysis at the cost of an API key.</p>
+      <dl class="help-kv">
+        <dt>Ollama (local)</dt><dd>Default. Uses the Ollama Model from the settings section above, routed through the merLLM proxy. Free, runs on your GPUs.</dd>
+        <dt>Ollama Cloud</dt><dd>Paid Ollama API. Set the API URL and key. Uses the same prompt format as local Ollama.</dd>
+        <dt>Claude</dt><dd>Anthropic Claude API. Set the API key and optionally override the model (default: claude-sonnet-4-20250514). Higher quality analysis.</dd>
+        <dt>Model Override</dt><dd>If blank, the Ollama Model field is used. Set this to use a different model for analysis than for other Ollama tasks.</dd>
       </dl>
     </div>
 
@@ -2742,13 +2772,14 @@ function _endColResize() {
 
 const SETTINGS_FIELDS = [
   'ollama_url','ollama_model','cf_client_id','cf_client_secret',
+  'escalation_provider','escalation_model','escalation_api_key','escalation_api_url',
   'slack_client_id','slack_client_secret',
   'teams_client_id','teams_client_secret',
   'github_pat','github_username',
   'jira_email','jira_token','jira_domain','jira_jql','lookback_hours',
   'user_name','user_email','focus_topics',
 ];
-const SECRET_FIELDS = new Set(['cf_client_id','cf_client_secret','slack_client_secret','teams_client_secret','github_pat','jira_token']);
+const SECRET_FIELDS = new Set(['cf_client_id','cf_client_secret','slack_client_secret','teams_client_secret','github_pat','jira_token','escalation_api_key']);
 const SECRET_FIELD_DEFS = [
   { id: 'cf_client_id',         placeholder: 'leave blank if no Access policy' },
   { id: 'cf_client_secret',     placeholder: 'leave blank if no Access policy' },
@@ -2756,6 +2787,7 @@ const SECRET_FIELD_DEFS = [
   { id: 'teams_client_secret',  placeholder: 'your-azure-app-client-secret' },
   { id: 'github_pat',           placeholder: 'ghp_…' },
   { id: 'jira_token',           placeholder: 'your-jira-api-token' },
+  { id: 'escalation_api_key',  placeholder: 'sk-… or api key' },
 ];
 
 function _injectSecretFields() {
@@ -2776,6 +2808,14 @@ function _removeSecretFields() {
     const el = $('s-' + id);
     if (el) el.remove();
   });
+}
+
+function toggleEscalationFields() {
+  const prov = ($('s-escalation_provider') || {}).value || 'ollama';
+  const cloud = $('escalation-cloud-fields');
+  if (cloud) cloud.style.display = (prov === 'ollama') ? 'none' : '';
+  const dot = $('dot-escalation');
+  if (dot) dot.className = 'sdot2' + (prov !== 'ollama' ? ' ok' : '');
 }
 
 function openHelp() {
@@ -2854,6 +2894,7 @@ async function loadSettings() {
       }
     });
     loadProjects(s.projects);
+    toggleEscalationFields();
     const nc = (s.noise_keywords || []).length;
     $('noise-count').textContent = `${nc} keyword${nc !== 1 ? 's' : ''}`;
     $('noise-clear-btn').style.display = nc > 0 ? '' : 'none';

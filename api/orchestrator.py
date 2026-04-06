@@ -141,7 +141,7 @@ def _submit_batch_job(prompt: str) -> str | None:
             json={
                 "source_app": "parsival",
                 "prompt":     prompt,
-                "model":      config.OLLAMA_MODEL,
+                "model":      config.effective_model(),
             },
             timeout=10,
         )

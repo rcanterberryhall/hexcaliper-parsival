@@ -1190,6 +1190,10 @@ def get_settings():
     return {
         "ollama_url":           config.OLLAMA_URL,
         "ollama_model":         config.OLLAMA_MODEL,
+        "escalation_provider":  config.ESCALATION_PROVIDER,
+        "escalation_model":     config.ESCALATION_MODEL,
+        "escalation_api_key":   _mask(config.ESCALATION_API_KEY),
+        "escalation_api_url":   config.ESCALATION_API_URL,
         "cf_client_id":         _mask(config.CF_CLIENT_ID),
         "cf_client_secret":     _mask(config.CF_CLIENT_SECRET),
         "slack_client_id":      config.SLACK_CLIENT_ID,
