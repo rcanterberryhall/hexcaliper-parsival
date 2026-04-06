@@ -1022,6 +1022,14 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
       <div class="field"><label>JQL (optional)</label><input type="text" id="s-jira_jql"></div>
     </div>
 
+    <div class="settings-section">
+      <div class="section-head">Schedule</div>
+      <p style="font-size:11px;color:var(--muted);margin:0 0 10px">Interval 0 = manual only. Scans are skipped if one is already running.</p>
+      <div class="field-row" id="schedule-fields">
+        <!-- populated by loadSettings() -->
+      </div>
+    </div>
+
   </div>
   <div class="modal-foot">
     <span class="settings-msg" id="settings-msg"></span>
@@ -2613,6 +2621,40 @@ function closeSettings() {
   _removeSecretFields();
 }
 
+const SCHEDULE_SOURCES  = ['slack','github','jira','outlook','teams'];
+const SCHEDULE_OPTIONS  = [
+  { label: 'Off',   value: 0   },
+  { label: '15 m',  value: 15  },
+  { label: '30 m',  value: 30  },
+  { label: '1 h',   value: 60  },
+  { label: '2 h',   value: 120 },
+  { label: '4 h',   value: 240 },
+];
+
+function _renderScheduleFields(schedule) {
+  const container = $('schedule-fields');
+  if (!container) return;
+  container.innerHTML = SCHEDULE_SOURCES.map(src => {
+    const cur = (schedule || {})[src] || 0;
+    const opts = SCHEDULE_OPTIONS.map(o =>
+      `<option value="${o.value}"${o.value === cur ? ' selected' : ''}>${o.label}</option>`
+    ).join('');
+    return `<div class="field" style="min-width:100px">
+      <label style="text-transform:capitalize">${src}</label>
+      <select id="sched-${src}" style="background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:4px 6px">${opts}</select>
+    </div>`;
+  }).join('');
+}
+
+function _readSchedule() {
+  const out = {};
+  SCHEDULE_SOURCES.forEach(src => {
+    const el = $('sched-' + src);
+    if (el) out[src] = parseInt(el.value, 10) || 0;
+  });
+  return out;
+}
+
 async function loadSettings() {
   try {
     const s = await api('/settings');
@@ -2631,6 +2673,7 @@ async function loadSettings() {
     $('noise-count').textContent = `${nc} keyword${nc !== 1 ? 's' : ''}`;
     $('noise-clear-btn').style.display = nc > 0 ? '' : 'none';
     updateSectionDots(s.warnings || []);
+    _renderScheduleFields(s.scan_schedule || {});
     loadSlackWorkspaces();
     loadTeamsAccounts();
   } catch(e) { console.warn('loadSettings:', e); }
@@ -3141,7 +3184,8 @@ async function clearDb() {
 async function saveSettings() {
   const body = {};
   SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el && (!SECRET_FIELDS.has(f) || el.value)) body[f] = el.value; });
-  body.projects = readProjects();
+  body.projects       = readProjects();
+  body.scan_schedule  = _readSchedule();
   const msg = $('settings-msg');
   try {
     const r = await api('/settings', 'POST', body);

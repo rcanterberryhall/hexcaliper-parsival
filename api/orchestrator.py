@@ -538,3 +538,101 @@ def process_ingest_items(raw: list[RawItem]) -> None:
             print(f"[ingest] {item.item_id}: {e}")
         with db.lock:
             _scan_state["ingest_pending"] = max(0, _scan_state["ingest_pending"] - 1)
+
+
+# ── Auto-scan scheduler ────────────────────────────────────────────────────────
+# Manages per-source repeating timers.  Each enabled source fires run_scan()
+# on its own interval, skipping if a scan is already in progress.
+
+import logging as _logging
+_sched_log = _logging.getLogger("parsival.scheduler")
+
+# {source: {"interval_min": int, "next_run": float|None, "last_run": float|None, "timer": Timer|None}}
+_schedule: dict = {}
+_schedule_lock = threading.Lock()
+
+SCHEDULABLE_SOURCES = list(CONNECTORS.keys())   # ["slack","github","jira","outlook","teams"]
+
+
+def _fire_auto_scan(source: str) -> None:
+    """Execute one auto-scan for source, then re-arm the timer."""
+    with _schedule_lock:
+        entry = _schedule.get(source)
+        if not entry or entry["interval_min"] <= 0:
+            return
+
+    if _scan_state.get("running"):
+        _sched_log.info("auto-scan %s: skipped — scan already running", source)
+    else:
+        _sched_log.info("auto-scan %s: starting", source)
+        try:
+            run_scan([source])
+        except Exception as exc:
+            _sched_log.error("auto-scan %s: error — %s", source, exc)
+
+    with _schedule_lock:
+        entry = _schedule.get(source)
+        if not entry or entry["interval_min"] <= 0:
+            return
+        entry["last_run"] = time.time()
+        interval_sec = entry["interval_min"] * 60
+        entry["next_run"] = time.time() + interval_sec
+        t = threading.Timer(interval_sec, _fire_auto_scan, args=(source,))
+        t.daemon = True
+        t.start()
+        entry["timer"] = t
+
+
+def scheduler_update(schedule_dict: dict) -> None:
+    """
+    Apply a new scan schedule.
+
+    ``schedule_dict`` maps source names to interval minutes (0 = disabled).
+    Existing timers are cancelled; new ones are armed for non-zero intervals.
+
+    Example: ``{"slack": 30, "github": 60, "jira": 0, "outlook": 0, "teams": 0}``
+    """
+    with _schedule_lock:
+        # Cancel all existing timers.
+        for entry in _schedule.values():
+            t = entry.get("timer")
+            if t:
+                t.cancel()
+        _schedule.clear()
+
+    for source, interval_min in schedule_dict.items():
+        if source not in SCHEDULABLE_SOURCES:
+            continue
+        interval_min = int(interval_min or 0)
+        with _schedule_lock:
+            _schedule[source] = {
+                "interval_min": interval_min,
+                "next_run":     None,
+                "last_run":     None,
+                "timer":        None,
+            }
+        if interval_min > 0:
+            interval_sec = interval_min * 60
+            with _schedule_lock:
+                _schedule[source]["next_run"] = time.time() + interval_sec
+            t = threading.Timer(interval_sec, _fire_auto_scan, args=(source,))
+            t.daemon = True
+            t.start()
+            with _schedule_lock:
+                _schedule[source]["timer"] = t
+            _sched_log.info("auto-scan %s: armed every %d min", source, interval_min)
+
+
+def get_schedule_status() -> dict:
+    """Return per-source schedule status for GET /scan/status."""
+    with _schedule_lock:
+        result = {}
+        for source, entry in _schedule.items():
+            next_run = entry.get("next_run")
+            last_run = entry.get("last_run")
+            result[source] = {
+                "interval_min": entry["interval_min"],
+                "next_run":     datetime.fromtimestamp(next_run, tz=timezone.utc).isoformat() if next_run else None,
+                "last_run":     datetime.fromtimestamp(last_run, tz=timezone.utc).isoformat() if last_run else None,
+            }
+        return result

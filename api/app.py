@@ -38,9 +38,12 @@ Module-level singletons:
     ``_seed_job``      — Single-slot state dict for the seed background job.
 """
 import json
+import logging
 import secrets
 import time
 import threading
+
+_req_log = logging.getLogger("parsival.requests")
 import psutil as _psutil
 _psutil.cpu_percent()  # prime interval counter so first real call is accurate
 from datetime import datetime, timezone
@@ -70,6 +73,25 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
+
+@app.middleware("http")
+async def request_logging(request: Request, call_next):
+    """Log every HTTP request with method, path, status, duration, and user."""
+    start = time.monotonic()
+    response = await call_next(request)
+    ms = int((time.monotonic() - start) * 1000)
+    user = request.headers.get("CF-Access-Authenticated-User-Email", "anonymous")
+    status = response.status_code
+    msg = "%s %s %d %dms [%s]", request.method, request.url.path, status, ms, user
+    if status >= 500:
+        _req_log.error(*msg)
+    elif status >= 400:
+        _req_log.warning(*msg)
+    else:
+        _req_log.info(*msg)
+    return response
+
+
 # Initialise the SQLite connection and schema on startup
 db.conn()
 
@@ -83,6 +105,11 @@ _pending_on_startup = db.get_items_with_pending_batch()
 if _pending_on_startup:
     print(f"[startup] {len(_pending_on_startup)} item(s) have pending batch jobs — resuming poll thread")
     orchestrator._ensure_batch_poll_thread()
+
+# Arm auto-scan timers from saved settings
+_startup_schedule = (_saved_settings or {}).get("scan_schedule", {})
+if _startup_schedule:
+    orchestrator.scheduler_update(_startup_schedule)
 
 
 # ── Compatibility shims (TinyDB-like API over SQLite for tests) ────────────────
@@ -1089,6 +1116,7 @@ def get_settings():
         "focus_topics":         ", ".join(config.FOCUS_TOPICS),
         "projects":             config.PROJECTS,
         "noise_keywords":       config.NOISE_KEYWORDS,
+        "scan_schedule":        (db.get_settings() or {}).get("scan_schedule", {}),
         "warnings":             config.validate(),
     }
 
@@ -1133,6 +1161,8 @@ def save_settings(body: dict):
             situation_manager._sync_situation_tags_all()
 
     config.apply_overrides(existing)
+    if "scan_schedule" in body:
+        orchestrator.scheduler_update(body["scan_schedule"])
     return {"ok": True, "warnings": config.validate()}
 
 
@@ -1218,10 +1248,10 @@ def scan_status():
     """
     Return the current scan/ingest/reanalyze progress state.
 
-    :return: Current ``scan_state`` dict.
+    :return: Current ``scan_state`` dict plus ``auto_scans`` schedule status.
     :rtype: dict
     """
-    return scan_state
+    return {**scan_state, "auto_scans": orchestrator.get_schedule_status()}
 
 
 @app.post("/scan/cancel")
