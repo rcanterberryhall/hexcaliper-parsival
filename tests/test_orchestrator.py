@@ -6,6 +6,7 @@ codes and conflict detection; these tests assert on what gets persisted.
 """
 from unittest.mock import patch, MagicMock
 
+import db
 import orchestrator
 from app import (
     analyses,
@@ -164,7 +165,8 @@ def test_run_scan_sets_running_false_after_completion():
 
 # ── _run_reanalyze ────────────────────────────────────────────────────────────
 
-def _insert_minimal(item_id, source="jira", priority=None, is_passdown=False,
+def _insert_minimal(item_id, source="jira", priority=None, category=None,
+                    is_passdown=False,
                     timestamp="2026-03-17T10:00:00+00:00"):
     """Insert a bare-minimum analysis record for reanalysis tests."""
     analyses.insert({
@@ -176,7 +178,7 @@ def _insert_minimal(item_id, source="jira", priority=None, is_passdown=False,
         "url":         "",
         "body_preview": f"body of {item_id}",
         "priority":    priority,
-        "category":    None,
+        "category":    category,
         "has_action":  False,
         "is_passdown": is_passdown,
         "project_tag": None,
@@ -206,15 +208,33 @@ def test_run_reanalyze_reprocesses_stored_items():
 
 
 def test_run_reanalyze_preserves_user_edited_fields():
-    """An existing priority value (simulating a manual override) must survive
-    reanalysis even when the LLM returns a different priority."""
+    """A field explicitly marked as user-edited must survive reanalysis even
+    when the LLM returns a different value.  Non-edited fields should update."""
+    import json as _json
     _insert_minimal("u1", priority="high")
+    # Mark priority as user-edited so it persists through reanalysis
+    with db.lock:
+        db.update_item("u1", {"user_edited_fields": _json.dumps(["priority"])})
 
     with patch("orchestrator.analyze", return_value=_analysis("u1", priority="low")), \
          patch("situation_manager._spawn_situation_task"):
         _run_reanalyze()
 
     assert analyses.get(Q.item_id == "u1")["priority"] == "high"
+
+
+def test_run_reanalyze_updates_non_edited_fields():
+    """Fields NOT marked as user-edited should be updated by reanalysis
+    so fresh LLM output (with project awareness) takes effect."""
+    _insert_minimal("u2", priority="low", category="fyi")
+
+    with patch("orchestrator.analyze", return_value=_analysis("u2", priority="high", category="task")), \
+         patch("situation_manager._spawn_situation_task"):
+        _run_reanalyze()
+
+    result = analyses.get(Q.item_id == "u2")
+    assert result["priority"] == "high"
+    assert result["category"] == "task"
 
 
 def test_run_reanalyze_deletes_stale_todos_before_reinserting():

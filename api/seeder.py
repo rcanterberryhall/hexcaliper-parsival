@@ -391,8 +391,17 @@ def apply(body: dict, background_tasks) -> dict:
         """
         Background task run after apply() to warm the embedding and
         situation layers from the existing corpus.
+
+        Waits for reanalysis to complete first so embeddings and
+        situations are built from fully updated item data (with correct
+        project tags, categories, and priorities from the LLM).
         """
-        print("[seed] starting embedding sweep...")
+        import time as _time
+        # Give the reanalysis thread a moment to start and set running=True
+        _time.sleep(3)
+        while _scan_state.get("running"):
+            _time.sleep(3)
+        print("[seed] reanalysis complete — starting embedding sweep...")
         try:
             from embedder import embed, update_project
             with db.lock:

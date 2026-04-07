@@ -551,19 +551,30 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
             db.delete_todos_for_item(a.item_id)
             db.delete_intel_for_item(a.item_id)
 
-        # Preserve user-edited fields so manual overrides survive re-scans.
-        # Use `or` (not .get default) so a stored None falls through to the
-        # LLM's freshly assigned value — items with no tag can get tagged.
-        if existing:
+        # Preserve fields the user has explicitly edited; let the LLM
+        # reclassify everything else.  On incremental scans (reanalyze=False)
+        # all existing non-null values are kept for backward compat.  On
+        # reanalysis the LLM's fresh output wins EXCEPT for fields the user
+        # manually changed via the UI (tracked in user_edited_fields).
+        user_edited = set(
+            json.loads(existing.get("user_edited_fields") or "[]")
+        ) if existing else set()
+
+        if existing and not reanalyze:
+            # Incremental scan — preserve all existing non-null values
             priority    = existing.get("priority")    or a.priority
             category    = existing.get("category")    or a.category
             project_tag = existing.get("project_tag") or a.project_tag
             is_passdown = existing.get("is_passdown") or a.is_passdown
         else:
-            priority    = a.priority
-            category    = a.category
-            project_tag = a.project_tag
-            is_passdown = a.is_passdown
+            # Reanalysis or first save — use fresh LLM values, but honour
+            # any field the user has explicitly overridden.
+            priority    = existing.get("priority")    if "priority"    in user_edited else a.priority
+            category    = existing.get("category")    if "category"    in user_edited else a.category
+            project_tag = existing.get("project_tag") if "project_tag" in user_edited else (
+                              existing.get("project_tag") or a.project_tag if existing else a.project_tag
+                          )
+            is_passdown = existing.get("is_passdown") if "is_passdown" in user_edited else a.is_passdown
 
         # Extract cross-source references
         refs = _correlator.extract_references(a.title, a.body_preview or "")
@@ -880,10 +891,16 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
         updates["is_passdown"] = 1 if body["is_passdown"] else 0
     if not updates:
         raise HTTPException(status_code=400, detail="No valid fields to update.")
+    # Track which classification fields the user has manually edited so
+    # reanalysis preserves them instead of overwriting with LLM output.
+    _editable_fields = {"priority", "category", "project_tag", "is_passdown"}
     with db.lock:
         old_record = db.get_item(item_id)
         if not old_record:
             raise HTTPException(status_code=404, detail="Item not found")
+        edited = set(json.loads(old_record.get("user_edited_fields") or "[]"))
+        edited |= _editable_fields & updates.keys()
+        updates["user_edited_fields"] = json.dumps(sorted(edited))
         db.update_item(item_id, updates)
         if updates.get("category") == "noise":
             db.delete_todos_for_item(item_id)
@@ -977,7 +994,12 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
 
     # Update the stored analysis and any associated intel rows immediately
     with db.lock:
-        db.update_item(item_id, {"project_tag": project_name})
+        edited = set(json.loads(record.get("user_edited_fields") or "[]"))
+        edited.add("project_tag")
+        db.update_item(item_id, {
+            "project_tag": project_name,
+            "user_edited_fields": json.dumps(sorted(edited)),
+        })
         db.update_intel_project(item_id, project_name)
     situation_manager._sync_situation_tags_for_item(item_id)
 

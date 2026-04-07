@@ -75,6 +75,8 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     cols = {row[1] for row in c.execute("PRAGMA table_info(items)").fetchall()}
     if "batch_job_id" not in cols:
         c.execute("ALTER TABLE items ADD COLUMN batch_job_id TEXT")
+    if "user_edited_fields" not in cols:
+        c.execute("ALTER TABLE items ADD COLUMN user_edited_fields TEXT NOT NULL DEFAULT '[]'")
 
     sit_cols = {row[1] for row in c.execute("PRAGMA table_info(situations)").fetchall()}
     if "lifecycle_status" not in sit_cols:
