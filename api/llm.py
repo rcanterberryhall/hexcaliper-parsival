@@ -9,15 +9,53 @@ Routes analysis prompts to the configured provider:
 
 All callers use ``generate()`` which returns the raw response text.
 The caller is responsible for JSON parsing.
+
+Ollama calls use ``stream=True`` so that merLLM can display live token
+activity in its GPU status cards.  Qwen3 ``<think>`` blocks are stripped
+automatically so callers always receive the final answer text only.
 """
 import json
 import logging
+import re
 
 import requests
 
 import config
 
 log = logging.getLogger(__name__)
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _strip_think(text: str) -> str:
+    """Remove Qwen3 ``<think>…</think>`` reasoning blocks from LLM output."""
+    return _THINK_RE.sub("", text).strip()
+
+
+def _collect_stream(resp: requests.Response) -> str:
+    """Read an Ollama NDJSON stream and return the concatenated response text.
+
+    Strips Qwen3 thinking tags so callers always get the final answer only.
+    """
+    parts: list[str] = []
+    think_parts: list[str] = []
+    for line in resp.iter_lines():
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        token = obj.get("response", "")
+        if token:
+            parts.append(token)
+        think_token = obj.get("thinking", "")
+        if think_token:
+            think_parts.append(think_token)
+    text = "".join(parts)
+    if not text.strip() and think_parts:
+        text = "".join(think_parts)
+    return _strip_think(text)
 
 
 def generate(
@@ -64,32 +102,33 @@ def _ollama_local(
     prompt: str, *, format: str | None, temperature: float,
     num_predict: int, num_ctx: int, timeout: int,
 ) -> str:
-    """Call Ollama via the local merLLM proxy."""
+    """Call Ollama via the local merLLM proxy (streaming)."""
     body: dict = {
         "model":   config.effective_model(),
         "prompt":  prompt,
-        "stream":  False,
+        "stream":  True,
         "options": {"temperature": temperature, "num_predict": num_predict,
-                    "num_ctx": num_ctx},
+                    "num_ctx": num_ctx, "think": False},
     }
     if format:
         body["format"] = format
 
-    r = requests.post(
+    resp = requests.post(
         config.OLLAMA_URL,
         headers=config.ollama_headers(),
         json=body,
         timeout=timeout,
+        stream=True,
     )
-    r.raise_for_status()
-    return r.json().get("response", "")
+    resp.raise_for_status()
+    return _collect_stream(resp)
 
 
 def _ollama_cloud(
     prompt: str, *, format: str | None, temperature: float,
     num_predict: int, num_ctx: int, timeout: int,
 ) -> str:
-    """Call Ollama paid cloud API."""
+    """Call Ollama paid cloud API (streaming)."""
     url = config.ESCALATION_API_URL or config.OLLAMA_URL
     headers = {"Content-Type": "application/json"}
     if config.ESCALATION_API_KEY:
@@ -98,21 +137,22 @@ def _ollama_cloud(
     body: dict = {
         "model":   config.effective_model(),
         "prompt":  prompt,
-        "stream":  False,
+        "stream":  True,
         "options": {"temperature": temperature, "num_predict": num_predict,
-                    "num_ctx": num_ctx},
+                    "num_ctx": num_ctx, "think": False},
     }
     if format:
         body["format"] = format
 
-    r = requests.post(
+    resp = requests.post(
         url if "/api/" in url else f"{url.rstrip('/')}/api/generate",
         headers=headers,
         json=body,
         timeout=timeout,
+        stream=True,
     )
-    r.raise_for_status()
-    return r.json().get("response", "")
+    resp.raise_for_status()
+    return _collect_stream(resp)
 
 
 def _claude(

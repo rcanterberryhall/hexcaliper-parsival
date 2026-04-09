@@ -7,8 +7,15 @@ import llm
 
 
 def _mock_ollama_response(text: str) -> MagicMock:
+    """Return a mock that behaves like a streaming requests.Response.
+
+    Produces one NDJSON token line per character followed by a done line,
+    matching the Ollama streaming format that llm._collect_stream expects.
+    """
+    lines = [json.dumps({"response": text, "done": False}).encode()]
+    lines.append(json.dumps({"response": "", "done": True}).encode())
     m = MagicMock()
-    m.json.return_value = {"response": text}
+    m.iter_lines.return_value = iter(lines)
     m.raise_for_status.return_value = None
     return m
 
@@ -39,7 +46,7 @@ class TestOllamaLocal:
         body = call_args[1]["json"]
         assert body["model"] == "qwen3:30b-a3b"
         assert body["prompt"] == "test prompt"
-        assert body["stream"] is False
+        assert body["stream"] is True
 
     def test_uses_escalation_model_override(self, monkeypatch):
         monkeypatch.setattr(config, "ESCALATION_PROVIDER", "ollama")

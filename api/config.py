@@ -201,7 +201,7 @@ def apply_overrides(d: dict) -> None:
         "escalation_api_url":   "ESCALATION_API_URL",
     }
     for key, var in str_fields.items():
-        if key in d and d[key] is not None:
+        if key in d and d[key] not in (None, ""):
             setattr(mod, var, str(d[key]))
     if "slack_user_tokens" in d and isinstance(d["slack_user_tokens"], list):
         import crypto as _crypto  # local import to avoid circular dependency
@@ -239,7 +239,7 @@ def apply_overrides(d: dict) -> None:
         setattr(mod, "FYI_KEYWORDS", d["fyi_keywords"])
     if "assignment_corrections" in d and isinstance(d["assignment_corrections"], list):
         setattr(mod, "ASSIGNMENT_CORRECTIONS", d["assignment_corrections"])
-    if "lookback_hours" in d and d["lookback_hours"] is not None:
+    if "lookback_hours" in d and d["lookback_hours"] not in (None, ""):
         setattr(mod, "LOOKBACK_HOURS", int(d["lookback_hours"]))
 
 
