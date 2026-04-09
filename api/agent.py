@@ -294,7 +294,8 @@ def _fyi_ctx() -> str:
     return ", ".join(config.FYI_KEYWORDS[:30]) if config.FYI_KEYWORDS else "none"
 
 
-BRIEFING_PROMPT = """You are a personal ops assistant for {user_name}.
+BRIEFING_PROMPT = """/no_think
+You are a personal ops assistant for {user_name}.
 Write a 2-3 sentence status briefing for the project "{project_name}".
 
 Recent intel and status updates:
@@ -306,7 +307,7 @@ Active situations:
 Open action items:
 {action_items}
 
-Write a concise paragraph that tells {user_name} where this project stands right now, what is actively in progress, and what needs attention. Be specific — reference concrete items. Do not use filler phrases like "it is important to note" or "in summary". Return plain text only, no markdown.
+Write a concise paragraph that tells {user_name} where this project stands right now, what is actively in progress, and what needs attention. Be specific — reference concrete items. Do not use filler phrases like "it is important to note" or "in summary". Do NOT include any reasoning, thinking, or planning — output ONLY the final briefing paragraph. Return plain text only, no markdown.
 """
 
 
@@ -338,7 +339,7 @@ def generate_project_briefing(
                 situations   = _fmt(situations,    5),
                 action_items = _fmt(action_items,  8),
             ),
-            format=None, temperature=0.3, num_predict=256, timeout=60,
+            format=None, temperature=0.3, num_predict=512, timeout=60,
         )
         return text.strip()
     except Exception as e:

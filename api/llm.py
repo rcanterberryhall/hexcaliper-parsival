@@ -26,10 +26,36 @@ log = logging.getLogger(__name__)
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
+# Matches untagged chain-of-thought preambles that Qwen3 sometimes emits
+# when ``think: false`` is ignored.  Looks for one or more reasoning
+# paragraphs followed by a clear answer paragraph.
+_UNTAGGED_COT_RE = re.compile(
+    r"^(?:Okay|Alright|Let me|So,? |First|Hmm|Now|Looking|I need|I should|I'll|The user)"
+    r".*?(?:\n\n)",
+    re.DOTALL,
+)
+
 
 def _strip_think(text: str) -> str:
     """Remove Qwen3 ``<think>…</think>`` reasoning blocks from LLM output."""
     return _THINK_RE.sub("", text).strip()
+
+
+def _strip_untagged_think(text: str) -> str:
+    """Strip untagged chain-of-thought when the model ignores ``think: false``.
+
+    Qwen3 sometimes emits its reasoning as plain text (no ``<think>`` tags)
+    followed by the actual answer after a double-newline break.  This
+    function repeatedly removes leading CoT paragraphs until the text starts
+    with actual answer content.
+    """
+    stripped = text.strip()
+    while True:
+        m = _UNTAGGED_COT_RE.match(stripped)
+        if not m:
+            break
+        stripped = stripped[m.end():].strip()
+    return stripped if stripped else text.strip()
 
 
 def _collect_stream(resp: requests.Response) -> str:
@@ -87,19 +113,25 @@ def generate(
     provider = config.ESCALATION_PROVIDER or "ollama"
 
     if provider == "claude":
-        return _claude(prompt, temperature=temperature,
+        text = _claude(prompt, temperature=temperature,
                        max_tokens=num_predict, timeout=timeout,
                        json_mode=format == "json")
     elif provider == "ollama_cloud":
-        return _ollama_cloud(prompt, format=format,
+        text = _ollama_cloud(prompt, format=format,
                              temperature=temperature,
                              num_predict=num_predict,
                              num_ctx=num_ctx, timeout=timeout)
     else:
-        return _ollama_local(prompt, format=format,
+        text = _ollama_local(prompt, format=format,
                              temperature=temperature,
                              num_predict=num_predict,
                              num_ctx=num_ctx, timeout=timeout)
+
+    # For free-text (non-JSON) responses, strip untagged chain-of-thought
+    # that Qwen3 emits when it ignores the think:false option.
+    if format != "json":
+        text = _strip_untagged_think(text)
+    return text
 
 
 def _ollama_local(

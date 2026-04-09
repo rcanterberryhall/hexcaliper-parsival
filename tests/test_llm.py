@@ -190,6 +190,58 @@ class TestCollectStream:
         assert llm._collect_stream(resp) == '{"from":"response"}'
 
 
+class TestStripUntaggedThink:
+    """Tests for _strip_untagged_think — catches CoT not wrapped in tags."""
+
+    def test_strips_single_cot_paragraph(self):
+        text = (
+            "Okay, the user wants a briefing. I need to be concise.\n\n"
+            "RV 7 and RV 10 are missing shields."
+        )
+        assert llm._strip_untagged_think(text) == "RV 7 and RV 10 are missing shields."
+
+    def test_strips_multiple_cot_paragraphs(self):
+        text = (
+            "Okay, the user wants me to write a status briefing.\n\n"
+            "Looking at the intel provided, there are several items.\n\n"
+            "RV 7 and RV 10 are missing shields."
+        )
+        assert llm._strip_untagged_think(text) == "RV 7 and RV 10 are missing shields."
+
+    def test_preserves_clean_text(self):
+        text = "RV 7 and RV 10 are missing slew ring shields."
+        assert llm._strip_untagged_think(text) == text
+
+    def test_preserves_when_no_answer_follows(self):
+        text = "Okay, the user wants a briefing about shields."
+        assert llm._strip_untagged_think(text) == text
+
+    def test_various_cot_starters(self):
+        for starter in ["Let me ", "First, ", "I need to ", "I should ", "Now, "]:
+            text = f"{starter}analyze this carefully.\n\nThe answer is 42."
+            assert llm._strip_untagged_think(text) == "The answer is 42.", f"Failed for starter: {starter}"
+
+    def test_generate_strips_untagged_for_freetext(self, monkeypatch):
+        """generate() applies untagged-think stripping for format=None."""
+        monkeypatch.setattr(config, "ESCALATION_PROVIDER", "ollama")
+        monkeypatch.setattr(config, "ESCALATION_MODEL", "")
+        cot_response = (
+            "Okay, the user wants a briefing.\n\n"
+            "RV 7 needs shield inspection."
+        )
+        with patch("llm.requests.post", return_value=_mock_ollama_response(cot_response)):
+            result = llm.generate("test", format=None)
+        assert result == "RV 7 needs shield inspection."
+
+    def test_generate_skips_strip_for_json(self, monkeypatch):
+        """generate() does NOT strip for json format (would break JSON)."""
+        monkeypatch.setattr(config, "ESCALATION_PROVIDER", "ollama")
+        monkeypatch.setattr(config, "ESCALATION_MODEL", "")
+        with patch("llm.requests.post", return_value=_mock_ollama_response('{"ok":true}')):
+            result = llm.generate("test", format="json")
+        assert result == '{"ok":true}'
+
+
 class TestEffectiveModel:
     def test_returns_escalation_model_when_set(self, monkeypatch):
         monkeypatch.setattr(config, "ESCALATION_MODEL", "custom-model")
