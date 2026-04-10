@@ -520,6 +520,20 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 }
 .spinner.on { display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg) } }
+
+/* Initial-load placeholder shown inside each main view container until the
+   first real render replaces it. Sized to dominate the view so the user
+   sees deliberate loading state, not an empty panel. */
+.loading-placeholder {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 64px 24px; color: var(--muted);
+  font-family: var(--mono); font-size: 12px; letter-spacing: .02em;
+}
+.loading-placeholder .spinner-lg {
+  width: 22px; height: 22px; border: 2px solid var(--border2);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin .85s linear infinite;
+}
 ::-webkit-scrollbar       { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
@@ -920,10 +934,10 @@ tr.attn-low  { opacity:0.65; }
         <button class="detail-save" onclick="submitNewTodo()" style="padding:4px 12px">Add</button>
         <button class="ia" onclick="toggleAddAction()" style="padding:3px 8px;font-size:11px">Cancel</button>
       </div>
-      <div id="todo-view"></div>
-      <div id="intel-view"></div>
-      <div id="items-view"></div>
-      <div id="situations-view"></div>
+      <div id="todo-view"><div class="loading-placeholder"><div class="spinner-lg"></div><div>Loading action items…</div></div></div>
+      <div id="intel-view"><div class="loading-placeholder"><div class="spinner-lg"></div><div>Loading intel…</div></div></div>
+      <div id="items-view"><div class="loading-placeholder"><div class="spinner-lg"></div><div>Loading items…</div></div></div>
+      <div id="situations-view"><div class="loading-placeholder"><div class="spinner-lg"></div><div>Loading situations…</div></div></div>
       <div id="assigned-view" style="display:none"></div>
     </div>
   </div>
@@ -3890,11 +3904,31 @@ clearSearch();
 setTimeout(clearSearch, 500);
 window.addEventListener('pageshow', clearSearch);
 _updateToolbarForView(currentView);
-loadStats();
-loadTodos();
-loadIntel();
-loadItems();
-loadSituations();
+// Initial load — toggle the statusbar spinner and status message during the
+// parallel fetches so the bottom bar reflects activity to match the view
+// placeholders above. Each load function clears its own placeholder by
+// replacing innerHTML on first render.
+(function _initialLoad() {
+  const spin   = document.getElementById('spin');
+  const msgEl  = document.getElementById('statusMsg');
+  const prior  = msgEl ? msgEl.textContent : '';
+  if (spin) spin.classList.add('on');
+  if (msgEl) msgEl.textContent = 'Loading…';
+  Promise.allSettled([
+    loadStats(),
+    loadTodos(),
+    loadIntel(),
+    loadItems(),
+    loadSituations(),
+  ]).then(() => {
+    if (spin) spin.classList.remove('on');
+    // Only clear to "Ready" if nothing else (e.g. scan poller) has taken
+    // over the status message in the meantime.
+    if (msgEl && msgEl.textContent === 'Loading…') {
+      msgEl.textContent = prior && prior !== 'Loading…' ? prior : 'Ready';
+    }
+  });
+})();
 loadProjectList();
 
 // Handle OAuth redirect results
