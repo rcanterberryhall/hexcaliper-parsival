@@ -121,14 +121,14 @@ def _save_filtered_item(item: RawItem, matched_rule: str) -> None:
 
 # ── merLLM batch helpers ───────────────────────────────────────────────────────
 
-def _merllm_night_mode() -> bool:
-    """Return True if merLLM reports night mode active, False otherwise."""
+def _merllm_batch_available() -> bool:
+    """Return True if merLLM is reachable and can accept batch jobs."""
     try:
         r = http_requests.get(
             f"{config.MERLLM_URL}/api/merllm/status", timeout=5
         )
         r.raise_for_status()
-        return r.json().get("mode") == "night"
+        return True
     except Exception:
         return False
 
@@ -456,9 +456,9 @@ def run_reanalyze() -> None:
         _scan_state["total_items"] = len(all_records)
         _scan_state["message"]     = f"Re-analyzing {len(all_records)} items..."
 
-        use_batch = _merllm_night_mode()
+        use_batch = _merllm_batch_available()
         if use_batch:
-            log.info("reanalyze: night mode active — routing to merLLM batch API")
+            log.info("reanalyze: merLLM available — routing to batch API")
             _ensure_batch_poll_thread()
 
         results = []

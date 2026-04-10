@@ -114,8 +114,9 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
   width:7px; height:7px; border-radius:50%; background:var(--muted);
   flex-shrink:0; transition:background .3s;
 }
-.merllm-dot.day           { background:#3fb950; }
-.merllm-dot.night         { background:#a78bfa; }
+.merllm-dot.healthy       { background:#3fb950; }
+.merllm-dot.degraded      { background:#d29922; }
+.merllm-dot.faulted       { background:#f85149; }
 .merllm-dot.transitioning { background:#d29922; }
 .merllm-dot.unknown       { background:#555; }
 @media(max-width:768px) { .merllm-indicator { display:none; } }
@@ -997,7 +998,7 @@ tr.attn-low  { opacity:0.65; }
       <div class="section-head"><div class="sdot2" id="dot-ollama"></div>Ollama</div>
       <div class="field"><label>URL</label><input type="text" id="s-ollama_url" placeholder="https://ollama.hexcaliper.com/api/generate"></div>
       <div class="field-row">
-        <div class="field"><label>Model</label><input type="text" id="s-ollama_model" placeholder="llama3:8b"></div>
+        <div class="field"><label>Model</label><div style="display:flex;gap:6px;align-items:center"><input type="text" id="s-ollama_model" placeholder="llama3:8b" style="flex:1"><button class="btn" style="padding:4px 10px;font-size:11px;white-space:nowrap" onclick="useMerllmDefault()" title="Fetch default model from merLLM">merLLM default</button></div></div>
         <div class="field"><label>Lookback Hours</label><input type="number" id="s-lookback_hours" placeholder="48"></div>
       </div>
       <div class="field-row">
@@ -1265,7 +1266,7 @@ tr.attn-low  { opacity:0.65; }
 
     <div class="help-section">
       <h3>Night-mode batch processing</h3>
-      <p>When <strong>↺ Re-analyze</strong> is triggered and the connected merLLM instance reports night mode, re-analysis jobs are submitted to merLLM's batch queue instead of being sent to Ollama directly. This avoids competing with interactive use during off-hours. Results are applied automatically in the background — no action needed. The status message will read <em>Re-analysis queued — N items sent to batch</em> when this path is active.</p>
+      <p>When <strong>↺ Re-analyze</strong> is triggered and merLLM is reachable, re-analysis jobs are submitted to merLLM's batch queue at low priority. Interactive requests always take precedence. Results are applied automatically in the background — no action needed. The status message will read <em>Re-analysis queued — N items sent to batch</em> when this path is active.</p>
     </div>
 
     <div class="help-section">
@@ -2157,7 +2158,7 @@ function situationCard(s) {
   const sitActions = ls === 'dismissed'
     ? `<button class="restore-btn" onclick="event.stopPropagation();restoreSituation('${esc(s.situation_id)}')" title="Restore">↩ restore</button>`
     : `<button class="ia" onclick="event.stopPropagation();resynthSituation('${esc(s.situation_id)}')" title="Re-synthesize">↺</button>
-       <button class="ia deep-analysis-btn" id="da-btn-${esc(s.situation_id)}" onclick="event.stopPropagation();requestDeepAnalysis('${esc(s.situation_id)}')" title="Submit for extended-context deep analysis in merLLM night mode">⚗</button>`;
+       <button class="ia deep-analysis-btn" id="da-btn-${esc(s.situation_id)}" onclick="event.stopPropagation();requestDeepAnalysis('${esc(s.situation_id)}')" title="Submit for deep analysis via merLLM batch queue">⚗</button>`;
   return `
     <div class="situation-card ${sc}${ls==='dismissed'?' row-hidden':''}${overdue?' sit-overdue':''}" id="sit-${esc(s.situation_id)}">
       <div class="sit-header" onclick="toggleSituationEvidence('${esc(s.situation_id)}')">
@@ -2262,7 +2263,7 @@ async function requestDeepAnalysis(sitId) {
   try {
     const { job_id } = await api(`/situations/${encodeURIComponent(sitId)}/deep-analysis`, 'POST');
     if (btn) btn.title = 'Deep analysis queued';
-    $('statusMsg').textContent = 'Deep analysis queued — will complete in night mode.';
+    $('statusMsg').textContent = 'Deep analysis queued — will run when a GPU slot is available.';
     _pollSituationDeepAnalysis(job_id, sitId, btn);
   } catch(e) {
     if (btn) { btn.disabled = false; btn.textContent = '⚗'; btn.title = 'Request deep analysis'; }
@@ -2933,6 +2934,19 @@ async function loadSettings() {
     loadSlackWorkspaces();
     loadTeamsAccounts();
   } catch(e) { console.warn('loadSettings:', e); }
+}
+
+async function useMerllmDefault() {
+  try {
+    const d = await api('/merllm/default-model');
+    if (d.model) {
+      $('s-ollama_model').value = d.model;
+    } else {
+      alert('Could not fetch default model from merLLM.');
+    }
+  } catch (e) {
+    alert('merLLM unreachable: ' + e.message);
+  }
 }
 
 function _renderNoiseFilters(rules) {
@@ -3624,7 +3638,7 @@ async function pollGpu() {
       return;
     }
     delete container.dataset.noGpu;
-    // Rebuild meter elements if GPU count changed (e.g. daytime→overnight mode swap)
+    // Rebuild meter elements if GPU count changed
     if (container.children.length !== d.gpus.length) {
       container.innerHTML = '';
       const multi = d.gpus.length > 1;
@@ -3688,14 +3702,17 @@ async function pollMerllm() {
   const label = $('merllm-label');
   if (!dot || !label) return;
   try {
-    const r = await fetch('/merllm/status');
+    const r = await fetch(API + '/merllm/status');
     if (!r.ok) throw new Error(r.status);
     const d = await r.json();
-    const mode = d.mode || 'unknown';
-    dot.className = 'merllm-dot ' + mode;
+    const gpus = d.gpus || {};
+    const allHealthy = Object.values(gpus).every(g => g.health === 'healthy');
+    const anyFaulted = Object.values(gpus).some(g => g.health === 'faulted');
+    const health = allHealthy ? 'healthy' : anyFaulted ? 'faulted' : 'degraded';
+    dot.className = 'merllm-dot ' + health;
     const queue = d.queue?.total ?? 0;
     label.textContent = 'merLLM' + (queue > 0 ? ` (${queue})` : '');
-    dot.title = `Mode: ${mode}` + (d.warnings?.length ? '\n⚠ ' + d.warnings.join('\n⚠ ') : '');
+    dot.title = `Routing: ${d.routing || 'round_robin'}` + (d.warnings?.length ? '\n⚠ ' + d.warnings.join('\n⚠ ') : '');
     dot.style.boxShadow = d.warnings?.length ? '0 0 0 2px rgba(210,153,34,.4)' : '';
   } catch (_) {
     dot.className = 'merllm-dot unknown';
