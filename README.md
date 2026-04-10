@@ -81,7 +81,7 @@ All credentials can be set in `docker-compose.yml` under the `page-api` environm
 | `CF_CLIENT_ID`     | Cloudflare Access service token ID                                               |
 | `CF_CLIENT_SECRET` | Cloudflare Access service token secret                                           |
 | `OLLAMA_URL`       | Ollama API endpoint (default: `http://host.docker.internal:11400/api/generate`)  |
-| `OLLAMA_MODEL`     | Model for extraction (default: `qwen3:30b-a3b`)                                 |
+| `OLLAMA_MODEL`     | Model for extraction (default: `qwen3:32b`)                                     |
 | `MERLLM_URL`       | merLLM base URL for batch jobs (default: `http://host.docker.internal:11400`)    |
 | `LOOKBACK_HOURS`   | Hours of history per scan (default: `48`)                                        |
 | `CREDENTIALS_KEY`  | Passphrase for Fernet encryption of OAuth tokens at rest. Leave unset for plaintext (backward compatible). Changing this key after tokens are stored makes them unreadable. |

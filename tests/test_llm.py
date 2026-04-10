@@ -34,7 +34,7 @@ class TestOllamaLocal:
     def test_calls_ollama_url(self, monkeypatch):
         monkeypatch.setattr(config, "ESCALATION_PROVIDER", "ollama")
         monkeypatch.setattr(config, "OLLAMA_URL", "http://localhost:11400/api/generate")
-        monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3:30b-a3b")
+        monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3:32b")
         monkeypatch.setattr(config, "ESCALATION_MODEL", "")
 
         with patch("llm.requests.post", return_value=_mock_ollama_response("hello")) as mock:
@@ -44,13 +44,13 @@ class TestOllamaLocal:
         call_args = mock.call_args
         assert call_args[0][0] == "http://localhost:11400/api/generate"
         body = call_args[1]["json"]
-        assert body["model"] == "qwen3:30b-a3b"
+        assert body["model"] == "qwen3:32b"
         assert body["prompt"] == "test prompt"
         assert body["stream"] is True
 
     def test_uses_escalation_model_override(self, monkeypatch):
         monkeypatch.setattr(config, "ESCALATION_PROVIDER", "ollama")
-        monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3:30b-a3b")
+        monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3:32b")
         monkeypatch.setattr(config, "ESCALATION_MODEL", "llama3:70b")
 
         with patch("llm.requests.post", return_value=_mock_ollama_response("ok")) as mock:
@@ -86,7 +86,7 @@ class TestOllamaCloud:
         monkeypatch.setattr(config, "ESCALATION_API_URL", "https://cloud.ollama.com")
         monkeypatch.setattr(config, "ESCALATION_API_KEY", "key-123")
         monkeypatch.setattr(config, "ESCALATION_MODEL", "llama3:70b")
-        monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3:30b-a3b")
+        monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3:32b")
 
         with patch("llm.requests.post", return_value=_mock_ollama_response("ok")) as mock:
             result = llm.generate("test")
@@ -104,7 +104,7 @@ class TestClaude:
         monkeypatch.setattr(config, "ESCALATION_API_KEY", "sk-ant-test")
         monkeypatch.setattr(config, "ESCALATION_API_URL", "")
         monkeypatch.setattr(config, "ESCALATION_MODEL", "claude-sonnet-4-20250514")
-        monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3:30b-a3b")
+        monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3:32b")
 
         with patch("llm.requests.post", return_value=_mock_claude_response('{"result":"ok"}')) as mock:
             result = llm.generate("analyze this", format="json")
@@ -250,5 +250,5 @@ class TestEffectiveModel:
 
     def test_falls_back_to_ollama_model(self, monkeypatch):
         monkeypatch.setattr(config, "ESCALATION_MODEL", "")
-        monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3:30b-a3b")
-        assert config.effective_model() == "qwen3:30b-a3b"
+        monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3:32b")
+        assert config.effective_model() == "qwen3:32b"
