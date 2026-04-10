@@ -183,6 +183,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 }
 .vtab:hover  { color: var(--text); }
 .vtab.active { background: var(--border2); color: var(--accent); border-color: var(--accent); }
+.vtab-badge  {
+  display: none; margin-left: 6px; padding: 1px 5px; border-radius: 8px;
+  background: rgba(64,184,255,.18); color: var(--blue); font-size: 9px;
+  font-weight: 600; vertical-align: middle;
+}
+.vtab-badge.on { display: inline-block; }
 .show-done { display: flex; align-items: center; gap: 5px; cursor: pointer; font-size: 11px; color: var(--muted); }
 .show-done input { accent-color: var(--accent); }
 .row-hidden { opacity: 0.45; }
@@ -876,7 +882,7 @@ tr.attn-low  { opacity:0.65; }
           <button class="vtab"        onclick="setView('intel',this)">Current State</button>
           <button class="vtab"        onclick="setView('items',this)">All Items</button>
           <button class="vtab"        onclick="setView('situations',this)">Situations</button>
-          <button class="vtab"        onclick="setView('assigned',this)">Assigned</button>
+          <button class="vtab"        onclick="setView('assigned',this)">Assigned<span id="assigned-badge" class="vtab-badge">0</span></button>
         </div>
         <div class="toolbar-filters">
           <input type="search" class="search-input" id="searchInput" placeholder="Search…" oninput="onSearch(this.value)" autocomplete="off">
@@ -1600,7 +1606,18 @@ async function loadTodos() {
     const visible = _filterTodos(allTodos);
     renderTodos(visible);
     updateCounts(visible);
+    // Badge count reflects ALL open delegated tasks, not the current filter.
+    refreshAssignedBadge();
   } catch (e) { console.warn('todos:', e); }
+}
+
+async function refreshAssignedBadge() {
+  try {
+    const todos = await api('/todos?done=false');
+    updateAssignedBadge(
+      todos.filter(t => t.status === 'assigned' && t.assigned_to && !t.done).length
+    );
+  } catch (e) { /* silent — badge is a secondary indicator */ }
 }
 
 function updateCounts(todos) {
@@ -2025,8 +2042,17 @@ function onDateFilter(val) {
 async function loadAssigned() {
   try {
     const todos = await api('/todos');
-    renderAssigned(todos.filter(t => t.status === 'assigned' && t.assigned_to));
+    const open  = todos.filter(t => t.status === 'assigned' && t.assigned_to && !t.done);
+    renderAssigned(open);
+    updateAssignedBadge(open.length);
   } catch(e) { console.warn('assigned:', e); }
+}
+
+function updateAssignedBadge(n) {
+  const el = $('assigned-badge');
+  if (!el) return;
+  el.textContent = n;
+  el.classList.toggle('on', n > 0);
 }
 
 function renderAssigned(todos) {

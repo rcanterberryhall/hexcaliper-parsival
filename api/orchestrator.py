@@ -207,6 +207,7 @@ def _poll_batch_jobs() -> None:
                     from agent import (
                         _detect_passdown, _validated_project_tag,
                         _detect_quarantine_noise,
+                        compute_recipient_scope, postprocess_action_items,
                     )
                     from models import Analysis, ActionItem
                     parsed = _json.loads(response_text)
@@ -219,6 +220,17 @@ def _poll_batch_jobs() -> None:
                         for a in parsed.get("action_items", [])
                         if a.get("description")
                     ]
+                    # Recipient-scope safety net — matches analyze()'s behaviour
+                    # so batch and sync paths stay consistent.
+                    _scope_info = compute_recipient_scope(
+                        config.USER_EMAIL or "",
+                        rec.get("to_field", ""),
+                        rec.get("cc_field", ""),
+                    )
+                    action_items = postprocess_action_items(
+                        action_items, _scope_info, rec.get("body_preview", ""),
+                        config.USER_NAME or "", config.USER_EMAIL or "",
+                    )
                     category = parsed.get("category", "fyi")
                     if category in ("fyi", "noise"):
                         action_items = []

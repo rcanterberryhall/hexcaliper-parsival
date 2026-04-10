@@ -62,7 +62,7 @@ User context:
 - Approval indicators: {approval_ctx} — keywords from items previously confirmed as approval events affecting {user_name}
 - FYI indicators: {fyi_ctx} — keywords from items previously confirmed as informational only for {user_name}
 - Noise/irrelevant topics: {noise_ctx} — if content is primarily about these with no direct relevance to {user_name}, set category="noise", priority="low", has_action=false
-{sender_hint}{replied_hint}{manual_tag_hint}{graph_hint}{embedding_hint}
+{sender_hint}{replied_hint}{manual_tag_hint}{graph_hint}{embedding_hint}{recipient_scope_hint}
 Analyze this item and extract structured information.
 
 Source: {source}
@@ -109,11 +109,12 @@ Respond ONLY with valid JSON. No explanation, no markdown fences.
 }}
 
 Email recipient rules (apply when To/CC fields are populated):
-- {user_name} or {user_email} appears in To → hierarchy=user, direct recipient, bias toward action
-- {user_name} or {user_email} appears in CC only:
-  * AND body contains @mention of {user_name}/{user_email} or a direct question/request → hierarchy=user, action possible
-  * Otherwise → lower priority; hierarchy based on content; category=fyi unless action is explicit
-- Neither To nor CC populated, or user absent from both → likely passdown/broadcast; apply passdown rules
+- Use the "Recipient scope" hint above (if present) as the primary signal for how broadly this message is addressed.
+- direct (1:1 to {user_name}): hierarchy=user; directives in the body are strongly biased toward action for {user_name}.
+- small group (2–4 visible recipients): directives may be for {user_name} or another named recipient — apply the action item rules to decide.
+- group (5–10) or broadcast (11+ or distribution list): do NOT default to "for {user_name}" just because {user_name} is in To or CC. A directive is only for {user_name} when explicitly named, @mentioned, or asked a direct question. Still capture directives aimed at OTHER named people as action_items with owner=<that person>.
+- {user_name} is in CC only: presence in CC means awareness, not ownership. Lower priority unless the body contains an explicit @mention or direct question to {user_name}.
+- {user_name} absent from visible To and CC → received via distribution list or BCC; treat as broadcast.
 
 Hierarchy — assign the HIGHEST matching tier:
 - user: directly addresses {user_name} by name/email; assigned to them; DM to them; uses their @mention
@@ -148,22 +149,23 @@ Priority rules:
 - low: passdown context, backlog, no deadline pressure
 
 Action item rules:
-- Determine owner from context using these signals in priority order:
-  1. Direct address in the body: "John, can you..." or "John, please handle..." → owner is that person, regardless of To/CC position
-  2. The email is To a specific person (not {user_name}) and contains a directive → owner is the To recipient
-  3. The action is explicitly assigned to {user_name} by name, email, or direct question → owner="me"
-  4. No clear assignee → owner="me" only if {user_name} is in To; otherwise omit the action item or set owner to the most likely person
-- Use the person's full name as it appears in the To/CC header (e.g. "John Johnson"), not a first-name guess
-- Do not default to owner="me" just because {user_name} is CC'd — being CC'd means awareness, not ownership
-- Past-tense reports of completed work (e.g. "we installed X", "the issue was resolved") are NOT action items — put them in information_items instead
-- Jira issues: has_action=true unless status is Done/Closed
-- GitHub PR review requests: has_action=true, category=review
-- Slack DMs: bias toward has_action=true
+- Tracking work delegated to OTHER PEOPLE is a primary goal, not an afterthought. A directive aimed at a NAMED person in the body ("Mike, please pull the drawings", "Can Sarah review this", "John to handle the migration by Friday") is ALWAYS an action_item with owner=<that named person> — regardless of recipient scope, regardless of whether {user_name} is in To/CC, regardless of whether the named person is in To/CC.
+- Assign owner="me" ONLY when at least one of the following is true:
+  1. The action is explicitly directed at {user_name} by name, email, @mention, or direct question ("Alice, please review", "@alice can you confirm", "Alice — thoughts?")
+  2. Recipient scope is "direct" (1:1 message to {user_name}) AND the body contains a clear directive
+- Do NOT assign owner="me" just because {user_name} appears in To or CC of a group or broadcast message.
+- Being in CC means awareness, not ownership — never default owner="me" from CC alone.
+- Use the person's full name as it appears in the To/CC header (e.g. "John Johnson"), not a first-name guess, whenever possible.
+- If a directive has no identifiable owner (no name, no @mention, no direct address) and recipient scope is not "direct", OMIT the action_item rather than guessing.
+- Past-tense reports of completed work ("we installed X", "the issue was resolved") are NOT action items — put them in information_items instead.
+- Jira issues: has_action=true unless status is Done/Closed; owner="me" (these are pre-assigned).
+- GitHub PR review requests: has_action=true, category=review, owner="me".
+- Slack DMs: recipient scope is always "direct"; bias toward has_action=true.
 
 Information item rules:
 - Extract key facts, status updates, and completed actions that are worth knowing but are NOT tasks for {user_name}
 - Examples: "RV08 seat belt issues resolved", "zip ties were installed on RV5/11/18", "SAT testing scheduled for tomorrow morning"
-- If {user_name} is CC'd only and the body describes completed work or a status update → put findings in information_items, not action_items
+- If {user_name} is CC'd only and the body describes completed work or a status update with no directives → put findings in information_items, not action_items.  (Directives aimed at named people in the same body still become action_items with owner=<that person>.)
 - Passdown notes are especially rich sources: extract every piece of operational status, equipment state, ongoing concern, or shift observation as a separate information_item
 - Do NOT duplicate content across both action_items and information_items
 - Leave information_items empty if there is nothing factual worth preserving
@@ -432,6 +434,210 @@ def extract_emails(text: str) -> list[str]:
 _NAME_EMAIL_RE = _re.compile(r'([^<;,]+?)\s*<([\w.+\-]+@[\w.\-]+\.[a-z]{2,})>', _re.IGNORECASE)
 
 
+# Distribution-list and group-alias patterns — if any address in To/CC matches,
+# the message is classified as broadcast regardless of recipient count.  Covers
+# common conventions like ``all-hands@``, ``dl-engineering@``, ``eng-team@``,
+# ``everyone@``, and dedicated list domains such as ``*@lists.company.com``.
+_DL_LOCAL_RE  = _re.compile(
+    r"^(?:all[-_.]|dl[-_.]|everyone$|team$|[\w.\-]+[-_.](?:team|list|group|all))",
+    _re.IGNORECASE,
+)
+_DL_DOMAIN_RE = _re.compile(r"@(?:lists|groups|mailman)\.", _re.IGNORECASE)
+
+
+def _is_distribution_list(email: str) -> bool:
+    """
+    Heuristically decide whether an email address is a distribution list
+    or group alias rather than a personal mailbox.
+
+    :param email: Lowercased email address.
+    :return: ``True`` if the address matches a known group-alias pattern.
+    :rtype: bool
+    """
+    if not email or "@" not in email:
+        return False
+    local = email.split("@", 1)[0]
+    return bool(_DL_LOCAL_RE.match(local)) or bool(_DL_DOMAIN_RE.search(email))
+
+
+def compute_recipient_scope(user_email: str, to_field: str, cc_field: str) -> dict:
+    """
+    Classify how broadly an email is addressed, from the user's perspective.
+
+    Returns a dict with:
+      - ``scope``: one of ``"direct"``, ``"small"``, ``"group"``, ``"broadcast"``
+      - ``to_count`` / ``cc_count`` / ``total``: unique visible address counts
+      - ``dls``: list of distribution-list addresses found in To/CC
+      - ``user_in_to`` / ``user_in_cc``: whether the user is a visible recipient
+
+    Tiers:
+      - ``direct``    — exactly 1 visible address (To) and it is the user
+      - ``small``     — 2–4 visible addresses total
+      - ``group``     — 5–10 visible addresses total
+      - ``broadcast`` — 11+ addresses, any distribution list detected, or the
+                        user is not a visible recipient (received via list/BCC)
+
+    Sources without populated headers (Jira, GitHub, Slack DMs) get
+    ``total=0`` and ``scope="direct"`` so the downstream rules treat them as
+    already-targeted.
+
+    :param user_email: Configured user email (may be empty).
+    :param to_field:   Raw ``To`` header value.
+    :param cc_field:   Raw ``CC`` header value.
+    :return: Scope classification dict.
+    :rtype: dict
+    """
+    to_emails = extract_emails(to_field)
+    cc_emails = extract_emails(cc_field)
+    ue = (user_email or "").lower().strip()
+
+    user_in_to = ue in to_emails if ue else False
+    user_in_cc = ue in cc_emails if ue else False
+
+    all_emails = set(to_emails) | set(cc_emails)
+    dls        = sorted(e for e in all_emails if _is_distribution_list(e))
+    total      = len(all_emails)
+
+    if total == 0:
+        scope = "direct"
+    elif dls or total >= 11:
+        scope = "broadcast"
+    elif ue and not user_in_to and not user_in_cc:
+        # User isn't a visible recipient — likely reached them via a list or BCC.
+        scope = "broadcast"
+    elif total == 1 and user_in_to:
+        scope = "direct"
+    elif total <= 4:
+        scope = "small"
+    elif total <= 10:
+        scope = "group"
+    else:
+        scope = "broadcast"
+
+    return {
+        "scope":      scope,
+        "to_count":   len(to_emails),
+        "cc_count":   len(cc_emails),
+        "total":      total,
+        "dls":        dls,
+        "user_in_to": user_in_to,
+        "user_in_cc": user_in_cc,
+    }
+
+
+def _recipient_scope_hint(scope_info: dict, user_name: str) -> str:
+    """
+    Build a prompt hint paragraph describing recipient scope for the LLM.
+
+    Returns an empty string when there are no visible recipients (Jira,
+    GitHub, Slack DMs) so the prompt stays clean for non-email sources.
+
+    :param scope_info: Result of :func:`compute_recipient_scope`.
+    :param user_name:  Configured user display name.
+    :return: Prompt hint line (starts with ``\\n-``) or empty string.
+    :rtype: str
+    """
+    if scope_info["total"] == 0:
+        return ""
+
+    scope = scope_info["scope"]
+    total = scope_info["total"]
+    dls   = scope_info["dls"]
+
+    if scope == "direct":
+        body = (
+            f"This is a direct 1:1 message to {user_name}. "
+            f"Directives in the body are strongly likely to be for {user_name}."
+        )
+    elif scope == "small":
+        body = (
+            f"Small-group message ({total} visible recipients). "
+            f"A directive may be for {user_name} or another named recipient — "
+            f"apply the action item ownership rules to decide."
+        )
+    elif scope == "group":
+        body = (
+            f"Group message ({total} visible recipients). "
+            f"A directive in the body is NOT automatically for {user_name}. "
+            f'Only assign owner="me" when {user_name} is named, @mentioned, '
+            f"or asked a direct question; otherwise capture the action_item "
+            f"with owner=<the person the directive addresses> or omit it."
+        )
+    else:  # broadcast
+        dl_note = f" (includes distribution list: {', '.join(dls[:3])})" if dls else ""
+        body = (
+            f"Broadcast message ({total} visible recipients{dl_note}). "
+            f"A directive in the body is very unlikely to be a personal task "
+            f'for {user_name}. Only assign owner="me" when {user_name} is '
+            f"named explicitly, @mentioned, or asked a direct question. Still "
+            f"capture any directive clearly aimed at a named person as an "
+            f"action_item with owner=<that person>."
+        )
+
+    return f"\n- Recipient scope: {scope}. {body}"
+
+
+def postprocess_action_items(
+    action_items: list["ActionItem"],
+    scope_info: dict,
+    body: str,
+    user_name: str,
+    user_email: str,
+) -> list["ActionItem"]:
+    """
+    Safety net for owner=me false positives on broadcast/group emails.
+
+    When recipient scope is ``"group"`` or ``"broadcast"`` AND the message
+    body does not explicitly name the user (or their email), strip action
+    items whose owner is ``"me"``.  Action items with ``owner=<another
+    person>`` are ALWAYS kept — they are the delegated-work signal the user
+    tracks.
+
+    No-op for ``"direct"`` / ``"small"`` scopes, and for messages where the
+    user is named in the body (leaves the LLM's judgment alone).
+
+    :param action_items: Action items returned by the LLM.
+    :param scope_info:   Result of :func:`compute_recipient_scope`.
+    :param body:         Message body text (used to check for user mentions).
+    :param user_name:    Configured user display name.
+    :param user_email:   Configured user email.
+    :return: Filtered list of action items.
+    :rtype: list[ActionItem]
+    """
+    if scope_info["scope"] not in ("group", "broadcast"):
+        return action_items
+
+    body_l = (body or "").lower()
+    user_n = (user_name or "").lower().strip()
+    user_e = (user_email or "").lower().strip()
+
+    def _user_mentioned() -> bool:
+        if user_e and user_e in body_l:
+            return True
+        if user_n and user_n in body_l:
+            return True
+        if user_n:
+            first = user_n.split()[0] if user_n else ""
+            if first and _re.search(rf"\b{_re.escape(first)}\b", body_l):
+                return True
+        return False
+
+    if _user_mentioned():
+        return action_items
+
+    kept: list = []
+    for a in action_items:
+        owner = (a.owner or "").lower().strip()
+        if owner in ("", "me"):
+            log.info(
+                "scope=%s: stripping owner=me action_item (user not named in body): %s",
+                scope_info["scope"], (a.description or "")[:80],
+            )
+            continue
+        kept.append(a)
+    return kept
+
+
 def resolve_owner_email(owner: str, *header_fields: str) -> str | None:
     """
     Try to resolve a person's name to an email address from To/CC header fields.
@@ -440,6 +646,11 @@ def resolve_owner_email(owner: str, *header_fields: str) -> str | None:
     the email for the first entry whose display name contains ``owner`` as a
     case-insensitive substring.  Used to auto-populate ``assigned_to`` when the
     LLM sets ``owner`` to someone other than the user.
+
+    TODO(contacts): fall back to a master contacts table when the name is not
+    found in the current item's To/CC headers.  This matters when the LLM
+    picks up a delegated directive like "Mike, pull the drawings" in an email
+    where Mike isn't one of the recipients.  See hexcaliper-squire#24.
 
     :param owner: Person name returned by the LLM (e.g. ``"John Johnson"``).
     :param header_fields: One or more raw To/CC header strings.
@@ -706,6 +917,11 @@ def build_prompt(item: RawItem) -> str:
         except Exception as e:
             log.warning("embedding score failed: %s", e)
 
+    scope_info          = compute_recipient_scope(config.USER_EMAIL or "", to_field, cc_field)
+    recipient_scope_hint = _recipient_scope_hint(
+        scope_info, config.USER_NAME or "the user"
+    )
+
     return PROMPT.format(
         source       = item.source,
         title        = item.title,
@@ -728,6 +944,7 @@ def build_prompt(item: RawItem) -> str:
         manual_tag_hint = manual_tag_hint,
         graph_hint      = graph_hint,
         embedding_hint  = embedding_hint,
+        recipient_scope_hint = recipient_scope_hint,
     )
 
 
@@ -840,6 +1057,9 @@ def analyze(item: RawItem) -> Analysis:
         except Exception as e:
             log.warning("embedding score failed: %s", e)
 
+    scope_info          = compute_recipient_scope(config.USER_EMAIL or "", to_field, cc_field)
+    recipient_scope_hint = _recipient_scope_hint(scope_info, _user_name)
+
     text = llm.generate(
         PROMPT.format(
             source       = item.source,
@@ -863,6 +1083,7 @@ def analyze(item: RawItem) -> Analysis:
             manual_tag_hint = manual_tag_hint,
             graph_hint      = graph_hint,
             embedding_hint  = embedding_hint,
+            recipient_scope_hint = recipient_scope_hint,
         ),
         format="json", temperature=0.1, num_predict=768, timeout=90,
     )
@@ -881,6 +1102,15 @@ def analyze(item: RawItem) -> Analysis:
         for a in data.get("action_items", [])
         if a.get("description")
     ]
+
+    # Recipient-scope safety net: in group/broadcast emails where the user
+    # is not named in the body, strip owner="me" false positives.  Items
+    # assigned to OTHER named people are always preserved so delegated-work
+    # tracking continues to work.
+    action_items = postprocess_action_items(
+        action_items, scope_info, item.body,
+        config.USER_NAME or "", config.USER_EMAIL or "",
+    )
 
     information_items = [
         {"fact": i.get("fact", ""), "relevance": i.get("relevance", "")}
