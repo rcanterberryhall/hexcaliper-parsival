@@ -1350,32 +1350,64 @@ function dismissPicker() {
   if (p) p.remove();
 }
 
+// Re-render todos, items, and related chrome from the local allAnalyses/
+// allTodos caches without any network calls. Used by project-tag and
+// detail-edit mutations so they don't have to drag a full /analyses or
+// /todos refetch along for the ride. Everything touched is synchronous JS
+// against the in-memory caches.
+function _rerenderFromLocalState() {
+  const visible = _filterTodos(allTodos);
+  renderTodos(visible);
+  updateCounts(visible);
+  updateTypeCounts(allAnalyses);
+  renderSidebarProjects(allAnalyses);
+  renderItems(allAnalyses);
+}
+
 async function tagToProject(projectName, itemId, evt) {
   evt.stopPropagation();
   dismissPicker();
+  // Optimistic: merge the new project tag into the local analysis record.
+  const a = findAnalysis(itemId);
+  const originalTag = a ? a.project_tag : undefined;
+  if (a) {
+    const tags = parseTags(a.project_tag);
+    if (!tags.includes(projectName)) tags.push(projectName);
+    a.project_tag = tags.length === 1 ? tags[0] : JSON.stringify(tags);
+    _rerenderFromLocalState();
+    if ($('detailPanel').classList.contains('open')) openDetail(a);
+  }
+  $('statusMsg').textContent = `Tagged to ${projectName} — learning keywords in background…`;
   try {
     await api(`/analyses/${encodeURIComponent(itemId)}/tag`, 'POST', { project: projectName });
-    $('statusMsg').textContent = `Tagged to ${projectName} — learning keywords in background…`;
-    await Promise.all([loadTodos(), loadItems()]);
-    if ($('detailPanel').classList.contains('open')) { const a = findAnalysis(itemId); if (a) openDetail(a); }
-  } catch(e) {
+  } catch (e) {
     $('statusMsg').textContent = 'Tag failed: ' + e.message;
+    if (a && originalTag !== undefined) {
+      a.project_tag = originalTag;
+      _rerenderFromLocalState();
+      if ($('detailPanel').classList.contains('open')) openDetail(a);
+    }
   }
 }
 
 async function untagProject(projectName, itemId, evt) {
   evt.stopPropagation();
   dismissPicker();
+  const a = findAnalysis(itemId);
+  if (!a) return;
+  const originalTag = a.project_tag;
+  const tags = parseTags(a.project_tag).filter(t => t !== projectName);
+  a.project_tag = tags.length === 1 ? tags[0] : tags.length ? JSON.stringify(tags) : null;
+  _rerenderFromLocalState();
+  if ($('detailPanel').classList.contains('open')) openDetail(a);
+  $('statusMsg').textContent = `Removed ${projectName} tag.`;
   try {
-    const a = findAnalysis(itemId);
-    const tags = parseTags(a?.project_tag).filter(t => t !== projectName);
     await api(`/analyses/${encodeURIComponent(itemId)}`, 'PATCH', { project_tag: tags.length ? tags : null });
-    if (a) a.project_tag = tags.length === 1 ? tags[0] : tags.length ? JSON.stringify(tags) : null;
-    await Promise.all([loadTodos(), loadItems()]);
-    $('statusMsg').textContent = `Removed ${projectName} tag.`;
-    if ($('detailPanel').classList.contains('open') && a) openDetail(a);
-  } catch(e) {
+  } catch (e) {
     $('statusMsg').textContent = 'Remove failed: ' + e.message;
+    a.project_tag = originalTag;
+    _rerenderFromLocalState();
+    if ($('detailPanel').classList.contains('open')) openDetail(a);
   }
 }
 
@@ -1584,8 +1616,12 @@ async function loadStats() {
 function _filterTodos(todos) {
   let result = todos;
   if (projectFilter !== 'all') {
+    // Build the item_id → project_tag lookup once instead of scanning
+    // allAnalyses per todo.
+    const tagById = new Map();
+    for (const a of allAnalyses) tagById.set(a.item_id, a.project_tag || null);
     result = result.filter(t => {
-      const tag = (allAnalyses.find(a => a.item_id === t.item_id) || {}).project_tag || null;
+      const tag = tagById.get(t.item_id) || null;
       return projectFilter === '__none__' ? !tag : tag === projectFilter;
     });
   }
@@ -1654,11 +1690,17 @@ function renderTodos(todos) {
     }</div></div>`;
     return;
   }
+  // Build an item_id → analysis lookup once per render. Previously makeTodo()
+  // did a per-row allAnalyses.find() — O(todos × analyses) comparisons per
+  // render, which became noticeable as the corpus grew (167 todos × 300
+  // analyses ≈ 50k comparisons on the live DB).
+  const analysisById = new Map();
+  for (const a of allAnalyses) analysisById.set(a.item_id, a);
   const sorted = _sortTodos(todos);
   el.innerHTML = '';
   if (sortBy === 'newest' || sortBy === 'oldest') {
     // Flat list sorted by date
-    sorted.forEach(t => el.appendChild(makeTodo(t)));
+    sorted.forEach(t => el.appendChild(makeTodo(t, analysisById)));
   } else {
     // Grouped by priority
     const groups = { high: [], medium: [], low: [] };
@@ -1669,7 +1711,7 @@ function renderTodos(todos) {
       const g = document.createElement('div');
       g.className = `g-${p}`;
       g.innerHTML = `<div class="group-label"><div class="gdot"></div>${labels[p]} (${groups[p].length})</div>`;
-      groups[p].forEach(t => g.appendChild(makeTodo(t)));
+      groups[p].forEach(t => g.appendChild(makeTodo(t, analysisById)));
       el.appendChild(g);
     });
   }
@@ -1677,7 +1719,7 @@ function renderTodos(todos) {
 
 const srcIcon = { outlook: '✉', slack: '#', github: '⎇', jira: '◈' };
 
-function makeTodo(t) {
+function makeTodo(t, analysisById) {
   const el     = document.createElement('div');
   const status = t.status || (t.done ? 'done' : 'open');
   el.className = `todo${status === 'done' ? ' done' : status === 'assigned' ? ' assigned' : ''}`;
@@ -1686,7 +1728,10 @@ function makeTodo(t) {
   const own    = t.owner && t.owner !== 'me' ? `<span class="chip">→ ${esc(t.owner)}</span>` : '';
   const link   = t.url ? `<button class="ia open" onclick="window.open('${esc(t.url)}','_blank')" title="Open source">↗</button>` : '';
   const tagBtn = allProjects.length ? `<button class="ia" onclick="showProjectPicker('${esc(t.item_id || String(t.doc_id))}',this)" title="Tag to project">◈</button>` : '';
-  const analysis  = allAnalyses.find(a => a.item_id === t.item_id);
+  // Fallback to a linear find() for callers that don't pass the map (e.g.,
+  // one-off row replacements). renderTodos always passes the precomputed map.
+  const analysis  = analysisById ? analysisById.get(t.item_id)
+                                 : allAnalyses.find(a => a.item_id === t.item_id);
   const projTag   = t.project_tag || analysis?.project_tag;
   const proj      = parseTags(projTag).map(t => `<span class="chip"><span class="badge b-project">${esc(t)}</span></span>`).join('');
   const catKey    = analysis ? (analysis.task_type ? `task-${analysis.task_type}` : (analysis.category || 'fyi')) : null;
@@ -1728,9 +1773,44 @@ function makeTodo(t) {
   return el;
 }
 
+// Swap a single todo row in place without re-rendering the full list.
+// Used by the optimistic-update mutation handlers so a checkbox/assign/project
+// change takes effect instantly instead of waiting on a server round-trip +
+// full loadTodos() rebuild.
+function _replaceTodoRow(updated) {
+  const idx = allTodos.findIndex(t => t.doc_id === updated.doc_id);
+  if (idx >= 0) allTodos[idx] = updated;
+  const old = document.querySelector(`.todo[data-todo-id="${updated.doc_id}"]`);
+  if (old) {
+    const analysisById = new Map();
+    for (const a of allAnalyses) analysisById.set(a.item_id, a);
+    old.replaceWith(makeTodo(updated, analysisById));
+  }
+  updateCounts(_filterTodos(allTodos));
+  refreshAssignedBadge();
+}
+
+function _removeTodoRow(docId) {
+  const idx = allTodos.findIndex(t => t.doc_id === docId);
+  if (idx >= 0) allTodos.splice(idx, 1);
+  const old = document.querySelector(`.todo[data-todo-id="${docId}"]`);
+  if (old) old.remove();
+  updateCounts(_filterTodos(allTodos));
+  refreshAssignedBadge();
+}
+
 async function toggleDone(id, done) {
-  try { await api(`/todos/${id}`, 'PATCH', { done }); loadTodos(); loadStats(); }
-  catch (e) { console.warn('toggleDone:', e); }
+  const idx = allTodos.findIndex(t => t.doc_id === id);
+  if (idx < 0) return;
+  const original = allTodos[idx];
+  _replaceTodoRow({ ...original, done, status: done ? 'done' : 'open' });
+  try {
+    await api(`/todos/${id}`, 'PATCH', { done });
+    loadStats();
+  } catch (e) {
+    console.warn('toggleDone:', e);
+    _replaceTodoRow(original);
+  }
 }
 
 function toggleAddAction() {
@@ -1800,8 +1880,22 @@ function showTodoEdit(docId, currentDesc, currentDl, currentPri) {
 }
 
 async function deleteTodo(id) {
-  try { await api(`/todos/${id}`, 'DELETE'); loadTodos(); loadStats(); }
-  catch (e) { console.warn('deleteTodo:', e); }
+  const idx = allTodos.findIndex(t => t.doc_id === id);
+  if (idx < 0) return;
+  const original = allTodos[idx];
+  _removeTodoRow(id);
+  try {
+    await api(`/todos/${id}`, 'DELETE');
+    loadStats();
+  } catch (e) {
+    console.warn('deleteTodo:', e);
+    // Revert: reinsert the row into the local cache and re-render the list.
+    // Full re-render is fine here — this only runs on the error path.
+    allTodos.splice(Math.min(idx, allTodos.length), 0, original);
+    const visible = _filterTodos(allTodos);
+    renderTodos(visible);
+    updateCounts(visible);
+  }
 }
 
 async function loadItems() {
@@ -2539,7 +2633,12 @@ function findAnalysis(itemId) {
 async function openTodoDetail(itemId) {
   let item = findAnalysis(itemId);
   if (!item) {
-    try { allAnalyses = await api('/analyses'); item = findAnalysis(itemId); } catch(e) {}
+    try {
+      // Cold path: fetch just this one record via the per-item endpoint
+      // instead of refetching the full /analyses table to look up one row.
+      item = await api(`/analyses/${encodeURIComponent(itemId)}`);
+      if (item) allAnalyses.push(item);
+    } catch (e) { console.warn('openTodoDetail:', e); }
   }
   if (item) openDetail(item);
 }
@@ -2724,25 +2823,46 @@ async function confirmAssign(docId, itemId) {
   const email = picker.querySelector('input').value.trim();
   if (!email) { picker.querySelector('input').focus(); return; }
   picker.remove();
-  try {
-    await api(`/todos/${docId}`, 'PATCH', { status: 'assigned', assigned_to: email });
-    await loadTodos();
-    loadStats();
+  const idx = allTodos.findIndex(t => t.doc_id === docId);
+  const original = idx >= 0 ? allTodos[idx] : null;
+  if (original) {
+    _replaceTodoRow({ ...original, status: 'assigned', assigned_to: email });
     if (itemId && $('detailPanel').classList.contains('open')) {
       const item = findAnalysis(itemId);
       if (item) openDetail(item);
     }
-  } catch(e) { console.warn('confirmAssign:', e); }
+  }
+  try {
+    await api(`/todos/${docId}`, 'PATCH', { status: 'assigned', assigned_to: email });
+    loadStats();
+  } catch (e) {
+    console.warn('confirmAssign:', e);
+    if (original) {
+      _replaceTodoRow(original);
+      if (itemId && $('detailPanel').classList.contains('open')) {
+        const item = findAnalysis(itemId);
+        if (item) openDetail(item);
+      }
+    }
+  }
 }
 
 async function detailToggleDone(docId, done, itemId) {
+  const idx = allTodos.findIndex(t => t.doc_id === docId);
+  if (idx < 0) return;
+  const original = allTodos[idx];
+  _replaceTodoRow({ ...original, done, status: done ? 'done' : 'open' });
+  // openDetail reads from the mutated allTodos cache, so no refetch needed.
+  const item = findAnalysis(itemId);
+  if (item) openDetail(item);
   try {
     await api(`/todos/${docId}`, 'PATCH', { done });
-    await loadTodos();
-    // Re-open the same item to refresh the tasks section in place
-    const item = findAnalysis(itemId);
+    loadStats();
+  } catch (e) {
+    console.warn('detailToggleDone:', e);
+    _replaceTodoRow(original);
     if (item) openDetail(item);
-  } catch(e) { console.warn('detailToggleDone:', e); }
+  }
 }
 
 async function saveDetailEdits(itemId) {
@@ -2755,18 +2875,35 @@ async function saveDetailEdits(itemId) {
   const msg        = $('detailSaveMsg');
   const body = { priority: pri, category: cat, task_type: taskType, is_passdown: isPassdown };
   body.project_tag = projTags.length ? projTags : null;
+
+  // Optimistic: snapshot the prior record, mutate in place, re-render from
+  // the local cache. On failure we restore the snapshot.
+  const a = findAnalysis(itemId);
+  const snapshot = a ? {
+    priority:    a.priority,
+    category:    a.category,
+    task_type:   a.task_type,
+    is_passdown: a.is_passdown,
+    project_tag: a.project_tag,
+  } : null;
+  if (a) {
+    a.priority    = pri;
+    a.category    = cat;
+    a.task_type   = taskType;
+    a.is_passdown = isPassdown;
+    a.project_tag = projTags.length ? (projTags.length === 1 ? projTags[0] : JSON.stringify(projTags)) : null;
+    _rerenderFromLocalState();
+  }
+
   try {
     await api(`/analyses/${encodeURIComponent(itemId)}`, 'PATCH', body);
-    const a = findAnalysis(itemId);
-    if (a) {
-      a.priority = pri; a.category = cat; a.task_type = taskType; a.is_passdown = isPassdown;
-      a.project_tag = projTags.length ? (projTags.length === 1 ? projTags[0] : JSON.stringify(projTags)) : null;
-    }
-    renderItems(allAnalyses);
-    loadTodos();
     msg.textContent = 'Saved';
     setTimeout(() => { msg.textContent = ''; }, 2000);
-  } catch(e) {
+  } catch (e) {
+    if (a && snapshot) {
+      Object.assign(a, snapshot);
+      _rerenderFromLocalState();
+    }
     msg.style.color = 'var(--red)';
     msg.textContent = 'Failed';
     setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 3000);

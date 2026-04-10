@@ -852,6 +852,38 @@ class TagRequest(BaseModel):
     project: str
 
 
+@app.get("/analyses/{item_id}")
+def get_analysis(item_id: str):
+    """
+    Return a single deserialized analysis record with attention score attached.
+
+    Used by the frontend detail-panel cold path (``openTodoDetail``) so that
+    opening an item that isn't yet in the in-memory ``allAnalyses`` cache
+    doesn't have to refetch the entire ``/analyses`` list just to look up one
+    row.
+
+    :param item_id: Stable ID of the analysis item.
+    :return: Deserialized analysis dict with ``attention_score`` field.
+    :raises HTTPException 404: If no item with ``item_id`` exists.
+    """
+    with db.lock:
+        row = db.get_item(item_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+    rec = _deserialize_analysis(dict(row))
+    if _attn.is_cold_start():
+        rec["attention_score"] = 0.5
+    else:
+        try:
+            from embedder import get_item_vector
+            vec   = get_item_vector(item_id)
+            score = _attn.compute_score(vec or [])
+        except Exception:
+            score = 0.5
+        rec["attention_score"] = round(score, 4)
+    return rec
+
+
 @app.patch("/analyses/{item_id}")
 def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
     """
@@ -1946,6 +1978,16 @@ def get_analyses(
 
     # Attach attention scores (fast path — reads stored vectors; 0.5 on cold start)
     cold = _attn.is_cold_start()
+    # Precompute item_id → vector once per request instead of calling
+    # get_item_vector() per row, which walked the whole embeddings table on
+    # every call (O(rows × embedding_items) per response).
+    vectors_by_id: dict = {}
+    if not cold:
+        try:
+            from embedder import get_all_item_vectors
+            vectors_by_id = get_all_item_vectors()
+        except Exception:
+            vectors_by_id = {}
     out  = []
     for a in sliced:
         rec = _deserialize_analysis(dict(a))
@@ -1953,8 +1995,7 @@ def get_analyses(
             rec["attention_score"] = 0.5
         else:
             try:
-                from embedder import get_item_vector
-                vec   = get_item_vector(a.get("item_id", ""))
+                vec   = vectors_by_id.get(a.get("item_id", ""))
                 score = _attn.compute_score(vec or [])
             except Exception:
                 score = 0.5

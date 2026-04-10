@@ -158,3 +158,32 @@ def test_get_project_stats():
     assert "Stats" in stats
     assert stats["Stats"]["total_items"] == 3
     assert set(stats["Stats"]["subdivisions"]) == {"task", "fyi"}
+
+
+def test_get_all_item_vectors_returns_map_across_projects():
+    """get_all_item_vectors should one-pass the embeddings table and return
+    every item_id → vector across all projects in a single dict."""
+    import embedder
+    vecs = {}
+    for i in range(4):
+        v = np.random.randn(384)
+        v /= np.linalg.norm(v)
+        vecs[f"p1-{i}"] = v.tolist()
+        embedder.update_project("ProjA", f"p1-{i}", vecs[f"p1-{i}"],
+                                "task", "user", "slack", "low")
+    for i in range(2):
+        v = np.random.randn(384)
+        v /= np.linalg.norm(v)
+        vecs[f"p2-{i}"] = v.tolist()
+        embedder.update_project("ProjB", f"p2-{i}", vecs[f"p2-{i}"],
+                                "fyi", "project", "github", "medium")
+
+    all_vectors = embedder.get_all_item_vectors()
+    assert set(all_vectors.keys()) == set(vecs.keys())
+    for iid, vec in vecs.items():
+        assert all_vectors[iid] == vec
+
+
+def test_get_all_item_vectors_empty_when_no_embeddings():
+    import embedder
+    assert embedder.get_all_item_vectors() == {}

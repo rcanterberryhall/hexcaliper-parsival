@@ -206,6 +206,10 @@ def get_item_vector(item_id: str):
     """
     Retrieve the stored embedding vector for a specific item_id across all projects.
     Returns None if the item has not been embedded.
+
+    Note: callers processing many item_ids in a batch should prefer
+    ``get_all_item_vectors()`` instead — this function walks every stored
+    project's items list on each call.
     """
     if not _AVAILABLE:
         return None
@@ -214,6 +218,29 @@ def get_item_vector(item_id: str):
             if item["item_id"] == item_id:
                 return item["vector"]
     return None
+
+
+def get_all_item_vectors() -> dict:
+    """
+    Return a dict mapping ``item_id`` → stored embedding vector for every
+    item across every project, built in a single pass over the embeddings
+    table. If an item is stored under multiple projects the first match wins
+    (vectors are invariant per item, so this is safe).
+
+    Callers that need attention scores for a full list of items should call
+    this once and look up each item from the returned dict, rather than
+    calling ``get_item_vector`` per item — the latter walks the whole
+    embeddings table on every call.
+    """
+    if not _AVAILABLE:
+        return {}
+    vectors: dict = {}
+    for rec in db.get_all_embeddings():
+        for item in rec.get("items", []):
+            iid = item.get("item_id")
+            if iid and iid not in vectors:
+                vectors[iid] = item.get("vector")
+    return vectors
 
 
 def get_project_stats() -> dict:

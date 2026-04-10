@@ -270,6 +270,22 @@ def test_get_analyses_filter_by_category(client):
     assert data[0]["category"] == "review"
 
 
+def test_get_analysis_by_item_id_returns_single_record(client):
+    _insert_analysis(item_id="solo1", category="task", title="Just me")
+    _insert_analysis(item_id="other", category="task", title="Different")
+    r = client.get("/analyses/solo1")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["item_id"] == "solo1"
+    assert body["title"] == "Just me"
+    assert "attention_score" in body
+
+
+def test_get_analysis_by_item_id_missing_returns_404(client):
+    r = client.get("/analyses/does-not-exist")
+    assert r.status_code == 404
+
+
 # ── /stats ────────────────────────────────────────────────────────────────────
 
 def test_stats_empty_db(client):
