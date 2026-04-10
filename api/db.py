@@ -571,6 +571,20 @@ def get_todo_by_id(todo_id: int) -> Optional[dict]:
     return _row_to_dict(row)
 
 
+def count_assigned_open() -> int:
+    """Return the number of open todos in the 'assigned' state with a non-empty assigned_to.
+
+    Uses the idx_todos_status(done, status) index to avoid pulling full rows —
+    the Assigned vtab badge only needs the count, not the payload.
+    """
+    row = conn().execute(
+        "SELECT COUNT(*) FROM todos "
+        "WHERE done = 0 AND status = 'assigned' "
+        "AND assigned_to IS NOT NULL AND assigned_to != ''"
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 # ── Intel operations ───────────────────────────────────────────────────────────
 
 def intel_exists(item_id: str, fact: str) -> bool:

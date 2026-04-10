@@ -1603,6 +1603,19 @@ def create_todo(body: dict):
     return {"ok": True, "doc_id": doc_id}
 
 
+@app.get("/todos/assigned_count")
+def get_todos_assigned_count():
+    """
+    Return a count of open todos in the 'assigned' state with a non-empty
+    ``assigned_to``. Backs the Assigned vtab badge so the UI doesn't have
+    to fetch and client-side filter the full open-todo set on every mutation.
+
+    :return: ``{"count": N}``
+    :rtype: dict
+    """
+    return {"count": db.count_assigned_open()}
+
+
 @app.patch("/todos/{doc_id}")
 def patch_todo(doc_id: int, body: dict):
     """

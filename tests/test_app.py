@@ -130,6 +130,41 @@ def test_get_todos_sorted_by_priority(client):
     assert priorities == ["high", "medium", "low"]
 
 
+def test_get_todos_assigned_count_empty(client):
+    r = client.get("/todos/assigned_count")
+    assert r.status_code == 200
+    assert r.json() == {"count": 0}
+
+
+def test_get_todos_assigned_count_counts_only_open_assigned(client):
+    # Matches: status=assigned, assigned_to set, done=False
+    _insert_todo(item_id="a1", status="assigned", assigned_to="bob@example.com", done=False)
+    _insert_todo(item_id="a2", status="assigned", assigned_to="alice@example.com", done=False)
+    # Excluded: done even though still labeled assigned
+    _insert_todo(item_id="a3", status="assigned", assigned_to="bob@example.com", done=True)
+    # Excluded: open (unassigned) item
+    _insert_todo(item_id="o1", status="open", done=False)
+    # Excluded: status=assigned but assigned_to empty / missing
+    _insert_todo(item_id="a4", status="assigned", assigned_to="", done=False)
+    _insert_todo(item_id="a5", status="assigned", assigned_to=None, done=False)
+
+    r = client.get("/todos/assigned_count")
+    assert r.status_code == 200
+    assert r.json() == {"count": 2}
+
+
+def test_get_todos_assigned_count_ignores_priority_and_source_filters(client):
+    """The badge count is intentionally unfiltered — it shouldn't honor query params."""
+    _insert_todo(item_id="a1", status="assigned", assigned_to="bob@example.com",
+                 priority="high", source="slack")
+    _insert_todo(item_id="a2", status="assigned", assigned_to="alice@example.com",
+                 priority="low", source="github")
+    r = client.get("/todos/assigned_count?priority=high&source=slack")
+    assert r.status_code == 200
+    # Both rows counted despite the filters — the endpoint accepts no params.
+    assert r.json() == {"count": 2}
+
+
 def test_patch_todo_marks_done(client):
     doc_id = _insert_todo(item_id="p1", done=False)
     r = client.patch(f"/todos/{doc_id}", json={"done": True})

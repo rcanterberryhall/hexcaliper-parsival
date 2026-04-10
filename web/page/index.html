@@ -1613,10 +1613,10 @@ async function loadTodos() {
 
 async function refreshAssignedBadge() {
   try {
-    const todos = await api('/todos?done=false');
-    updateAssignedBadge(
-      todos.filter(t => t.status === 'assigned' && t.assigned_to && !t.done).length
-    );
+    // Cheap count endpoint — avoids pulling the full open-todo set on every
+    // mutation just to count a subset. See squire#27.
+    const { count } = await api('/todos/assigned_count');
+    updateAssignedBadge(count);
   } catch (e) { /* silent — badge is a secondary indicator */ }
 }
 
