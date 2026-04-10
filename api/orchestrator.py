@@ -388,7 +388,7 @@ def run_scan(sources: list[str]) -> None:
                 continue
             try:
                 _t0 = time.monotonic()
-                results.append(analyze(item))
+                results.append(analyze(item, priority="short"))
                 _timing.append(time.monotonic() - _t0)
             except Exception as e:
                 log.error("agent %s: %s", item.item_id, e)
@@ -530,15 +530,17 @@ def run_reanalyze() -> None:
                     else:
                         # Batch submit failed; fall back to direct merLLM call.
                         # Concurrency against the LLM is owned by merLLM —
-                        # see module docstring (squire#33).
-                        result = analyze(item)
+                        # see module docstring (squire#33).  Priority is
+                        # ``background`` so bulk reanalysis cannot starve
+                        # chat or fresh ingest (squire#34).
+                        result = analyze(item, priority="background")
                         results.append(result)
                 except Exception as e:
                     log.error("reanalyze batch %s: %s", item.item_id, e)
             else:
                 try:
                     _t0 = time.monotonic()
-                    result = analyze(item)
+                    result = analyze(item, priority="background")
                     _timing.append(time.monotonic() - _t0)
                     results.append(result)
                 except Exception as e:
@@ -612,7 +614,7 @@ def process_ingest_items(raw: list[RawItem]) -> None:
                 _scan_state["ingest_pending"] = max(0, _scan_state["ingest_pending"] - 1)
             continue
         try:
-            result = analyze(item)
+            result = analyze(item, priority="short")
             _save_analysis(result)
             graph.index_item(result)
             _spawn_situation_task(result.item_id)

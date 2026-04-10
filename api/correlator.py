@@ -234,6 +234,7 @@ def synthesize_situation(item_records: list, user_name: str, intel_items: list =
                 intel_block = intel_block,
             ),
             format="json", temperature=0.1, num_predict=512, timeout=60,
+            priority="feedback",
         )
         data = json.loads(text or "{}")
         return {

@@ -114,7 +114,7 @@ def test_run_scan_handles_analyze_exception_gracefully():
     items = [_raw(item_id="x1"), _raw(item_id="x2")]
     call_count = {"n": 0}
 
-    def flaky_analyze(item):
+    def flaky_analyze(item, **_kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise Exception("timeout")
@@ -134,7 +134,7 @@ def test_run_scan_respects_cancellation():
     write a 'cancelled' log entry, and leave fewer than all items saved."""
     items = [_raw(item_id="x1"), _raw(item_id="x2"), _raw(item_id="x3")]
 
-    def cancelling_analyze(item):
+    def cancelling_analyze(item, **_kwargs):
         scan_state["cancelled"] = True
         return _analysis(item.item_id)
 
@@ -196,7 +196,7 @@ def test_run_reanalyze_reprocesses_stored_items():
     _insert_minimal("r1", priority=None)
     _insert_minimal("r2", priority=None)
 
-    def high_priority_analyze(item):
+    def high_priority_analyze(item, **_kwargs):
         return _analysis(item.item_id, priority="high")
 
     with patch("orchestrator.analyze", side_effect=high_priority_analyze), \
@@ -476,7 +476,7 @@ def test_run_reanalyze_sorts_passdowns_first():
 
     call_order = []
 
-    def recording_analyze(item):
+    def recording_analyze(item, **_kwargs):
         call_order.append(item.item_id)
         return _analysis(item.item_id)
 

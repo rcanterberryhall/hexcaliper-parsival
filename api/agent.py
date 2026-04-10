@@ -342,6 +342,7 @@ def generate_project_briefing(
                 action_items = _fmt(action_items,  8),
             ),
             format=None, temperature=0.3, num_predict=512, timeout=60,
+            priority="feedback",
         )
         return text.strip()
     except Exception as e:
@@ -378,6 +379,7 @@ def extract_keywords(project_name: str, title: str, body: str) -> list[str]:
                 body         = body[:2000],
             ),
             format="json", temperature=0.1, num_predict=256, timeout=60,
+            priority="short",
         )
         data = json.loads(text or "[]")
         if isinstance(data, list):
@@ -1081,7 +1083,7 @@ def build_analysis_from_llm_json(
     )
 
 
-def analyze(item: RawItem) -> Analysis:
+def analyze(item: RawItem, *, priority: str = "short") -> Analysis:
     """
     Send a single item to Ollama and parse the structured JSON response.
 
@@ -1104,6 +1106,9 @@ def analyze(item: RawItem) -> Analysis:
 
     :param item: The raw item to analyse.
     :type item: RawItem
+    :param priority: merLLM priority bucket. Defaults to ``short`` for the
+        per-item ingest path; re-analyze passes ``background`` so bulk
+        re-runs cannot starve chat or regular ingest traffic.
     :return: Structured analysis result with all enrichment fields populated.
     :rtype: Analysis
     :raises requests.HTTPError: If the Ollama API request fails.
@@ -1219,6 +1224,7 @@ def analyze(item: RawItem) -> Analysis:
             recipient_scope_hint = recipient_scope_hint,
         ),
         format="json", temperature=0.1, num_predict=768, timeout=90,
+        priority=priority,
     )
 
     return build_analysis_from_llm_json(item, text, scope_info=scope_info)

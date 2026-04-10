@@ -47,3 +47,21 @@ def test_ollama_headers_with_cf(monkeypatch):
     assert h["CF-Access-Client-Secret"] == "secret-456"
     assert h["Content-Type"] == "application/json"
     assert h["X-Source"] == "parsival"
+
+
+def test_ollama_headers_omits_priority_by_default(monkeypatch):
+    monkeypatch.setattr(config, "CF_CLIENT_ID", "")
+    monkeypatch.setattr(config, "CF_CLIENT_SECRET", "")
+    h = config.ollama_headers()
+    assert "X-Priority" not in h
+
+
+def test_ollama_headers_sets_priority_when_passed(monkeypatch):
+    monkeypatch.setattr(config, "CF_CLIENT_ID", "")
+    monkeypatch.setattr(config, "CF_CLIENT_SECRET", "")
+    for bucket in ("chat", "short", "feedback", "background"):
+        h = config.ollama_headers(priority=bucket)
+        assert h["X-Priority"] == bucket
+        # Other headers still there.
+        assert h["X-Source"] == "parsival"
+        assert h["Content-Type"] == "application/json"

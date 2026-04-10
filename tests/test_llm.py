@@ -79,6 +79,30 @@ class TestOllamaLocal:
         body = mock.call_args[1]["json"]
         assert "format" not in body
 
+    def test_default_priority_is_short(self, monkeypatch):
+        """When a caller omits priority, llm.generate lands in bucket 3 (short)."""
+        monkeypatch.setattr(config, "ESCALATION_PROVIDER", "ollama")
+        monkeypatch.setattr(config, "ESCALATION_MODEL", "")
+        monkeypatch.setattr(config, "CF_CLIENT_ID", "")
+        monkeypatch.setattr(config, "CF_CLIENT_SECRET", "")
+
+        with patch("llm.requests.post", return_value=_mock_ollama_response("ok")) as mock:
+            llm.generate("test")
+
+        assert mock.call_args[1]["headers"]["X-Priority"] == "short"
+
+    def test_priority_forwarded_to_header(self, monkeypatch):
+        monkeypatch.setattr(config, "ESCALATION_PROVIDER", "ollama")
+        monkeypatch.setattr(config, "ESCALATION_MODEL", "")
+        monkeypatch.setattr(config, "CF_CLIENT_ID", "")
+        monkeypatch.setattr(config, "CF_CLIENT_SECRET", "")
+
+        for bucket in ("chat", "short", "feedback", "background"):
+            with patch("llm.requests.post", return_value=_mock_ollama_response("ok")) as mock:
+                llm.generate("test", priority=bucket)
+            assert mock.call_args[1]["headers"]["X-Priority"] == bucket
+            assert mock.call_args[1]["headers"]["X-Source"] == "parsival"
+
 
 class TestOllamaCloud:
     def test_uses_escalation_url_and_bearer(self, monkeypatch):

@@ -251,6 +251,7 @@ def _run_seed_job(context: str) -> None:
                 text = llm.generate(
                     prompt, format="json", temperature=0.2,
                     num_predict=900, timeout=120,
+                    priority="background",
                 )
                 print(f"[seed] map batch {batch_num} raw response: {text!r}")
                 data = json.loads(text or "{}")
@@ -299,6 +300,7 @@ def _run_seed_job(context: str) -> None:
             text = llm.generate(
                 reduce_prompt, format="json", temperature=0.2,
                 num_predict=1800, timeout=180,
+                priority="background",
             )
             print(f"[seed] reduce raw response: {text!r}")
             final    = json.loads(text or "{}")

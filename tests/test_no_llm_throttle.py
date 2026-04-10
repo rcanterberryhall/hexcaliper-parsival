@@ -71,7 +71,7 @@ def test_sync_path_allows_concurrent_llm_calls():
     arrivals = 0
     arrivals_lock = threading.Lock()
 
-    def fake_analyze(item):
+    def fake_analyze(item, **_kwargs):
         nonlocal in_flight, concurrent_peak, arrivals
         with in_flight_lock:
             in_flight += 1

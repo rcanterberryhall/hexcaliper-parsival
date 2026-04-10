@@ -248,7 +248,7 @@ def effective_model() -> str:
     return ESCALATION_MODEL or OLLAMA_MODEL
 
 
-def ollama_headers() -> dict:
+def ollama_headers(priority: str | None = None) -> dict:
     """
     Build request headers for Ollama API calls.
 
@@ -257,10 +257,17 @@ def ollama_headers() -> dict:
     requests to pass through a Cloudflare Access policy protecting the
     Ollama endpoint.
 
+    :param priority: Optional merLLM priority bucket name (one of ``chat``,
+        ``reserved``, ``short``, ``feedback``, ``background``). When set,
+        an ``X-Priority`` header is added so merLLM places the request in
+        the right bucket. When ``None``, no header is sent and merLLM
+        applies its own back-compat default.
     :return: Dict of HTTP headers to include with every Ollama request.
     :rtype: dict
     """
     h = {"Content-Type": "application/json", "X-Source": "parsival"}
+    if priority:
+        h["X-Priority"] = priority
     if CF_CLIENT_ID and CF_CLIENT_SECRET:
         h["CF-Access-Client-Id"]     = CF_CLIENT_ID
         h["CF-Access-Client-Secret"] = CF_CLIENT_SECRET

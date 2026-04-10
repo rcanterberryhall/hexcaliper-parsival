@@ -96,6 +96,7 @@ def generate(
     num_predict: int = 768,
     num_ctx: int = 8192,
     timeout: int = 90,
+    priority: str = "short",
 ) -> str:
     """
     Send a prompt to the configured LLM provider and return the response text.
@@ -107,6 +108,11 @@ def generate(
     :param num_predict: Max tokens to generate.
     :param num_ctx: Context window size (Ollama only).
     :param timeout: Request timeout in seconds.
+    :param priority: merLLM priority bucket (``chat``, ``reserved``,
+        ``short``, ``feedback``, ``background``). Forwarded as the
+        ``X-Priority`` header on Ollama calls. Defaults to ``short`` so
+        any new call site that forgets to choose lands in a safe middle
+        bucket instead of starving chat or jumping ahead of bulk work.
     :return: Raw response text from the LLM.
     :raises requests.HTTPError: On non-2xx response.
     """
@@ -125,7 +131,8 @@ def generate(
         text = _ollama_local(prompt, format=format,
                              temperature=temperature,
                              num_predict=num_predict,
-                             num_ctx=num_ctx, timeout=timeout)
+                             num_ctx=num_ctx, timeout=timeout,
+                             priority=priority)
 
     # For free-text (non-JSON) responses, strip untagged chain-of-thought
     # that Qwen3 emits when it ignores the think:false option.
@@ -136,7 +143,7 @@ def generate(
 
 def _ollama_local(
     prompt: str, *, format: str | None, temperature: float,
-    num_predict: int, num_ctx: int, timeout: int,
+    num_predict: int, num_ctx: int, timeout: int, priority: str,
 ) -> str:
     """Call Ollama via the local merLLM proxy (streaming)."""
     body: dict = {
@@ -151,7 +158,7 @@ def _ollama_local(
 
     resp = requests.post(
         config.OLLAMA_URL,
-        headers=config.ollama_headers(),
+        headers=config.ollama_headers(priority=priority),
         json=body,
         timeout=timeout,
         stream=True,
