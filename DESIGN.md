@@ -535,13 +535,13 @@ flowchart TD
     Sit["situation_manager thread pool"]
     Decay["score_decay_loop() thread"]
 
-    Sem["threading.Semaphore(1)\n_sem — Ollama calls serialised"]
-    Lock["threading.Lock()\ndb.lock — SQLite writes serialised"]
+    merLLM[("merLLM tracked queue\n(round-robin across GPUs)")]
+    Lock["threading.RLock()\ndb.lock — SQLite writes serialised"]
 
-    Scan -->|acquires| Sem
-    Reanalyze -->|acquires| Sem
-    Ingest -->|acquires| Sem
-    Seed -->|acquires| Sem
+    Scan -->|HTTP| merLLM
+    Reanalyze -->|HTTP| merLLM
+    Ingest -->|HTTP| merLLM
+    Seed -->|HTTP| merLLM
 
     Scan -->|acquires| Lock
     Reanalyze -->|acquires| Lock
@@ -550,11 +550,13 @@ flowchart TD
     Decay -->|acquires| Lock
 ```
 
-Squire runs several concurrent threads against a shared SQLite database and a shared Ollama endpoint. Two independent locks coordinate access to these shared resources.
+Squire runs several concurrent threads against a shared SQLite database and a shared LLM endpoint (merLLM, which fronts every GPU in the stack). One in-process lock coordinates DB access; **GPU concurrency is owned entirely by merLLM**, not by parsival.
 
-`_sem` (a `threading.Semaphore(1)`) serialises all Ollama calls. Every code path that calls `agent.analyze()` wraps it in `with _sem:`. This prevents multiple LLM requests from being submitted simultaneously to a single-GPU inference server, which would cause request queuing at Ollama and unpredictable latency. The semaphore count is a single constant in `orchestrator.py` and can be raised to match the number of available GPUs without changing any calling code.
+**LLM concurrency (squire#33).** Every parsival call to `agent.analyze()` is an HTTP call into merLLM, which round-robins across all available GPUs and runs its own unified tracked queue with priority lanes (interactive `_hi`, batch `_lo`). parsival used to wrap each call in a `threading.Semaphore(1)` named `_sem`, dating from the single-GPU era; that throttle was strictly subtractive (the lower of "merLLM queue depth" and "parsival semaphore count" wins, and ours was hard-coded to 1) and silently halved sync-path throughput on a 2-GPU stack. It was deleted in squire#33. The architectural rule is now:
 
-`db.lock` (a `threading.Lock()`) serialises all SQLite write operations. SQLite's WAL mode already allows concurrent reads to proceed while a write is in progress, so reads do not need to acquire this lock. Only operations that call `INSERT`, `UPDATE`, `DELETE`, or `UPSERT` acquire `db.lock`. Callers that need atomicity across multiple write operations — for example, upsert an item then insert a todo — acquire the lock themselves and call the `db.*` helpers within a single `with db.lock:` block.
+> merLLM is the single source of truth for GPU concurrency. parsival never gates LLM traffic on its own. If we ever need backpressure from merLLM, the right place is merLLM returning 429s (or its tracked queue blocking) — not a parsival-side pre-throttle.
+
+`db.lock` (a `threading.RLock()`) serialises all SQLite write operations. SQLite's WAL mode already allows concurrent reads to proceed while a write is in progress, so reads do not need to acquire this lock. Only operations that call `INSERT`, `UPDATE`, `DELETE`, or `UPSERT` acquire `db.lock`. Callers that need atomicity across multiple write operations — for example, upsert an item then insert a todo — acquire the lock themselves and call the `db.*` helpers within a single `with db.lock:` block. The lock is re-entrant so a thread that already holds it can call any helper without self-deadlocking.
 
 All long-running background jobs (`run_scan`, `run_reanalyze`, `process_ingest_items`) check `scan_state["cancelled"]` before processing each item and exit cleanly after the current item finishes. This means a cancel request is always honoured within one item's worth of latency (typically a few seconds) rather than requiring a process kill.
 
@@ -564,7 +566,7 @@ All long-running background jobs (`run_scan`, `run_reanalyze`, `process_ingest_i
 
 The orchestrator maintains a per-source scheduler using `asyncio` periodic tasks. The `scan_schedule` setting is a dict of `{source: interval_minutes}` where 0 = manual only. On startup (and whenever settings change via `POST /settings`), `orchestrator.scheduler_update()` cancels existing timers and registers new ones.
 
-Each scheduled scan runs `orchestrator.run_scan()` for its single source. If a scan is already running (the `_sem` is held), the scheduled scan logs a skip and defers to the next interval. This prevents pile-up when the LLM is slow or when multiple sources are scheduled at close intervals.
+Each scheduled scan runs `orchestrator.run_scan()` for its single source. If a scan is already in progress (`scan_state["running"]` is true), the scheduled scan logs a skip and defers to the next interval. This prevents pile-up when a long scan overlaps the next scheduled tick or when multiple sources are scheduled at close intervals.
 
 Schedule status is exposed via `GET /scan/status`, which includes a `auto_scans` dict with `next_run`, `last_run`, and `interval_min` per source.
 

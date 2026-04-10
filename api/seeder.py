@@ -23,7 +23,6 @@ import requests as http_requests
 import config
 import db
 import llm
-import orchestrator
 
 # ── Module-level references, set by init() ────────────────────────────────────
 
@@ -245,11 +244,14 @@ def _run_seed_job(context: str) -> None:
             )
             print(f"[seed] map batch {batch_num}/{n_batches}: {len(batch)} items")
             try:
-                with orchestrator.get_sem():
-                    text = llm.generate(
-                        prompt, format="json", temperature=0.2,
-                        num_predict=900, timeout=120,
-                    )
+                # No parsival-side throttle (squire#33): merLLM is the
+                # single source of truth for GPU concurrency, so we just
+                # call llm.generate directly and let merLLM's tracked
+                # queue do the gating.
+                text = llm.generate(
+                    prompt, format="json", temperature=0.2,
+                    num_predict=900, timeout=120,
+                )
                 print(f"[seed] map batch {batch_num} raw response: {text!r}")
                 data = json.loads(text or "{}")
                 print(f"[seed] map batch {batch_num}: {len(data.get('projects', []))} projects, {len(data.get('concerns', []))} concerns")
@@ -292,11 +294,12 @@ def _run_seed_job(context: str) -> None:
         )
 
         try:
-            with orchestrator.get_sem():
-                text = llm.generate(
-                    reduce_prompt, format="json", temperature=0.2,
-                    num_predict=1800, timeout=180,
-                )
+            # See the map-pass note above (squire#33): merLLM owns GPU
+            # concurrency; parsival just submits.
+            text = llm.generate(
+                reduce_prompt, format="json", temperature=0.2,
+                num_predict=1800, timeout=180,
+            )
             print(f"[seed] reduce raw response: {text!r}")
             final    = json.loads(text or "{}")
             projects = final.get("projects", [])

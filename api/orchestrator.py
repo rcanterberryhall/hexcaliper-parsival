@@ -1,19 +1,33 @@
 """
 orchestrator.py — Scan, reanalyze, and ingest orchestration for Squire.
 
-Owns the Ollama concurrency semaphore and the three background pipeline
-functions that drive item analysis:
+Owns the three background pipeline functions that drive item analysis:
 
   run_scan(sources)          — fetch from connectors, analyze, persist
   run_reanalyze()            — re-analyze all stored items with current config
   process_ingest_items(raw)  — analyze a pre-filtered list of new raw items
 
 scan_state and the analysis helper callables are injected via init().
-The module-level semaphore (_sem) is always available without init() so it
-can be used by seeder.py.
 
-The semaphore is exposed via get_sem() to support future multi-GPU dispatch
-without callers needing to access private state.
+GPU concurrency note (squire#33)
+--------------------------------
+This module used to wrap every ``analyze()`` call in a
+``threading.Semaphore(1)`` named ``_sem``, dating from the single-GPU era
+when parsival talked directly to Ollama.  Every parsival LLM call now goes
+through merLLM, which round-robins across all available GPUs and runs its
+own unified tracked queue.  Layering a parsival-side throttle on top of
+that is strictly subtractive — the lower of the two concurrency limits
+wins, and ours was hard-coded to 1, silently halving sync-path throughput.
+
+The architectural rule is therefore:
+
+    merLLM is the single source of truth for GPU concurrency.
+    parsival never gates LLM traffic on its own.
+
+If we ever need backpressure from merLLM, the right place is merLLM
+returning 429s (or its tracked queue blocking) — not a parsival-side
+pre-throttle that has to be kept in sync by hand every time the GPU
+topology changes.
 """
 import threading
 import time
@@ -36,10 +50,6 @@ import config
 import db
 import graph
 import noise_filter as _nf
-
-# ── Ollama concurrency semaphore ───────────────────────────────────────────────
-# Set to 1 for single GPU; raise the count for multi-GPU dispatch.
-_sem = threading.Semaphore(1)
 
 _TIMING_WINDOW = 10  # rolling average over last N items
 
@@ -72,11 +82,6 @@ def init(scan_state: dict, save_analysis_fn, spawn_situation_fn,
     _save_analysis        = save_analysis_fn
     _spawn_situation_task = spawn_situation_fn
     _generate_briefing    = generate_briefing_fn
-
-
-def get_sem() -> threading.Semaphore:
-    """Return the shared Ollama concurrency semaphore."""
-    return _sem
 
 
 def _now_iso() -> str:
@@ -327,10 +332,11 @@ def run_scan(sources: list[str]) -> None:
     Fetch items from one or more connectors and run LLM analysis on each.
 
     Iterates ``sources`` in order, calling the matching connector's ``fetch()``
-    method.  Each item is then passed to ``agent.analyze`` under ``_sem``
-    so only one Ollama call runs at a time.  Saves every result via
-    ``_save_analysis`` and spawns a situation-formation task per item.  A scan
-    log entry is written regardless of success or cancellation.
+    method.  Each item is then passed to ``agent.analyze``; concurrency
+    against the LLM is owned entirely by merLLM (see the module docstring
+    for the squire#33 rationale).  Saves every result via ``_save_analysis``
+    and spawns a situation-formation task per item.  A scan log entry is
+    written regardless of success or cancellation.
 
     Progress is reflected in the shared ``scan_state`` dict, which the
     frontend polls via ``GET /scan/status``.
@@ -382,8 +388,7 @@ def run_scan(sources: list[str]) -> None:
                 continue
             try:
                 _t0 = time.monotonic()
-                with _sem:
-                    results.append(analyze(item))
+                results.append(analyze(item))
                 _timing.append(time.monotonic() - _t0)
             except Exception as e:
                 log.error("agent %s: %s", item.item_id, e)
@@ -523,17 +528,17 @@ def run_reanalyze() -> None:
                             db.set_batch_job_id(rec["item_id"], job_id)
                         batch_submitted += 1
                     else:
-                        # Batch submit failed; fall back to direct Ollama
-                        with _sem:
-                            result = analyze(item)
+                        # Batch submit failed; fall back to direct merLLM call.
+                        # Concurrency against the LLM is owned by merLLM —
+                        # see module docstring (squire#33).
+                        result = analyze(item)
                         results.append(result)
                 except Exception as e:
                     log.error("reanalyze batch %s: %s", item.item_id, e)
             else:
                 try:
                     _t0 = time.monotonic()
-                    with _sem:
-                        result = analyze(item)
+                    result = analyze(item)
                     _timing.append(time.monotonic() - _t0)
                     results.append(result)
                 except Exception as e:
@@ -607,8 +612,7 @@ def process_ingest_items(raw: list[RawItem]) -> None:
                 _scan_state["ingest_pending"] = max(0, _scan_state["ingest_pending"] - 1)
             continue
         try:
-            with _sem:
-                result = analyze(item)
+            result = analyze(item)
             _save_analysis(result)
             graph.index_item(result)
             _spawn_situation_task(result.item_id)
