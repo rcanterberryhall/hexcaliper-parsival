@@ -139,7 +139,17 @@ def _merllm_batch_available() -> bool:
 
 
 def _submit_batch_job(prompt: str) -> str | None:
-    """Submit a prompt to merLLM batch API; return the job ID or None on failure."""
+    """Submit a prompt to merLLM batch API; return the job ID or None on failure.
+
+    merLLM returns ``{"ok": true, "id": "<uuid>"}`` from ``/api/batch/submit``
+    (see merllm/api/app.py::batch_submit). Reading ``job_id`` instead of
+    ``id`` used to silently return ``None`` on every successful submit,
+    which forced ``run_reanalyze`` into its direct-analyze fallback — so
+    every reanalyze item produced *two* LLM calls: one as a queued batch
+    job that ran eventually, and one direct ``analyze(..., priority=
+    "background")`` right away. This doubled the reanalyze LLM load and
+    masked the batch path entirely.
+    """
     try:
         r = http_requests.post(
             f"{config.MERLLM_URL}/api/batch/submit",
@@ -151,7 +161,7 @@ def _submit_batch_job(prompt: str) -> str | None:
             timeout=10,
         )
         r.raise_for_status()
-        return r.json().get("job_id")
+        return r.json().get("id")
     except Exception as e:
         log.error("batch submit failed: %s", e)
         return None
