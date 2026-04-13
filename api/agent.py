@@ -58,6 +58,7 @@ User context:
 - Active projects: {projects_ctx}
 - Watch topics: {topics_ctx}
 - Assignment corrections (learn from these past mistakes): {assignment_corrections_ctx}
+- Priority overrides (user has manually corrected these priority calls — weight these strongly): {priority_overrides_ctx}
 - Task indicators: {task_ctx} — keywords from items previously confirmed as tasks requiring action from {user_name}
 - Approval indicators: {approval_ctx} — keywords from items previously confirmed as approval events affecting {user_name}
 - FYI indicators: {fyi_ctx} — keywords from items previously confirmed as informational only for {user_name}
@@ -263,6 +264,43 @@ def _assignment_corrections_ctx() -> str:
         llm_own = c.get("llm_owner") or "me"
         correct = c.get("corrected_to", "")
         lines.append(f'  - "{desc}": LLM assigned to "{llm_own}", user corrected to "{correct}"')
+    return "\n" + "\n".join(lines)
+
+
+def _priority_overrides_ctx() -> str:
+    """
+    Build a readable summary of user priority overrides for the LLM prompt.
+
+    Each override records an item whose LLM-assigned priority the user manually
+    changed, along with a one-click reason.  Grouped by reason so the model can
+    learn the underlying pattern (a specific person matters, a topic is hot, a
+    real deadline exists, etc.) rather than memorising individual items.
+
+    Capped at 25 most recent overrides to keep the prompt size reasonable.
+
+    :return: Grouped-by-reason override summary, or ``"none"`` if empty.
+    :rtype: str
+    """
+    overrides = config.PRIORITY_OVERRIDES[-25:]
+    if not overrides:
+        return "none"
+    by_reason: dict[str, list[dict]] = {}
+    for o in overrides:
+        by_reason.setdefault(o.get("reason", "other"), []).append(o)
+    lines = []
+    for reason, entries in by_reason.items():
+        lines.append(f'  - Reason: {reason}')
+        for o in entries[-8:]:  # cap per-reason detail
+            author = o.get("author") or "unknown sender"
+            tag    = o.get("project_tag") or ""
+            llm_p  = o.get("llm_priority") or "?"
+            user_p = o.get("user_priority") or "?"
+            title  = (o.get("title") or "")[:80]
+            tag_part = f' [{tag}]' if tag else ""
+            lines.append(
+                f'    · "{title}" from {author}{tag_part}: '
+                f'LLM said {llm_p}, user set {user_p}'
+            )
     return "\n" + "\n".join(lines)
 
 
@@ -948,6 +986,7 @@ def build_prompt(item: RawItem) -> str:
         projects_ctx  = _projects_ctx(),
         topics_ctx    = _topics_ctx(),
         assignment_corrections_ctx = _assignment_corrections_ctx(),
+        priority_overrides_ctx     = _priority_overrides_ctx(),
         task_ctx      = _task_ctx(),
         approval_ctx  = _approval_ctx(),
         fyi_ctx       = _fyi_ctx(),
@@ -1210,6 +1249,7 @@ def analyze(item: RawItem, *, priority: str = "short") -> Analysis:
             projects_ctx  = _projects_ctx(),
             topics_ctx    = _topics_ctx(),
             assignment_corrections_ctx = _assignment_corrections_ctx(),
+            priority_overrides_ctx    = _priority_overrides_ctx(),
             task_ctx      = _task_ctx(),
             approval_ctx  = _approval_ctx(),
             fyi_ctx       = _fyi_ctx(),

@@ -731,6 +731,40 @@ tr.attn-low  { opacity:0.65; }
   display: flex; align-items: center; gap: 8px; flex-shrink: 0;
 }
 
+/* ── Priority-change reason modal ── */
+.pri-reason-overlay {
+  position: fixed; inset: 0; z-index: 120; background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center;
+}
+.pri-reason-modal {
+  background: var(--bg); border: 1px solid var(--border2); border-radius: var(--r);
+  padding: 18px 20px; width: 320px; max-width: 92vw;
+  display: flex; flex-direction: column; gap: 8px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.55);
+}
+.pri-reason-title {
+  font-family: var(--display); font-size: 13px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--accent); margin-bottom: 2px;
+}
+.pri-reason-help { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.pri-reason-btn {
+  font-size: 12px; text-align: left; padding: 8px 12px;
+  border: 1px solid var(--border2); background: transparent; color: var(--text);
+  border-radius: var(--r); cursor: pointer; transition: all .12s;
+}
+.pri-reason-btn:hover { border-color: var(--accent); color: var(--accent); }
+.pri-reason-footer {
+  display: flex; justify-content: space-between; gap: 6px; margin-top: 4px;
+  padding-top: 8px; border-top: 1px solid var(--border2);
+}
+.pri-reason-skip, .pri-reason-cancel {
+  font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  padding: 4px 10px; border: 1px solid var(--border2); background: transparent;
+  color: var(--muted); cursor: pointer; border-radius: var(--r);
+}
+.pri-reason-skip:hover   { color: var(--text); border-color: var(--text); }
+.pri-reason-cancel:hover { color: var(--red);  border-color: var(--red);  }
+
 /* ── Hamburger / sidebar backdrop ── */
 .menu-btn {
   display: none; background: none; border: 1px solid var(--border2);
@@ -1261,6 +1295,11 @@ tr.attn-low  { opacity:0.65; }
       <h3>Project learning</h3>
       <p>When you manually tag an item to a project (via ◈), Parsival extracts keywords from the item in the background and adds them to the project's learned keyword list. It also records the sender's address in the project's learned senders list. Both feed into future scans automatically.</p>
       <p>You can inspect and remove learned keywords and senders from the project row in Settings → Projects (click <strong>inspect</strong>).</p>
+    </div>
+
+    <div class="help-section">
+      <h3>Priority override feedback</h3>
+      <p>When you change an item's priority in the detail panel, Parsival prompts for a one-click reason: <em>this person matters</em>, <em>this topic is hot right now</em>, <em>deadline is real</em>, or <em>other</em>. The override is stored and injected into future analysis prompts as a learned rule, so the LLM can weight similar items correctly next time. Pick <em>Skip</em> to change the priority without recording a reason.</p>
     </div>
 
     <div class="help-section">
@@ -3324,6 +3363,40 @@ async function detailToggleDone(docId, done, itemId) {
   }
 }
 
+// Prompt the user for a one-click reason when they change an item's priority.
+// Returns one of the canonical reason codes, '' if they chose "skip",
+// or null if they cancelled (caller should abort the save).
+function askPriorityReason(fromPri, toPri) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'pri-reason-overlay';
+    overlay.innerHTML = `
+      <div class="pri-reason-modal">
+        <div class="pri-reason-title">Why ${esc(fromPri || '?')} → ${esc(toPri)}?</div>
+        <div class="pri-reason-help">Helps future analyses learn from this correction.</div>
+        <button class="pri-reason-btn" data-code="person_matters">This person matters</button>
+        <button class="pri-reason-btn" data-code="topic_hot">This topic is hot right now</button>
+        <button class="pri-reason-btn" data-code="deadline_real">Deadline is real</button>
+        <button class="pri-reason-btn" data-code="other">Other</button>
+        <div class="pri-reason-footer">
+          <button class="pri-reason-skip" data-code="">Skip</button>
+          <button class="pri-reason-cancel" data-code="__cancel__">Cancel</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = val => { overlay.remove(); resolve(val); };
+    overlay.addEventListener('click', e => {
+      const btn = e.target.closest('button[data-code]');
+      if (!btn) { if (e.target === overlay) close(null); return; }
+      const code = btn.dataset.code;
+      close(code === '__cancel__' ? null : code);
+    });
+    document.addEventListener('keydown', function onKey(e) {
+      if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); close(null); }
+    });
+  });
+}
+
 async function saveDetailEdits(itemId) {
   const pri        = $('detailPri').value;
   const cat        = $('detailCat').value;
@@ -3335,9 +3408,17 @@ async function saveDetailEdits(itemId) {
   const body = { priority: pri, category: cat, task_type: taskType, is_passdown: isPassdown };
   body.project_tag = projTags.length ? projTags : null;
 
+  // If the user changed priority, ask for a one-click reason so the LLM can
+  // learn from the correction on future scans.
+  const a = findAnalysis(itemId);
+  if (a && a.priority !== pri) {
+    const reason = await askPriorityReason(a.priority, pri);
+    if (reason === null) { return; }  // user cancelled
+    if (reason)          { body.priority_reason = reason; }
+  }
+
   // Optimistic: snapshot the prior record, mutate in place, re-render from
   // the local cache. On failure we restore the snapshot.
-  const a = findAnalysis(itemId);
   const snapshot = a ? {
     priority:    a.priority,
     category:    a.category,

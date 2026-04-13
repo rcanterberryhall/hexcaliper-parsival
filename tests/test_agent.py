@@ -467,3 +467,57 @@ class TestBuildAnalysisFromLlmJson:
         assert result.direction == "sent"
         assert result.conversation_id == "C123"
         assert result.conversation_topic == "Release"
+
+
+# ── priority overrides (squire#38) ────────────────────────────────────────────
+
+def test_priority_overrides_ctx_empty():
+    import config
+    prev = list(config.PRIORITY_OVERRIDES)
+    config.PRIORITY_OVERRIDES = []
+    try:
+        assert agent._priority_overrides_ctx() == "none"
+    finally:
+        config.PRIORITY_OVERRIDES = prev
+
+
+def test_priority_overrides_ctx_groups_by_reason():
+    import config
+    prev = list(config.PRIORITY_OVERRIDES)
+    config.PRIORITY_OVERRIDES = [
+        {"author": "boss@co.com", "project_tag": "Acme",
+         "title": "Weekly sync", "llm_priority": "low",
+         "user_priority": "high", "reason": "person_matters",
+         "created_at": "2026-04-12T10:00:00"},
+        {"author": "ops@co.com", "project_tag": "",
+         "title": "Outage", "llm_priority": "medium",
+         "user_priority": "high", "reason": "topic_hot",
+         "created_at": "2026-04-12T11:00:00"},
+    ]
+    try:
+        out = agent._priority_overrides_ctx()
+        assert "person_matters" in out
+        assert "topic_hot"       in out
+        assert "boss@co.com"     in out
+        assert "Acme"            in out
+        assert "LLM said low, user set high" in out
+    finally:
+        config.PRIORITY_OVERRIDES = prev
+
+
+def test_build_prompt_includes_priority_overrides():
+    import config
+    prev = list(config.PRIORITY_OVERRIDES)
+    config.PRIORITY_OVERRIDES = [{
+        "author": "boss@co.com", "project_tag": "Acme",
+        "title": "Deadline incoming", "llm_priority": "low",
+        "user_priority": "high", "reason": "deadline_real",
+        "created_at": "2026-04-12T10:00:00",
+    }]
+    try:
+        prompt = agent.build_prompt(_raw())
+        assert "Priority overrides" in prompt
+        assert "deadline_real" in prompt
+        assert "Deadline incoming" in prompt
+    finally:
+        config.PRIORITY_OVERRIDES = prev

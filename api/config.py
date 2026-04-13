@@ -153,6 +153,10 @@ FYI_KEYWORDS:          list[str]  = []
 # Correction examples grown from manual re-assignments.
 # Each entry: {description, llm_owner, corrected_to}
 ASSIGNMENT_CORRECTIONS: list[dict] = []
+# Priority override rules grown from manual priority changes with reasons.
+# Each entry: {author, project_tag, title, llm_priority, user_priority,
+#              reason, created_at}  (see app.py::patch_analysis)
+PRIORITY_OVERRIDES: list[dict] = []
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
@@ -239,6 +243,8 @@ def apply_overrides(d: dict) -> None:
         setattr(mod, "FYI_KEYWORDS", d["fyi_keywords"])
     if "assignment_corrections" in d and isinstance(d["assignment_corrections"], list):
         setattr(mod, "ASSIGNMENT_CORRECTIONS", d["assignment_corrections"])
+    if "priority_overrides" in d and isinstance(d["priority_overrides"], list):
+        setattr(mod, "PRIORITY_OVERRIDES", d["priority_overrides"])
     if "lookback_hours" in d and d["lookback_hours"] not in (None, ""):
         setattr(mod, "LOOKBACK_HOURS", int(d["lookback_hours"]))
 

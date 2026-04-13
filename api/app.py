@@ -932,9 +932,20 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
     allowed_priorities = {"high", "medium", "low"}
     allowed_categories = {"task", "approval", "fyi", "noise"}
     allowed_task_types = {"reply", "review", None}
+    allowed_priority_reasons = {
+        "person_matters",
+        "topic_hot",
+        "deadline_real",
+        "other",
+    }
     updates = {}
     if "priority" in body and body["priority"] in allowed_priorities:
         updates["priority"] = body["priority"]
+    # Optional one-click reason for the priority change, used to grow
+    # PRIORITY_OVERRIDES so future analyses learn from the correction.
+    priority_reason = body.get("priority_reason")
+    if priority_reason not in allowed_priority_reasons:
+        priority_reason = None
     if "category" in body and body["category"] in allowed_categories:
         updates["category"] = body["category"]
         if body["category"] in ("noise", "fyi"):
@@ -1013,7 +1024,63 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
     if "project_tag" in updates and updates["project_tag"]:
         _attn.record_action(item_id, "tagged")
 
+    # Record priority override with user-supplied reason so the LLM prompt
+    # picks it up on the next analysis (see agent.PRIORITY_OVERRIDES).
+    old_priority = old_record.get("priority")
+    new_priority = updates.get("priority")
+    if (
+        priority_reason
+        and "priority" in updates
+        and new_priority
+        and new_priority != old_priority
+    ):
+        background_tasks.add_task(
+            _record_priority_override,
+            old_record, old_priority, new_priority, priority_reason,
+        )
+
     return {"ok": True, **updates}
+
+
+def _record_priority_override(
+    record: dict,
+    llm_priority: str | None,
+    user_priority: str,
+    reason: str,
+) -> None:
+    """
+    Append a priority override entry to settings so the analysis prompt can
+    learn from it.
+
+    Mirrors the shape of ``ASSIGNMENT_CORRECTIONS``: entries are grown
+    unbounded on the settings object but capped when they're read into the
+    prompt.  A hard cap of 100 is applied here so the settings row cannot grow
+    without limit.
+    """
+    try:
+        with db.lock:
+            saved = db.get_settings()
+        overrides = list(saved.get("priority_overrides", []))
+        overrides.append({
+            "item_id":       record.get("item_id"),
+            "author":        record.get("author", ""),
+            "project_tag":   record.get("project_tag", ""),
+            "title":         (record.get("title") or "")[:160],
+            "llm_priority":  llm_priority,
+            "user_priority": user_priority,
+            "reason":        reason,
+            "created_at":    now_iso(),
+        })
+        # Cap at 100 most recent overrides.
+        overrides = overrides[-100:]
+        saved["priority_overrides"] = overrides
+        with db.lock:
+            db.save_settings(saved)
+        config.apply_overrides(saved)
+        print(f"[priority_override] {reason}: {llm_priority} -> {user_priority} "
+              f"({len(overrides)} total)")
+    except Exception as e:
+        print(f"[priority_override] failed to record: {e}")
 
 
 @app.post("/analyses/{item_id}/tag")

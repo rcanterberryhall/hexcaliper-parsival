@@ -481,6 +481,55 @@ def test_patch_analysis_priority_syncs_to_todos(client):
     assert todos.get(Q.item_id == "p1")["priority"] == "high"
 
 
+def test_patch_analysis_priority_reason_records_override(client):
+    """A priority change with a valid reason should append to PRIORITY_OVERRIDES."""
+    import config
+    import db as _db
+    config.PRIORITY_OVERRIDES = []
+    _insert_analysis(item_id="po1", priority="low", author="boss@example.com",
+                     title="Weekly sync")
+    r = client.patch("/analyses/po1", json={"priority": "high",
+                                             "priority_reason": "person_matters"})
+    assert r.status_code == 200
+    # Background task runs synchronously under TestClient once the response returns.
+    saved = _db.get_settings()
+    overrides = saved.get("priority_overrides", [])
+    assert len(overrides) == 1
+    o = overrides[0]
+    assert o["reason"]        == "person_matters"
+    assert o["llm_priority"]  == "low"
+    assert o["user_priority"] == "high"
+    assert o["author"]        == "boss@example.com"
+    assert o["title"]         == "Weekly sync"
+    # config.PRIORITY_OVERRIDES is refreshed via apply_overrides.
+    assert config.PRIORITY_OVERRIDES and \
+        config.PRIORITY_OVERRIDES[-1]["reason"] == "person_matters"
+
+
+def test_patch_analysis_invalid_priority_reason_ignored(client):
+    """An unknown priority_reason must not pollute PRIORITY_OVERRIDES."""
+    import config
+    import db as _db
+    config.PRIORITY_OVERRIDES = []
+    _insert_analysis(item_id="po2", priority="medium")
+    r = client.patch("/analyses/po2", json={"priority": "high",
+                                             "priority_reason": "banana"})
+    assert r.status_code == 200
+    saved = _db.get_settings()
+    assert not saved.get("priority_overrides")
+
+
+def test_patch_analysis_priority_reason_without_priority_change_ignored(client):
+    """If priority didn't actually change, no override is recorded."""
+    import db as _db
+    _insert_analysis(item_id="po3", priority="high")
+    r = client.patch("/analyses/po3", json={"priority": "high",
+                                             "priority_reason": "deadline_real"})
+    assert r.status_code == 200
+    saved = _db.get_settings()
+    assert not saved.get("priority_overrides")
+
+
 # ── /reanalyze ─────────────────────────────────────────────────────────────────
 
 def test_reanalyze_rejects_concurrent_scan(client):
