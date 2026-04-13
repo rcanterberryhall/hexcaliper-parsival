@@ -1,6 +1,6 @@
-# Hexcaliper Squire
+# Parsival
 
-A companion service for [Hexcaliper](https://github.com/rcanterberryhall/hexcaliper) that consolidates responsibilities from Outlook, Slack, GitHub, Jira, and Microsoft Teams into a single ops dashboard. Uses the Hexcaliper Ollama instance to extract action items, priority, goals, key dates, and context-aware relevance signals — no data leaves your infrastructure.
+Parsival is one of three apps in the [Hexcaliper](https://github.com/rcanterberryhall) ecosystem — a sibling of [LanceLLMot](https://github.com/rcanterberryhall/hexcaliper-lanceLLMot) (document assistant) and [merLLM](https://github.com/rcanterberryhall/hexcaliper-merLLM) (GPU scheduler). It consolidates responsibilities from Outlook, Slack, GitHub, Jira, and Microsoft Teams into a single ops dashboard. Uses the shared Ollama instance (via merLLM) to extract action items, priority, goals, key dates, and context-aware relevance signals — no data leaves your infrastructure.
 
 Parsival includes scheduled auto-scans, an adaptive attention model that learns from your behavior, a situation lifecycle workflow, pre-scan noise filters, and encrypted credential storage.
 
