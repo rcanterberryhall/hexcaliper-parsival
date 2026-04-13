@@ -3394,3 +3394,202 @@ def merllm_default_model():
         return r.json()
     except Exception as exc:
         return {"model": None, "error": str(exc)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Look-ahead board (parsival#48)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Manually planned 14-day board.  Cards, per-project shift schedules, and a
+# global resource catalog with per-card BOM entries.  The frontend loads a
+# windowed card set (?start=&end=) plus the project's shifts, then renders a
+# Gantt-style board.
+
+import uuid as _uuid
+
+
+def _card_input(body: dict, *, require_all: bool = False) -> dict:
+    """Validate and normalise a card create/update payload."""
+    allowed = ("title", "project", "assignee", "start_date", "start_shift_num",
+               "end_date", "end_shift_num", "status", "notes",
+               "template_instance_id", "template_task_local_id")
+    data = {k: body[k] for k in allowed if k in body}
+
+    if require_all:
+        missing = [k for k in ("title", "project", "start_date", "end_date") if not data.get(k)]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"missing fields: {','.join(missing)}")
+
+    if "status" in data and data["status"] not in db._CARD_STATUSES:
+        raise HTTPException(status_code=400, detail=f"invalid status: {data['status']}")
+    for k in ("start_shift_num", "end_shift_num"):
+        if k in data:
+            try:
+                data[k] = int(data[k])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{k} must be an integer")
+    if "start_date" in data and "end_date" in data:
+        if data["end_date"] < data["start_date"]:
+            raise HTTPException(status_code=400, detail="end_date before start_date")
+    return data
+
+
+@app.get("/lookahead/cards")
+def lookahead_list_cards(project: Optional[str] = None,
+                          start: Optional[str]   = None,
+                          end:   Optional[str]   = None):
+    """List cards, optionally filtered by project tag and overlapping date window."""
+    with db.lock:
+        return db.list_lookahead_cards(project=project, start_date=start, end_date=end)
+
+
+@app.get("/lookahead/cards/{card_id}")
+def lookahead_get_card(card_id: str):
+    with db.lock:
+        card = db.get_lookahead_card(card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="card not found")
+    return card
+
+
+@app.post("/lookahead/cards")
+def lookahead_create_card(body: dict):
+    data = _card_input(body, require_all=True)
+    data["id"] = body.get("id") or str(_uuid.uuid4())
+    data.setdefault("start_shift_num", 1)
+    data.setdefault("end_shift_num", 1)
+    data.setdefault("status", "planned")
+    with db.lock:
+        card = db.upsert_lookahead_card(data)
+        if "depends_on" in body:
+            db.set_card_dependencies(card["id"], body["depends_on"] or [])
+        if "links" in body:
+            db.set_card_links(card["id"], body["links"] or [])
+        if "resources" in body:
+            db.set_card_resources(card["id"], body["resources"] or [])
+        return db.get_lookahead_card(card["id"])
+
+
+@app.patch("/lookahead/cards/{card_id}")
+def lookahead_update_card(card_id: str, body: dict):
+    data = _card_input(body)
+    with db.lock:
+        if not db.get_lookahead_card(card_id):
+            raise HTTPException(status_code=404, detail="card not found")
+        if data:
+            data["id"] = card_id
+            db.upsert_lookahead_card(data)
+        if "depends_on" in body:
+            db.set_card_dependencies(card_id, body["depends_on"] or [])
+        if "links" in body:
+            db.set_card_links(card_id, body["links"] or [])
+        if "resources" in body:
+            db.set_card_resources(card_id, body["resources"] or [])
+        return db.get_lookahead_card(card_id)
+
+
+@app.delete("/lookahead/cards/{card_id}")
+def lookahead_delete_card(card_id: str):
+    with db.lock:
+        db.delete_lookahead_card(card_id)
+    return {"ok": True}
+
+
+@app.patch("/lookahead/cards/{card_id}/resources/{resource_id}")
+def lookahead_set_card_resource_status(card_id: str, resource_id: int, body: dict):
+    status = body.get("status")
+    if status not in db._RESOURCE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"invalid status: {status}")
+    with db.lock:
+        db.set_card_resource_status(card_id, resource_id, status)
+        return db.get_lookahead_card(card_id)
+
+
+# ── Resources ────────────────────────────────────────────────────────────────
+
+@app.get("/lookahead/resources")
+def lookahead_list_resources(type: Optional[str] = None):
+    with db.lock:
+        return db.list_resources(type_filter=type)
+
+
+@app.post("/lookahead/resources")
+def lookahead_create_resource(body: dict):
+    name = (body.get("name") or "").strip()
+    type_ = body.get("type") or "person"
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if type_ not in db._RESOURCE_TYPES:
+        raise HTTPException(status_code=400, detail=f"invalid type: {type_}")
+    with db.lock:
+        return db.create_resource(name, type_, body.get("notes", ""))
+
+
+@app.patch("/lookahead/resources/{resource_id}")
+def lookahead_update_resource(resource_id: int, body: dict):
+    try:
+        with db.lock:
+            res = db.update_resource(resource_id, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not res:
+        raise HTTPException(status_code=404, detail="resource not found")
+    return res
+
+
+@app.delete("/lookahead/resources/{resource_id}")
+def lookahead_delete_resource(resource_id: int):
+    with db.lock:
+        db.delete_resource(resource_id)
+    return {"ok": True}
+
+
+# ── Project shifts ────────────────────────────────────────────────────────────
+
+@app.get("/lookahead/shifts")
+def lookahead_list_shifts(project: Optional[str] = None):
+    with db.lock:
+        return db.list_project_shifts(project_tag=project)
+
+
+@app.put("/lookahead/shifts/{project_tag}/{shift_num}")
+def lookahead_upsert_shift(project_tag: str, shift_num: int, body: dict):
+    if shift_num not in (1, 2, 3):
+        raise HTTPException(status_code=400, detail="shift_num must be 1, 2, or 3")
+    with db.lock:
+        return db.upsert_project_shift(project_tag, shift_num, body)
+
+
+@app.delete("/lookahead/shifts/{project_tag}/{shift_num}")
+def lookahead_delete_shift(project_tag: str, shift_num: int):
+    with db.lock:
+        db.delete_project_shift(project_tag, shift_num)
+    return {"ok": True}
+
+
+# ── Overview (cross-project) ─────────────────────────────────────────────────
+
+@app.get("/lookahead/overview")
+def lookahead_overview(start: Optional[str] = None, end: Optional[str] = None):
+    """Return one row per project with cards overlapping the window.
+
+    Empty-window projects are omitted so the UI can render only rows that
+    actually have activity.  Rows are sorted by the soonest card's start_date.
+    """
+    with db.lock:
+        cards = db.list_lookahead_cards(start_date=start, end_date=end)
+    by_project: dict[str, list] = {}
+    for card in cards:
+        by_project.setdefault(card["project"] or "", []).append(card)
+    rows = []
+    for project, project_cards in by_project.items():
+        if not project:
+            continue
+        project_cards.sort(key=lambda c: (c["start_date"], c["start_shift_num"]))
+        rows.append({
+            "project":  project,
+            "cards":    project_cards,
+            "earliest": project_cards[0]["start_date"] if project_cards else None,
+        })
+    rows.sort(key=lambda r: r["earliest"] or "")
+    return rows

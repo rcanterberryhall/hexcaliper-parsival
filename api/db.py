@@ -418,6 +418,92 @@ def _create_schema(c: sqlite3.Connection) -> None:
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_emails_email ON contact_emails(email);
     CREATE INDEX IF NOT EXISTS idx_contact_emails_contact ON contact_emails(contact_id);
+
+    -- ── Look-ahead (parsival#48) ──────────────────────────────────────────────
+    --
+    -- Manually planned work on a 14-day rolling board, grouped by project.
+    -- Cards have UUID PKs so they can be linked from other systems without
+    -- leaking autoincrement counters.  Dates are YYYY-MM-DD strings, times
+    -- HH:MM, shift-day lists are comma-separated (M,T,W,Th,F,Sa,Su) — all
+    -- human-readable, no bitmasks or epoch ints.
+
+    CREATE TABLE IF NOT EXISTS lookahead_cards (
+        id                     TEXT    PRIMARY KEY,
+        title                  TEXT    NOT NULL DEFAULT '',
+        project                TEXT    NOT NULL DEFAULT '',
+        assignee               TEXT    NOT NULL DEFAULT '',
+        start_date             TEXT    NOT NULL DEFAULT '',
+        start_shift_num        INTEGER NOT NULL DEFAULT 1,
+        end_date               TEXT    NOT NULL DEFAULT '',
+        end_shift_num          INTEGER NOT NULL DEFAULT 1,
+        status                 TEXT    NOT NULL DEFAULT 'planned',
+        notes                  TEXT    NOT NULL DEFAULT '',
+        template_instance_id   TEXT,
+        template_task_local_id TEXT,
+        created_at             TEXT    NOT NULL DEFAULT '',
+        updated_at             TEXT    NOT NULL DEFAULT ''
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_la_cards_project  ON lookahead_cards(project);
+    CREATE INDEX IF NOT EXISTS idx_la_cards_dates    ON lookahead_cards(start_date, end_date);
+    CREATE INDEX IF NOT EXISTS idx_la_cards_assignee ON lookahead_cards(assignee);
+    CREATE INDEX IF NOT EXISTS idx_la_cards_status   ON lookahead_cards(status);
+
+    CREATE TABLE IF NOT EXISTS lookahead_card_deps (
+        card_id       TEXT NOT NULL,
+        depends_on_id TEXT NOT NULL,
+        PRIMARY KEY (card_id, depends_on_id),
+        FOREIGN KEY (card_id)       REFERENCES lookahead_cards(id) ON DELETE CASCADE,
+        FOREIGN KEY (depends_on_id) REFERENCES lookahead_cards(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_la_deps_card ON lookahead_card_deps(card_id);
+    CREATE INDEX IF NOT EXISTS idx_la_deps_dep  ON lookahead_card_deps(depends_on_id);
+
+    CREATE TABLE IF NOT EXISTS lookahead_card_links (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        card_id   TEXT    NOT NULL,
+        link_type TEXT    NOT NULL,
+        target_id TEXT    NOT NULL,
+        FOREIGN KEY (card_id) REFERENCES lookahead_cards(id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_la_links_unique ON lookahead_card_links(card_id, link_type, target_id);
+    CREATE INDEX IF NOT EXISTS idx_la_links_card          ON lookahead_card_links(card_id);
+
+    CREATE TABLE IF NOT EXISTS lookahead_resources (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT    NOT NULL DEFAULT '',
+        type       TEXT    NOT NULL DEFAULT 'person',
+        notes      TEXT    NOT NULL DEFAULT '',
+        created_at TEXT    NOT NULL DEFAULT ''
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_la_resources_type ON lookahead_resources(type);
+    CREATE INDEX IF NOT EXISTS idx_la_resources_name ON lookahead_resources(name);
+
+    CREATE TABLE IF NOT EXISTS lookahead_card_resources (
+        card_id     TEXT    NOT NULL,
+        resource_id INTEGER NOT NULL,
+        quantity    REAL    NOT NULL DEFAULT 1,
+        status      TEXT    NOT NULL DEFAULT 'needed',
+        PRIMARY KEY (card_id, resource_id),
+        FOREIGN KEY (card_id)     REFERENCES lookahead_cards(id)     ON DELETE CASCADE,
+        FOREIGN KEY (resource_id) REFERENCES lookahead_resources(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_la_card_res_card ON lookahead_card_resources(card_id);
+    CREATE INDEX IF NOT EXISTS idx_la_card_res_res  ON lookahead_card_resources(resource_id);
+
+    CREATE TABLE IF NOT EXISTS project_shifts (
+        project_tag TEXT    NOT NULL,
+        shift_num   INTEGER NOT NULL,
+        label       TEXT    NOT NULL DEFAULT '',
+        start_time  TEXT    NOT NULL DEFAULT '',
+        end_time    TEXT    NOT NULL DEFAULT '',
+        days        TEXT    NOT NULL DEFAULT '',
+        PRIMARY KEY (project_tag, shift_num)
+    );
     """)
 
 
@@ -1450,3 +1536,245 @@ def upsert_contact_from_header(
         (contact_id, email_lc, now),
     )
     return contact_id
+
+
+# ── Look-ahead board (parsival#48) ────────────────────────────────────────────
+#
+# Cards, dependencies, links, resources and per-project shift schedules power
+# the two-week look-ahead view.  Helpers return plain dicts (with relation
+# lists inlined) so the API layer can hand them straight to the frontend.
+
+_CARD_STATUSES   = ("planned", "in_progress", "done", "blocked")
+_RESOURCE_TYPES  = ("person", "equipment", "space", "part", "supply")
+_RESOURCE_STATUSES = ("needed", "secured", "consumed")
+_LINK_TYPES      = ("todo", "situation", "key_date")
+
+
+def _card_with_relations(row: dict) -> dict:
+    """Expand a lookahead_cards row with deps/links/resources inlined."""
+    if not row:
+        return None
+    c = conn()
+    cid = row["id"]
+    row["depends_on"] = [
+        r["depends_on_id"] for r in c.execute(
+            "SELECT depends_on_id FROM lookahead_card_deps WHERE card_id = ?", (cid,)
+        ).fetchall()
+    ]
+    row["links"] = [
+        {"type": r["link_type"], "id": r["target_id"]}
+        for r in c.execute(
+            "SELECT link_type, target_id FROM lookahead_card_links WHERE card_id = ?", (cid,)
+        ).fetchall()
+    ]
+    row["resources"] = [
+        dict(r) for r in c.execute(
+            "SELECT cr.resource_id, cr.quantity, cr.status, r.name, r.type "
+            "FROM lookahead_card_resources cr "
+            "JOIN lookahead_resources r ON r.id = cr.resource_id "
+            "WHERE cr.card_id = ? ORDER BY r.name",
+            (cid,),
+        ).fetchall()
+    ]
+    return row
+
+
+def get_lookahead_card(card_id: str) -> Optional[dict]:
+    row = conn().execute("SELECT * FROM lookahead_cards WHERE id = ?", (card_id,)).fetchone()
+    return _card_with_relations(_row_to_dict(row)) if row else None
+
+
+def list_lookahead_cards(project: Optional[str] = None,
+                         start_date: Optional[str] = None,
+                         end_date: Optional[str] = None) -> list[dict]:
+    """List cards, optionally filtered by project and an overlapping date window."""
+    sql  = "SELECT * FROM lookahead_cards"
+    args: list = []
+    where: list[str] = []
+    if project:
+        where.append("project = ?")
+        args.append(project)
+    if start_date and end_date:
+        # Include cards whose span overlaps [start_date, end_date].
+        where.append("NOT (end_date < ? OR start_date > ?)")
+        args.extend([start_date, end_date])
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY start_date, start_shift_num, id"
+    rows = _rows_to_list(conn().execute(sql, args).fetchall())
+    return [_card_with_relations(r) for r in rows]
+
+
+def upsert_lookahead_card(data: dict) -> dict:
+    """Insert or update a card; ``data`` must include ``id``."""
+    cid = data["id"]
+    now = _now_iso()
+    c = conn()
+    existing = c.execute("SELECT id FROM lookahead_cards WHERE id = ?", (cid,)).fetchone()
+    if existing:
+        updates = {k: v for k, v in data.items() if k != "id"}
+        updates["updated_at"] = now
+        set_clause = ", ".join(f'"{k}" = ?' for k in updates)
+        c.execute(
+            f"UPDATE lookahead_cards SET {set_clause} WHERE id = ?",
+            list(updates.values()) + [cid],
+        )
+    else:
+        data.setdefault("created_at", now)
+        data.setdefault("updated_at", now)
+        cols   = list(data.keys())
+        placeholders = ", ".join("?" * len(cols))
+        col_names    = ", ".join(f'"{k}"' for k in cols)
+        c.execute(
+            f"INSERT INTO lookahead_cards ({col_names}) VALUES ({placeholders})",
+            [data[k] for k in cols],
+        )
+    return get_lookahead_card(cid)
+
+
+def delete_lookahead_card(card_id: str) -> None:
+    conn().execute("DELETE FROM lookahead_cards WHERE id = ?", (card_id,))
+
+
+def set_card_dependencies(card_id: str, depends_on_ids: list[str]) -> None:
+    c = conn()
+    c.execute("DELETE FROM lookahead_card_deps WHERE card_id = ?", (card_id,))
+    for dep_id in depends_on_ids or []:
+        if dep_id == card_id:
+            continue  # self-dependency is meaningless
+        c.execute(
+            "INSERT OR IGNORE INTO lookahead_card_deps (card_id, depends_on_id) VALUES (?, ?)",
+            (card_id, dep_id),
+        )
+
+
+def set_card_links(card_id: str, links: list[dict]) -> None:
+    """Replace the link set on a card. ``links`` is [{type, id}, ...]."""
+    c = conn()
+    c.execute("DELETE FROM lookahead_card_links WHERE card_id = ?", (card_id,))
+    for link in links or []:
+        lt = link.get("type")
+        tid = link.get("id")
+        if lt not in _LINK_TYPES or not tid:
+            continue
+        c.execute(
+            "INSERT OR IGNORE INTO lookahead_card_links (card_id, link_type, target_id) "
+            "VALUES (?, ?, ?)",
+            (card_id, lt, str(tid)),
+        )
+
+
+def set_card_resources(card_id: str, entries: list[dict]) -> None:
+    """Replace the card's BOM entries. ``entries`` is [{resource_id, quantity, status}]."""
+    c = conn()
+    c.execute("DELETE FROM lookahead_card_resources WHERE card_id = ?", (card_id,))
+    for e in entries or []:
+        rid = e.get("resource_id")
+        if rid is None:
+            continue
+        qty    = float(e.get("quantity", 1))
+        status = e.get("status", "needed")
+        if status not in _RESOURCE_STATUSES:
+            status = "needed"
+        c.execute(
+            "INSERT OR REPLACE INTO lookahead_card_resources "
+            "(card_id, resource_id, quantity, status) VALUES (?, ?, ?, ?)",
+            (card_id, int(rid), qty, status),
+        )
+
+
+def set_card_resource_status(card_id: str, resource_id: int, status: str) -> None:
+    if status not in _RESOURCE_STATUSES:
+        raise ValueError(f"invalid status: {status}")
+    conn().execute(
+        "UPDATE lookahead_card_resources SET status = ? WHERE card_id = ? AND resource_id = ?",
+        (status, card_id, int(resource_id)),
+    )
+
+
+# ── Resources (global catalog) ────────────────────────────────────────────────
+
+def list_resources(type_filter: Optional[str] = None) -> list[dict]:
+    sql = "SELECT * FROM lookahead_resources"
+    args: list = []
+    if type_filter:
+        sql += " WHERE type = ?"
+        args.append(type_filter)
+    sql += " ORDER BY type, name"
+    return _rows_to_list(conn().execute(sql, args).fetchall())
+
+
+def get_resource(resource_id: int) -> Optional[dict]:
+    row = conn().execute("SELECT * FROM lookahead_resources WHERE id = ?",
+                         (int(resource_id),)).fetchone()
+    return _row_to_dict(row)
+
+
+def create_resource(name: str, type_: str, notes: str = "") -> dict:
+    if type_ not in _RESOURCE_TYPES:
+        raise ValueError(f"invalid resource type: {type_}")
+    cur = conn().execute(
+        "INSERT INTO lookahead_resources (name, type, notes, created_at) VALUES (?, ?, ?, ?)",
+        (name.strip(), type_, notes, _now_iso()),
+    )
+    return get_resource(cur.lastrowid)
+
+
+def update_resource(resource_id: int, updates: dict) -> Optional[dict]:
+    allowed = {k: v for k, v in updates.items() if k in ("name", "type", "notes")}
+    if not allowed:
+        return get_resource(resource_id)
+    if "type" in allowed and allowed["type"] not in _RESOURCE_TYPES:
+        raise ValueError(f"invalid resource type: {allowed['type']}")
+    set_clause = ", ".join(f'"{k}" = ?' for k in allowed)
+    conn().execute(
+        f"UPDATE lookahead_resources SET {set_clause} WHERE id = ?",
+        list(allowed.values()) + [int(resource_id)],
+    )
+    return get_resource(resource_id)
+
+
+def delete_resource(resource_id: int) -> None:
+    conn().execute("DELETE FROM lookahead_resources WHERE id = ?", (int(resource_id),))
+
+
+# ── Project shift schedules ───────────────────────────────────────────────────
+
+def list_project_shifts(project_tag: Optional[str] = None) -> list[dict]:
+    sql  = "SELECT * FROM project_shifts"
+    args: list = []
+    if project_tag:
+        sql += " WHERE project_tag = ?"
+        args.append(project_tag)
+    sql += " ORDER BY project_tag, shift_num"
+    return _rows_to_list(conn().execute(sql, args).fetchall())
+
+
+def upsert_project_shift(project_tag: str, shift_num: int, data: dict) -> dict:
+    """Insert or update a single shift row for a project."""
+    label = data.get("label", "")
+    start_time = data.get("start_time", "")
+    end_time   = data.get("end_time", "")
+    days       = data.get("days", "")
+    conn().execute(
+        "INSERT INTO project_shifts (project_tag, shift_num, label, start_time, end_time, days) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(project_tag, shift_num) DO UPDATE SET "
+        "  label = excluded.label, "
+        "  start_time = excluded.start_time, "
+        "  end_time = excluded.end_time, "
+        "  days = excluded.days",
+        (project_tag, int(shift_num), label, start_time, end_time, days),
+    )
+    row = conn().execute(
+        "SELECT * FROM project_shifts WHERE project_tag = ? AND shift_num = ?",
+        (project_tag, int(shift_num)),
+    ).fetchone()
+    return _row_to_dict(row)
+
+
+def delete_project_shift(project_tag: str, shift_num: int) -> None:
+    conn().execute(
+        "DELETE FROM project_shifts WHERE project_tag = ? AND shift_num = ?",
+        (project_tag, int(shift_num)),
+    )
