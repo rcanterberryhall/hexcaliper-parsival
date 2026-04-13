@@ -483,6 +483,17 @@ Repeatable work can be saved as a **template**: a small graph of tasks with rela
 
 Nested templates and "apply changes to active instance" are explicitly out of scope for v2; cross-system LLM linking lands with #50.
 
+### Cross-system linking
+
+Cards can reach into the rest of Parsival's information stream:
+
+- **Procedure docs.** Any card — manual or template-spawned — can carry a `linked_procedure_doc` URL. The card editor renders a "View procedure →" button next to the field, and cards with a procedure doc get a small `📄` chip on the board. Template tasks may declare the URL once so every instantiated card inherits it.
+- **Item links.** The card editor accepts `item` as a link type, pointing at an item_id from the analyses table (emails / Slack / Teams / Jira messages Parsival has seen). Cards with any external link show a `🔗 N` counter on the board.
+- **LLM-suggested connections.** Click "Find suggestions" inside a card's editor to ask the LLM for items in the same project that look related. Each proposal lists title, source, and a one-line reason; accept turns it into a concrete link, reject drops it. The toolbar "✨ Annotate" button fans the annotator out across every card in the current 14-day window. User confirmation is always required — no auto-linking.
+- **Filters.** The toolbar gained a "with external links" / "no linked context" filter so you can either focus on cards that already have their paperwork attached or hunt for the ones still waiting to be annotated.
+
+Jira sprint bridging (surfacing Jira issues on the board directly) is on hold until a Jira ingest path lands — until then, accepted item-links are the entry point for Jira-sourced context.
+
 ## Seed workflow
 
 The seed workflow bootstraps project intelligence from existing data when you first set up Parsival, or after adding new projects. It walks through a guided state machine:
@@ -697,6 +708,11 @@ See [Look-ahead board](#look-ahead-board) for an overview of the feature. All en
 | `PATCH`  | `/lookahead/instances/{id}`                       | Reschedule the instance (`{"start_date"}`) or flip status. Reschedule shifts every attached card by the same delta |
 | `DELETE` | `/lookahead/instances/{id}`                       | Delete the instance and cascade-remove still-attached cards. Detached cards are left untouched    |
 | `POST`   | `/lookahead/cards/{id}/detach`                    | Remove a card from its template instance without deleting it. Future reschedules of the instance no longer move this card |
+| `GET`    | `/lookahead/cards/{id}/suggestions`               | List pending cross-system link suggestions for a card. Item suggestions include `target_title`, `target_source`, `target_url` |
+| `POST`   | `/lookahead/cards/{id}/annotate`                  | Run the LLM annotator synchronously for one card — surfaces related items from the same project as pending suggestions |
+| `POST`   | `/lookahead/annotate-project`                     | Bulk-run the annotator across every card in the given project + window. Body: `{"project", "start", "end"}` |
+| `POST`   | `/lookahead/suggestions/{id}/accept`              | Accept a suggestion — graduates it into a concrete `lookahead_card_links` row                     |
+| `POST`   | `/lookahead/suggestions/{id}/reject`              | Reject a suggestion — it stops showing up in the pending list but is remembered so the annotator won't re-propose it |
 
 ## Request logging
 

@@ -1220,10 +1220,16 @@ tr.attn-low  { opacity:0.65; }
           <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px">
             <input type="checkbox" id="laPresetMissing" onchange="renderLookahead()"> missing resources
           </label>
+          <select id="laFilterLinks" onchange="renderLookahead()" style="padding:3px 7px;font-size:11px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text)">
+            <option value="">all context</option>
+            <option value="with">with external links</option>
+            <option value="without">no linked context</option>
+          </select>
           <button class="ia" onclick="openLookaheadCardEditor()" style="padding:3px 9px;font-size:11px;margin-left:auto">+ New card</button>
           <button class="ia" onclick="openResourcesModal()"   style="padding:3px 9px;font-size:11px">Resources</button>
           <button class="ia" onclick="openShiftsModal()"       style="padding:3px 9px;font-size:11px">⚙ Shifts</button>
           <button class="ia" onclick="openTemplatesModal()"    style="padding:3px 9px;font-size:11px">Templates</button>
+          <button class="ia" onclick="_laAnnotateProjectBulk()" style="padding:3px 9px;font-size:11px" title="Ask the LLM to find cross-system connections for every card in the window">✨ Annotate</button>
         </div>
         <div class="la-board-wrap" id="laBoardWrap">
           <div class="la-empty">Loading look-ahead…</div>
@@ -5133,11 +5139,15 @@ function _laVisibleCards() {
   const status   = $('laStatusFilter')?.value || '';
   const resource = $('laResourceFilter')?.value || '';
   const missing  = $('laPresetMissing')?.checked;
+  const linksF   = $('laFilterLinks')?.value || '';
   return _LA.cards.filter(c => {
     if (assignee && !(c.assignee||'').toLowerCase().includes(assignee)) return false;
     if (status   && c.status !== status) return false;
     if (resource && !(c.resources||[]).some(r => String(r.resource_id) === String(resource))) return false;
     if (missing  && !(c.resources||[]).some(r => r.status === 'needed'))      return false;
+    const hasCtx = (c.links || []).length > 0 || !!c.linked_procedure_doc;
+    if (linksF === 'with'    && !hasCtx) return false;
+    if (linksF === 'without' &&  hasCtx) return false;
     return true;
   });
 }
@@ -5239,6 +5249,8 @@ function _laRenderCardBar(card, gridRow) {
       ${_laShiftChip(card)}
       ${_laBomChip(card)}
       ${card.status === 'blocked' ? '<span class="la-chip" style="color:var(--red)">blocked</span>' : ''}
+      ${card.linked_procedure_doc ? '<span class="la-chip" title="Has linked procedure doc" style="color:var(--blue)">📄</span>' : ''}
+      ${(card.links || []).length ? `<span class="la-chip" title="${card.links.length} linked item${card.links.length===1?'':'s'}" style="color:var(--accent)">🔗 ${card.links.length}</span>` : ''}
     </div>
   </div>`;
 }
@@ -5472,11 +5484,31 @@ function _laShowCardModal(card) {
           <option value="todo">todo</option>
           <option value="situation">situation</option>
           <option value="key_date">key_date</option>
+          <option value="item">item</option>
         </select>
         <input id="laLinkId" type="text" placeholder="target id" style="flex:1;padding:3px 7px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px">
         <button class="ia" onclick="_laAddLink()" style="padding:3px 8px;font-size:11px">Add</button>
       </div>
     </div>
+
+    <div class="la-field">
+      <label>Procedure doc</label>
+      <div style="display:flex;gap:6px">
+        <input id="laCardProcDoc" type="text" value="${esc(card.linked_procedure_doc || '')}" placeholder="https://…" style="flex:1">
+        ${card.linked_procedure_doc
+          ? `<a class="ia" href="${esc(card.linked_procedure_doc)}" target="_blank" rel="noopener" style="padding:4px 10px;font-size:11px;text-decoration:none">View procedure →</a>`
+          : ''}
+      </div>
+    </div>
+
+    ${card.id ? `
+    <div class="la-field" id="laSuggestionsWrap">
+      <label style="display:flex;align-items:center;gap:6px">
+        Suggested connections
+        <button class="ia" onclick="_laAnnotateCard('${esc(card.id)}')" style="padding:2px 8px;font-size:10px">Find suggestions</button>
+      </label>
+      <div id="laSuggList" style="font-size:11px;color:var(--muted)">Loading…</div>
+    </div>` : ''}
 
     <div style="display:flex;gap:8px;margin-top:14px">
       <button class="detail-save" onclick="_laSaveCard()" style="padding:5px 14px">${card.id ? 'Save' : 'Create'}</button>
@@ -5486,6 +5518,7 @@ function _laShowCardModal(card) {
   `;
   _LA.editingCard = card;   // used by BOM/link mutator helpers
   _laShowModal();
+  if (card.id) _laLoadSuggestions(card.id);
 }
 
 function _laCycleBom(idx) {
@@ -5554,6 +5587,7 @@ async function _laSaveCard() {
     end_shift_num:   Number($('laCardEndShift').value),
     status:          $('laCardStatus').value,
     notes:           $('laCardNotes').value,
+    linked_procedure_doc: ($('laCardProcDoc') ? $('laCardProcDoc').value.trim() : ''),
     depends_on:      card.depends_on || [],
     links:           card.links      || [],
     resources:       (card.resources || []).map(r => ({
@@ -5579,6 +5613,76 @@ async function _laDeleteCard(cardId) {
     await _laLoadData();
     renderLookahead();
   } catch(e) { alert('Delete failed: ' + e.message); }
+}
+
+// ── Cross-system suggestions (parsival#50) ───────────────────────────────────
+
+async function _laLoadSuggestions(cardId) {
+  const host = $('laSuggList');
+  if (!host) return;
+  try {
+    const sugg = await api(`/lookahead/cards/${cardId}/suggestions`);
+    if (!sugg.length) {
+      host.innerHTML = '<span style="color:var(--muted)">No pending suggestions. Click "Find suggestions" to run the annotator.</span>';
+      return;
+    }
+    host.innerHTML = sugg.map(s => `
+      <div class="la-bom-row" data-sugg-id="${s.id}">
+        <span class="la-chip">${esc(s.link_type)}</span>
+        <span style="flex:1">
+          <div style="font-weight:500">${esc(s.target_title || s.target_id)}</div>
+          <div style="font-size:10px;color:var(--muted)">${esc(s.target_source || '')} · ${esc(s.reason || '')}</div>
+        </span>
+        ${s.target_url ? `<a class="ia" href="${esc(s.target_url)}" target="_blank" rel="noopener" style="padding:1px 6px;font-size:10px;text-decoration:none">open</a>` : ''}
+        <button class="ia" style="padding:1px 6px;font-size:10px;color:var(--green)" onclick="_laAcceptSuggestion(${s.id})">✓ accept</button>
+        <button class="ia" style="padding:1px 6px;font-size:10px;color:var(--red)" onclick="_laRejectSuggestion(${s.id})">✕ reject</button>
+      </div>`).join('');
+  } catch(e) {
+    host.innerHTML = `<span style="color:var(--red)">Failed to load: ${esc(e.message)}</span>`;
+  }
+}
+
+async function _laAnnotateCard(cardId) {
+  const host = $('laSuggList');
+  if (host) host.innerHTML = 'Asking the LLM…';
+  try {
+    const r = await api(`/lookahead/cards/${cardId}/annotate`, 'POST', {});
+    $('statusMsg').textContent = `Annotator produced ${r.created} new suggestion${r.created===1?'':'s'}.`;
+    _laLoadSuggestions(cardId);
+  } catch(e) {
+    if (host) host.innerHTML = `<span style="color:var(--red)">Annotator failed: ${esc(e.message)}</span>`;
+  }
+}
+
+async function _laAcceptSuggestion(suggId) {
+  try {
+    await api(`/lookahead/suggestions/${suggId}/accept`, 'POST', {});
+    if (_LA.editingCard && _LA.editingCard.id) {
+      // Refresh the card to pick up the new link and re-render the modal.
+      const fresh = await api(`/lookahead/cards/${_LA.editingCard.id}`);
+      _laShowCardModal(fresh);
+    }
+  } catch(e) { alert('Accept failed: ' + e.message); }
+}
+
+async function _laRejectSuggestion(suggId) {
+  try {
+    await api(`/lookahead/suggestions/${suggId}/reject`, 'POST', {});
+    if (_LA.editingCard && _LA.editingCard.id) _laLoadSuggestions(_LA.editingCard.id);
+  } catch(e) { alert('Reject failed: ' + e.message); }
+}
+
+async function _laAnnotateProjectBulk() {
+  if (!_LA.project) { alert('Pick a project first.'); return; }
+  if (!confirm(`Run the LLM annotator on every card in ${_LA.project} within the current 14-day window? This may take a minute.`)) return;
+  const start = _LA.rangeStart || '';
+  const end   = _LA.rangeEnd   || '';
+  try {
+    $('statusMsg').textContent = 'Annotator running…';
+    const r = await api('/lookahead/annotate-project', 'POST',
+      { project: _LA.project, start, end });
+    $('statusMsg').textContent = `Annotator done: ${r.new_suggestions} suggestion${r.new_suggestions===1?'':'s'} across ${r.processed} card${r.processed===1?'':'s'}.`;
+  } catch(e) { alert('Annotator failed: ' + e.message); }
 }
 
 // ── Resources modal ──────────────────────────────────────────────────────────
@@ -5760,6 +5864,7 @@ function _laRenderTemplateEditor() {
       <td style="padding:4px 6px"><input type="number" value="${task.duration_shifts || 1}" min="1" oninput="_laTplEditField(${i},'duration_shifts',parseInt(this.value||1))" style="width:40px;padding:2px 4px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px"></td>
       <td style="padding:4px 6px"><input type="text" value="${esc((task.depends_on||[]).join(','))}" oninput="_laTplEditDeps(${i},this.value)" placeholder="A,B" style="width:70px;padding:2px 4px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px"></td>
       <td style="padding:4px 6px">${_laRenderTaskResources(i, task)}</td>
+      <td style="padding:4px 6px"><input type="text" value="${esc(task.linked_procedure_doc || '')}" oninput="_laTplEditField(${i},'linked_procedure_doc',this.value)" placeholder="procedure URL" style="width:120px;padding:2px 4px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px"></td>
       <td style="padding:4px 6px"><button class="ia" style="padding:1px 6px;font-size:10px;color:var(--red)" onclick="_laTplRemoveTask(${i})">✕</button></td>
     </tr>`).join('');
   $('laModalBody').innerHTML = `
@@ -5786,9 +5891,10 @@ function _laRenderTemplateEditor() {
         <th style="padding:4px 6px" title="starting shift (1/2/3)">Shift</th>
         <th style="padding:4px 6px" title="duration in shifts">Len</th>
         <th style="padding:4px 6px" title="comma-separated local_ids">Deps</th>
-        <th style="padding:4px 6px">Resources</th><th></th>
+        <th style="padding:4px 6px">Resources</th>
+        <th style="padding:4px 6px">Procedure</th><th></th>
       </tr></thead>
-      <tbody>${taskRows || '<tr><td colspan="8" style="padding:8px;color:var(--muted);text-align:center;font-size:11px">No tasks yet.</td></tr>'}</tbody>
+      <tbody>${taskRows || '<tr><td colspan="9" style="padding:8px;color:var(--muted);text-align:center;font-size:11px">No tasks yet.</td></tr>'}</tbody>
     </table>
     <div style="margin-top:10px;display:flex;gap:8px">
       <button class="ia" onclick="_laTplAddTask()" style="padding:4px 10px;font-size:11px">+ Add task</button>

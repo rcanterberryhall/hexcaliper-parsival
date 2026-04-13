@@ -168,6 +168,30 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
             "ALTER TABLE contacts ADD COLUMN signature_confidence TEXT NOT NULL DEFAULT '{}'"
         )
 
+    # Look-ahead cards: procedure doc URL copied from template tasks on
+    # instantiation (parsival#50).  Optional on manually-authored cards.
+    card_cols = {row[1] for row in c.execute("PRAGMA table_info(lookahead_cards)").fetchall()}
+    if "linked_procedure_doc" not in card_cols:
+        c.execute("ALTER TABLE lookahead_cards ADD COLUMN linked_procedure_doc TEXT NOT NULL DEFAULT ''")
+
+    # Suggestions pool for cross-system LLM linking (parsival#50).  Rows
+    # start pending and become concrete card_links once the user accepts.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS lookahead_card_link_suggestions (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            card_id    TEXT    NOT NULL,
+            link_type  TEXT    NOT NULL,
+            target_id  TEXT    NOT NULL,
+            reason     TEXT    NOT NULL DEFAULT '',
+            created_at TEXT    NOT NULL DEFAULT '',
+            decision   TEXT    DEFAULT NULL,
+            decided_at TEXT,
+            FOREIGN KEY (card_id) REFERENCES lookahead_cards(id) ON DELETE CASCADE
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_la_link_sugg_card ON lookahead_card_link_suggestions(card_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_la_link_sugg_decision ON lookahead_card_link_suggestions(decision)")
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS situation_events (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1621,7 +1645,7 @@ def upsert_contact_from_header(
 _CARD_STATUSES   = ("planned", "in_progress", "done", "blocked")
 _RESOURCE_TYPES  = ("person", "equipment", "space", "part", "supply")
 _RESOURCE_STATUSES = ("needed", "secured", "consumed")
-_LINK_TYPES      = ("todo", "situation", "key_date")
+_LINK_TYPES      = ("todo", "situation", "key_date", "item")
 
 
 def _card_with_relations(row: dict) -> dict:
@@ -2085,11 +2109,12 @@ def instantiate_template(template_id: str, start_date: str,
         c.execute(
             "INSERT INTO lookahead_cards "
             "(id, title, project, assignee, start_date, start_shift_num, "
-            " end_date, end_shift_num, status, notes, "
+            " end_date, end_shift_num, status, notes, linked_procedure_doc, "
             " template_instance_id, template_task_local_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', '', ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', '', ?, ?, ?, ?, ?)",
             (card_id, task["title"], project, "",
              s_date, s_shift, e_date, e_shift,
+             task.get("linked_procedure_doc", ""),
              instance_id, task["local_id"], now, now),
         )
         # Copy resource requirements to BOM entries (named_resource_id only).
@@ -2263,3 +2288,102 @@ def maybe_autocomplete_instance(instance_id: str) -> None:
             "UPDATE lookahead_template_instances SET status = 'complete' WHERE id = ?",
             (instance_id,),
         )
+
+
+# ── Cross-system link suggestions (parsival#50) ───────────────────────────────
+#
+# LLM annotators write proposed card↔item links into this pool; the user
+# accepts or rejects each one.  Accepted suggestions graduate to the concrete
+# ``lookahead_card_links`` table and stay marked ``decision='accepted'`` so
+# the annotator doesn't re-propose them.
+
+def list_card_suggestions(card_id: str,
+                          include_decided: bool = False) -> list[dict]:
+    """Return suggestions for a card.  Pending only by default."""
+    sql = ("SELECT * FROM lookahead_card_link_suggestions WHERE card_id = ?")
+    args: list = [card_id]
+    if not include_decided:
+        sql += " AND decision IS NULL"
+    sql += " ORDER BY id"
+    return _rows_to_list(conn().execute(sql, args).fetchall())
+
+
+def add_card_suggestion(card_id: str, link_type: str, target_id: str,
+                        reason: str = "") -> Optional[dict]:
+    """Insert a new pending suggestion.  Deduped on (card, type, target)."""
+    if link_type not in _LINK_TYPES:
+        return None
+    target_id = str(target_id)
+    c = conn()
+    # Skip if already proposed (pending or decided) for this card+target.
+    existing = c.execute(
+        "SELECT id FROM lookahead_card_link_suggestions "
+        "WHERE card_id = ? AND link_type = ? AND target_id = ?",
+        (card_id, link_type, target_id),
+    ).fetchone()
+    if existing:
+        return None
+    cur = c.execute(
+        "INSERT INTO lookahead_card_link_suggestions "
+        "(card_id, link_type, target_id, reason, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (card_id, link_type, target_id, reason, _now_iso()),
+    )
+    row = c.execute(
+        "SELECT * FROM lookahead_card_link_suggestions WHERE id = ?",
+        (cur.lastrowid,),
+    ).fetchone()
+    return _row_to_dict(row)
+
+
+def decide_card_suggestion(suggestion_id: int, decision: str) -> Optional[dict]:
+    """Accept or reject a suggestion.  Accepted ones also become card_links."""
+    if decision not in ("accepted", "rejected"):
+        raise ValueError(f"invalid decision: {decision}")
+    c = conn()
+    row = c.execute(
+        "SELECT * FROM lookahead_card_link_suggestions WHERE id = ?",
+        (int(suggestion_id),),
+    ).fetchone()
+    if not row:
+        return None
+    c.execute(
+        "UPDATE lookahead_card_link_suggestions "
+        "SET decision = ?, decided_at = ? WHERE id = ?",
+        (decision, _now_iso(), int(suggestion_id)),
+    )
+    if decision == "accepted":
+        c.execute(
+            "INSERT OR IGNORE INTO lookahead_card_links "
+            "(card_id, link_type, target_id) VALUES (?, ?, ?)",
+            (row["card_id"], row["link_type"], row["target_id"]),
+        )
+    return _row_to_dict(c.execute(
+        "SELECT * FROM lookahead_card_link_suggestions WHERE id = ?",
+        (int(suggestion_id),),
+    ).fetchone())
+
+
+def candidate_items_for_card(project: str, start_date: str, end_date: str,
+                             limit: int = 40) -> list[dict]:
+    """Return items tagged to the same project whose timestamp sits near the
+    card window.  Used as the shortlist the LLM ranks against the card.
+    """
+    if not project:
+        return []
+    # Widen the window by two weeks on each side — correlations aren't always
+    # same-week, and the LLM can still reject out-of-scope candidates.
+    from datetime import date, timedelta
+    def _as_date(s):
+        y, m, d = (int(x) for x in s.split("-"))
+        return date(y, m, d)
+    try:
+        lo = (_as_date(start_date) - timedelta(days=14)).isoformat()
+        hi = (_as_date(end_date)   + timedelta(days=14)).isoformat()
+    except Exception:
+        lo, hi = "", "9999"
+    items = get_items_by_project(project)
+    pruned = [i for i in items
+              if lo <= (i.get("timestamp", "")[:10] or "") <= hi]
+    pruned.sort(key=lambda i: i.get("timestamp") or "", reverse=True)
+    return pruned[:limit]

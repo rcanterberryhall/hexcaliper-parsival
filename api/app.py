@@ -3412,6 +3412,7 @@ def _card_input(body: dict, *, require_all: bool = False) -> dict:
     """Validate and normalise a card create/update payload."""
     allowed = ("title", "project", "assignee", "start_date", "start_shift_num",
                "end_date", "end_shift_num", "status", "notes",
+               "linked_procedure_doc",
                "template_instance_id", "template_task_local_id")
     data = {k: body[k] for k in allowed if k in body}
 
@@ -3730,3 +3731,187 @@ def lookahead_detach_card(card_id: str):
     if not card:
         raise HTTPException(status_code=404, detail="card not found")
     return card
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cross-system LLM linking (parsival#50)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Annotators walk the items table for a card's project window and ask the LLM
+# which items are genuinely related.  Matches land in a suggestions pool; the
+# user accepts or rejects each proposal and accepted ones become normal links.
+
+import llm as _llm
+import json as _json
+
+
+def _parse_llm_json_array(text: str) -> list:
+    """Tolerant JSON-array extractor for LLM responses."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    # Strip a code fence if present.
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:]
+    start = text.find("[")
+    end   = text.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        return []
+    try:
+        parsed = _json.loads(text[start:end + 1])
+    except Exception:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _annotate_card(card: dict, *, max_candidates: int = 40,
+                   max_suggestions: int = 5) -> list[dict]:
+    """Run the LLM annotator on one card.  Returns newly-created suggestion rows."""
+    if not card.get("project"):
+        return []
+    candidates = db.candidate_items_for_card(
+        card["project"], card["start_date"], card["end_date"], limit=max_candidates)
+    if not candidates:
+        return []
+    # Never re-suggest already-linked items.
+    already_linked = {(l["type"], str(l["id"])) for l in card.get("links", [])}
+    # Nor already-proposed ones (pending or decided) — dedup is per target.
+    seen = {(r["link_type"], r["target_id"])
+            for r in db.list_card_suggestions(card["id"], include_decided=True)}
+
+    # Trim item rows for the prompt.  No body content — titles and summaries
+    # are enough signal and keep context small.
+    trimmed = [{
+        "item_id":    i["item_id"],
+        "source":     i.get("source", ""),
+        "timestamp":  (i.get("timestamp") or "")[:10],
+        "title":      (i.get("title") or "")[:160],
+        "summary":    (i.get("summary") or "")[:240],
+    } for i in candidates]
+
+    card_brief = _json.dumps({
+        "title":      card["title"],
+        "project":    card["project"],
+        "start_date": card["start_date"],
+        "end_date":   card["end_date"],
+        "assignee":   card.get("assignee", ""),
+        "notes":      card.get("notes", ""),
+    })
+    prompt = (
+        "You help a user correlate planned work with the messages that motivate it.\n"
+        f"Card: {card_brief}\n"
+        f"Candidates (up to {max_candidates} items from the same project):\n"
+        f"{_json.dumps(trimmed)}\n\n"
+        f"Pick at most {max_suggestions} items that are clearly about this card's "
+        "work — same concrete action, same decision, same subject.  Reject candidates "
+        "that only share a project tag.  Reply with a JSON array:\n"
+        '[{"item_id": "<id>", "reason": "<one short sentence>"}]\n'
+        "If nothing fits, reply with [] and nothing else."
+    )
+    try:
+        raw = _llm.generate(prompt, format="json",
+                            num_predict=512, temperature=0.1,
+                            priority="background")
+    except Exception as exc:
+        logging.warning("annotator LLM call failed for card %s: %s", card["id"], exc)
+        return []
+    parsed = _parse_llm_json_array(raw)
+    created = []
+    for entry in parsed[:max_suggestions]:
+        if not isinstance(entry, dict):
+            continue
+        tid = str(entry.get("item_id") or "").strip()
+        if not tid or ("item", tid) in already_linked or ("item", tid) in seen:
+            continue
+        row = db.add_card_suggestion(
+            card["id"], "item", tid,
+            reason=(entry.get("reason") or "").strip()[:200])
+        if row:
+            created.append(row)
+    return created
+
+
+@app.get("/lookahead/cards/{card_id}/suggestions")
+def lookahead_list_suggestions(card_id: str,
+                                include_decided: bool = False):
+    with db.lock:
+        if not db.get_lookahead_card(card_id):
+            raise HTTPException(status_code=404, detail="card not found")
+        rows = db.list_card_suggestions(card_id, include_decided=include_decided)
+    # Enrich item suggestions with title/source so the UI doesn't have to
+    # round-trip for each row.
+    out = []
+    for r in rows:
+        enriched = dict(r)
+        if r["link_type"] == "item":
+            item = db.get_item(r["target_id"])
+            if item:
+                enriched["target_title"]  = item.get("title") or item.get("summary", "")[:80]
+                enriched["target_source"] = item.get("source", "")
+                enriched["target_url"]    = item.get("url", "")
+        out.append(enriched)
+    return out
+
+
+@app.post("/lookahead/cards/{card_id}/annotate")
+def lookahead_annotate_card(card_id: str):
+    """Run the LLM annotator synchronously for one card."""
+    with db.lock:
+        card = db.get_lookahead_card(card_id)
+        if not card:
+            raise HTTPException(status_code=404, detail="card not found")
+    # LLM call happens outside the DB lock so it doesn't block writers.
+    new_rows = _annotate_card(card)
+    return {"created": len(new_rows), "suggestions": new_rows}
+
+
+@app.post("/lookahead/annotate-project")
+def lookahead_annotate_project(body: dict):
+    """Bulk-annotate every card in a project's current window.
+
+    Runs synchronously one card at a time.  The caller controls the blast
+    radius via the window parameters so an entire project isn't scanned by
+    accident.
+    """
+    project = (body.get("project") or "").strip()
+    start   = (body.get("start")   or "").strip()
+    end     = (body.get("end")     or "").strip()
+    if not project:
+        raise HTTPException(status_code=400, detail="project is required")
+    with db.lock:
+        cards = db.list_lookahead_cards(project=project,
+                                        start_date=start or None,
+                                        end_date=end or None)
+    total_new = 0
+    processed = 0
+    for card in cards:
+        new_rows = _annotate_card(card)
+        total_new += len(new_rows)
+        processed += 1
+    return {"processed": processed, "new_suggestions": total_new}
+
+
+@app.post("/lookahead/suggestions/{suggestion_id}/accept")
+def lookahead_accept_suggestion(suggestion_id: int):
+    with db.lock:
+        try:
+            row = db.decide_card_suggestion(suggestion_id, "accepted")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if not row:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    return row
+
+
+@app.post("/lookahead/suggestions/{suggestion_id}/reject")
+def lookahead_reject_suggestion(suggestion_id: int):
+    with db.lock:
+        try:
+            row = db.decide_card_suggestion(suggestion_id, "rejected")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if not row:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    return row

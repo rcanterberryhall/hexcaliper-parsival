@@ -1,14 +1,17 @@
-"""Tests for the look-ahead board (parsival#48).
+"""Tests for the look-ahead board (parsival#48, #49, #50).
 
-Covers the Phase-A surface: schema, card CRUD, dependency/link/BOM relations,
-resource catalog, per-project shift schedules, and the cross-project overview.
+Covers CRUD, templates, instantiation, reschedule, detach, auto-complete,
+and the cross-system LLM linking suggestion pool.
 """
+from unittest.mock import patch
+
 import db
 
 
 def _wipe_lookahead():
     c = db.conn()
-    for tbl in ("lookahead_card_resources", "lookahead_card_links",
+    for tbl in ("lookahead_card_link_suggestions",
+                "lookahead_card_resources", "lookahead_card_links",
                 "lookahead_card_deps", "lookahead_cards",
                 "lookahead_template_task_resources",
                 "lookahead_template_task_deps",
@@ -427,6 +430,129 @@ def test_instance_autocompletes_when_all_cards_done(client):
     client.patch(f"/lookahead/cards/{inst['cards'][-1]['id']}",
                  json={"status": "done"})
     assert client.get(f"/lookahead/instances/{inst['id']}").json()["status"] == "complete"
+
+
+def test_template_task_carries_linked_procedure_doc_to_card(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload(tasks=[{
+        "local_id": "x", "title": "Follow SOP",
+        "offset_start_days": 0, "duration_shifts": 1,
+        "linked_procedure_doc": "https://docs.example/sop-42",
+    }])).json()
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    assert inst["cards"][0]["linked_procedure_doc"] == "https://docs.example/sop-42"
+
+
+# ── Cross-system linking (parsival#50) ────────────────────────────────────────
+
+def _seed_item(item_id, project, title, timestamp="2026-04-15T08:00:00"):
+    """Drop a minimal items row directly so the annotator has something to chew on."""
+    db.upsert_item({
+        "item_id": item_id, "source": "email", "title": title,
+        "author": "", "timestamp": timestamp, "project_tag": project,
+        "summary": f"{title} summary", "category": "task", "priority": "medium",
+        "action_items": [], "goals": [], "key_dates": [],
+        "information_items": [], "references": [],
+    })
+
+
+def test_annotate_card_persists_suggestions_from_llm(client):
+    _wipe_lookahead()
+    db.conn().execute("DELETE FROM items")
+    _seed_item("em-1", "P905", "Panel install scheduling")
+    _seed_item("em-2", "P905", "Totally unrelated coffee order")
+    card = client.post("/lookahead/cards", json=_card_payload(
+        title="Panel install", project="P905")).json()
+
+    fake_response = '[{"item_id": "em-1", "reason": "scheduling thread"}]'
+    with patch("app._llm.generate", return_value=fake_response):
+        r = client.post(f"/lookahead/cards/{card['id']}/annotate")
+    assert r.json()["created"] == 1
+
+    suggestions = client.get(f"/lookahead/cards/{card['id']}/suggestions").json()
+    assert len(suggestions) == 1
+    assert suggestions[0]["target_id"] == "em-1"
+    assert suggestions[0]["reason"] == "scheduling thread"
+    assert suggestions[0]["target_title"] == "Panel install scheduling"
+
+
+def test_annotate_skips_already_linked_items(client):
+    _wipe_lookahead()
+    db.conn().execute("DELETE FROM items")
+    _seed_item("em-1", "P905", "Linked already")
+    card = client.post("/lookahead/cards", json=_card_payload(
+        title="X", project="P905",
+        links=[{"type": "item", "id": "em-1"}])).json()
+
+    with patch("app._llm.generate",
+               return_value='[{"item_id": "em-1", "reason": "x"}]'):
+        r = client.post(f"/lookahead/cards/{card['id']}/annotate")
+    assert r.json()["created"] == 0
+
+
+def test_annotate_is_idempotent_per_target(client):
+    _wipe_lookahead()
+    db.conn().execute("DELETE FROM items")
+    _seed_item("em-1", "P905", "Something")
+    card = client.post("/lookahead/cards", json=_card_payload(
+        title="X", project="P905")).json()
+    fake = '[{"item_id": "em-1", "reason": "match"}]'
+    with patch("app._llm.generate", return_value=fake):
+        client.post(f"/lookahead/cards/{card['id']}/annotate")
+        r2 = client.post(f"/lookahead/cards/{card['id']}/annotate")
+    assert r2.json()["created"] == 0
+    assert len(client.get(f"/lookahead/cards/{card['id']}/suggestions").json()) == 1
+
+
+def test_accept_suggestion_creates_card_link(client):
+    _wipe_lookahead()
+    db.conn().execute("DELETE FROM items")
+    _seed_item("em-1", "P905", "Relevant thread")
+    card = client.post("/lookahead/cards", json=_card_payload(
+        title="X", project="P905")).json()
+    with patch("app._llm.generate",
+               return_value='[{"item_id": "em-1", "reason": "r"}]'):
+        client.post(f"/lookahead/cards/{card['id']}/annotate")
+    sugg = client.get(f"/lookahead/cards/{card['id']}/suggestions").json()[0]
+
+    r = client.post(f"/lookahead/suggestions/{sugg['id']}/accept")
+    assert r.json()["decision"] == "accepted"
+    refreshed = client.get(f"/lookahead/cards/{card['id']}").json()
+    assert {"type": "item", "id": "em-1"} in refreshed["links"]
+    # Accepted suggestion no longer surfaces as pending.
+    assert client.get(f"/lookahead/cards/{card['id']}/suggestions").json() == []
+
+
+def test_reject_suggestion_does_not_create_link(client):
+    _wipe_lookahead()
+    db.conn().execute("DELETE FROM items")
+    _seed_item("em-1", "P905", "Noise thread")
+    card = client.post("/lookahead/cards", json=_card_payload(
+        title="X", project="P905")).json()
+    with patch("app._llm.generate",
+               return_value='[{"item_id": "em-1", "reason": "r"}]'):
+        client.post(f"/lookahead/cards/{card['id']}/annotate")
+    sugg = client.get(f"/lookahead/cards/{card['id']}/suggestions").json()[0]
+    client.post(f"/lookahead/suggestions/{sugg['id']}/reject")
+    refreshed = client.get(f"/lookahead/cards/{card['id']}").json()
+    assert refreshed["links"] == []
+
+
+def test_annotate_project_fans_out_across_cards(client):
+    _wipe_lookahead()
+    db.conn().execute("DELETE FROM items")
+    _seed_item("em-1", "P905", "Candidate")
+    client.post("/lookahead/cards", json=_card_payload(title="A", project="P905"))
+    client.post("/lookahead/cards", json=_card_payload(title="B", project="P905"))
+    with patch("app._llm.generate",
+               return_value='[{"item_id": "em-1", "reason": "r"}]'):
+        r = client.post("/lookahead/annotate-project",
+                        json={"project": "P905"})
+    body = r.json()
+    assert body["processed"] == 2
+    assert body["new_suggestions"] == 2
 
 
 def test_delete_instance_cascades_attached_cards(client):
