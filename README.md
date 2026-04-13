@@ -471,6 +471,18 @@ Open the board from the vertical tab rail. Use the toolbar to switch between ove
 
 The board is mobile-friendly — on narrow screens the 14-day grid collapses to a vertical day-list so the view works on foldables.
 
+### Templates
+
+Repeatable work can be saved as a **template**: a small graph of tasks with relative offsets, optional dependencies, and resource requirements. Templates live in the "Templates" button on the look-ahead toolbar.
+
+- **Authoring** — each template has a name, owner, optional default project, and a `duration_unit` of `calendar_days` or `business_days`. Tasks carry a `local_id`, an offset from the instance start date, a starting shift (1/2/3), a duration in shifts, a comma-separated list of dependencies (other `local_id`s in the same template), and optional named-resource requirements. Editing a template bumps its `version`; existing instances keep their snapshot.
+- **Instantiation** — pick a template, pass a `start_date` and `project_tag`, and the backend materialises one card per task with absolute dates computed from the template's unit. Template-local dependencies translate into concrete card dependencies. Named resource requirements become BOM entries with `status=needed`; generic role-only requirements are left for manual assignment on the card.
+- **Reschedule** — PATCH an instance with a new `start_date` and every attached card shifts by the same delta (business-day templates stay aligned to weekdays).
+- **Detach** — `POST /lookahead/cards/{id}/detach` pops a card out of its instance so later reschedules leave it alone. The card itself stays.
+- **Auto-complete** — when every attached card reaches `status=done`, the instance flips to `complete` automatically.
+
+Nested templates and "apply changes to active instance" are explicitly out of scope for v2; cross-system LLM linking lands with #50.
+
 ## Seed workflow
 
 The seed workflow bootstraps project intelligence from existing data when you first set up Parsival, or after adding new projects. It walks through a guided state machine:
@@ -674,6 +686,17 @@ See [Look-ahead board](#look-ahead-board) for an overview of the feature. All en
 | `PUT`    | `/lookahead/shifts/{project}/{shift_num}`         | Upsert a shift (1..6). Body: `{"label", "start_time", "end_time", "days"}` — times are `HH:MM`, days a comma-separated mask like `M,T,W,Th,F` |
 | `DELETE` | `/lookahead/shifts/{project}/{shift_num}`         | Delete a single shift row                                                                         |
 | `GET`    | `/lookahead/overview`                             | Cross-project rollup: one row per project sorted by earliest card start, each with its full card list |
+| `GET`    | `/lookahead/templates`                            | List templates (param: `owner`). Each response inlines `tasks`, `depends_on`, and `resource_requirements` |
+| `GET`    | `/lookahead/templates/{id}`                       | Fetch a single template with its task graph                                                       |
+| `POST`   | `/lookahead/templates`                            | Create a template. Body: `{"name", "description", "owner", "duration_unit", "default_project_tag", "tasks": [...]}`. Each task needs `local_id` and may carry `depends_on` + `resource_requirements` |
+| `PATCH`  | `/lookahead/templates/{id}`                       | Update template fields. Passing `tasks` replaces the whole task graph. `version` is bumped on every PATCH |
+| `DELETE` | `/lookahead/templates/{id}`                       | Delete a template. Existing instances keep their cards; cards' `template_instance_id` still points at the orphaned instance row |
+| `POST`   | `/lookahead/templates/{id}/instantiate`           | Materialise an instance. Body: `{"start_date", "project_tag", "owner"}`. Returns `{instance, cards}` |
+| `GET`    | `/lookahead/instances`                            | List instances (params: `project`, `status` — `active` / `complete` / `cancelled`)                |
+| `GET`    | `/lookahead/instances/{id}`                       | Fetch an instance plus its attached cards                                                         |
+| `PATCH`  | `/lookahead/instances/{id}`                       | Reschedule the instance (`{"start_date"}`) or flip status. Reschedule shifts every attached card by the same delta |
+| `DELETE` | `/lookahead/instances/{id}`                       | Delete the instance and cascade-remove still-attached cards. Detached cards are left untouched    |
+| `POST`   | `/lookahead/cards/{id}/detach`                    | Remove a card from its template instance without deleting it. Future reschedules of the instance no longer move this card |
 
 ## Request logging
 

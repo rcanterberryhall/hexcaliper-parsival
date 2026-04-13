@@ -1223,6 +1223,7 @@ tr.attn-low  { opacity:0.65; }
           <button class="ia" onclick="openLookaheadCardEditor()" style="padding:3px 9px;font-size:11px;margin-left:auto">+ New card</button>
           <button class="ia" onclick="openResourcesModal()"   style="padding:3px 9px;font-size:11px">Resources</button>
           <button class="ia" onclick="openShiftsModal()"       style="padding:3px 9px;font-size:11px">⚙ Shifts</button>
+          <button class="ia" onclick="openTemplatesModal()"    style="padding:3px 9px;font-size:11px">Templates</button>
         </div>
         <div class="la-board-wrap" id="laBoardWrap">
           <div class="la-empty">Loading look-ahead…</div>
@@ -5690,6 +5691,269 @@ async function _laSaveShift(n) {
     // Refresh the board so shift chips pick up new labels.
     await _laLoadData();
   } catch(e) { alert('Save failed: ' + e.message); }
+}
+
+// ── Templates modal (parsival#49) ────────────────────────────────────────────
+//
+// A small CRUD + instantiation UI.  The spec asks for a visual mini-timeline
+// editor; v2 ships with the explicit "raw-edit form/table" escape hatch, which
+// satisfies the acceptance criteria (author, save, instantiate, cards land on
+// the board with correct dates / shifts / deps / BOM entries).
+
+async function openTemplatesModal() {
+  let tpls = [];
+  try {
+    await _laLoadResources();
+    tpls = await api('/lookahead/templates');
+  }
+  catch(e) { alert('Failed to load templates: ' + e.message); return; }
+  _LA.templates = tpls;
+  $('laModalTitle').textContent = 'Templates';
+  const rows = tpls.map(t => `
+    <tr data-tpl-id="${esc(t.id)}" style="border-bottom:1px solid var(--border2)">
+      <td style="padding:6px 8px;font-weight:500">${esc(t.name || '(unnamed)')}</td>
+      <td style="padding:6px 8px;color:var(--muted);font-size:10px">v${t.version} · ${t.duration_unit.replace('_',' ')} · ${t.tasks.length} task${t.tasks.length===1?'':'s'}</td>
+      <td style="padding:6px 8px;color:var(--muted);font-size:10px">${esc(t.default_project_tag || '—')}</td>
+      <td style="padding:6px 8px;display:flex;gap:4px;justify-content:flex-end">
+        <button class="ia" style="padding:2px 8px;font-size:10px" onclick="openTemplateEditor('${esc(t.id)}')">Edit</button>
+        <button class="ia" style="padding:2px 8px;font-size:10px" onclick="_laPromptInstantiate('${esc(t.id)}')">Instantiate</button>
+        <button class="ia" style="padding:2px 8px;font-size:10px;color:var(--red)" onclick="_laDeleteTemplate('${esc(t.id)}')">✕</button>
+      </td>
+    </tr>`).join('');
+  const listHtml = tpls.length
+    ? `<table style="width:100%;border-collapse:collapse;font-size:11px">
+         <thead><tr style="border-bottom:1px solid var(--border2);text-align:left">
+           <th style="padding:6px 8px">Name</th><th style="padding:6px 8px">Details</th>
+           <th style="padding:6px 8px">Default project</th><th></th>
+         </tr></thead>
+         <tbody>${rows}</tbody>
+       </table>`
+    : `<div style="padding:16px;text-align:center;color:var(--muted);font-size:11px">No templates yet.</div>`;
+  $('laModalBody').innerHTML = listHtml + `
+    <div style="margin-top:14px;display:flex;gap:8px">
+      <button class="detail-save" onclick="openTemplateEditor(null)" style="padding:5px 14px">+ New template</button>
+      <button class="ia" onclick="_laOpenInstancesPanel()" style="padding:5px 14px">View instances…</button>
+    </div>`;
+  _laShowModal();
+}
+
+function openTemplateEditor(tplId) {
+  const tpl = tplId
+    ? (_LA.templates || []).find(t => t.id === tplId)
+    : { id: null, name: '', description: '', owner: '',
+        duration_unit: 'calendar_days', default_project_tag: '',
+        tasks: [] };
+  if (!tpl) return;
+  _LA.editingTemplate = JSON.parse(JSON.stringify(tpl));
+  _laRenderTemplateEditor();
+}
+
+function _laRenderTemplateEditor() {
+  const t = _LA.editingTemplate;
+  $('laModalTitle').textContent = t.id ? `Edit template — ${t.name || ''}` : 'New template';
+  const taskRows = (t.tasks || []).map((task, i) => `
+    <tr data-task-idx="${i}" style="border-bottom:1px solid var(--border2)">
+      <td style="padding:4px 6px"><input type="text" value="${esc(task.local_id || '')}" oninput="_laTplEditField(${i},'local_id',this.value)" style="width:56px;padding:2px 4px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px"></td>
+      <td style="padding:4px 6px"><input type="text" value="${esc(task.title || '')}" oninput="_laTplEditField(${i},'title',this.value)" style="width:100%;min-width:140px;padding:2px 4px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px"></td>
+      <td style="padding:4px 6px"><input type="number" value="${task.offset_start_days || 0}" oninput="_laTplEditField(${i},'offset_start_days',parseInt(this.value||0))" style="width:50px;padding:2px 4px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px"></td>
+      <td style="padding:4px 6px"><input type="number" value="${task.offset_start_shift || 1}" min="1" max="3" oninput="_laTplEditField(${i},'offset_start_shift',parseInt(this.value||1))" style="width:40px;padding:2px 4px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px"></td>
+      <td style="padding:4px 6px"><input type="number" value="${task.duration_shifts || 1}" min="1" oninput="_laTplEditField(${i},'duration_shifts',parseInt(this.value||1))" style="width:40px;padding:2px 4px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px"></td>
+      <td style="padding:4px 6px"><input type="text" value="${esc((task.depends_on||[]).join(','))}" oninput="_laTplEditDeps(${i},this.value)" placeholder="A,B" style="width:70px;padding:2px 4px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px"></td>
+      <td style="padding:4px 6px">${_laRenderTaskResources(i, task)}</td>
+      <td style="padding:4px 6px"><button class="ia" style="padding:1px 6px;font-size:10px;color:var(--red)" onclick="_laTplRemoveTask(${i})">✕</button></td>
+    </tr>`).join('');
+  $('laModalBody').innerHTML = `
+    <div class="la-field-row">
+      <div class="la-field" style="flex:2"><label>Name</label>
+        <input type="text" id="laTplName" value="${esc(t.name || '')}" placeholder="e.g. Weekly inspection"></div>
+      <div class="la-field"><label>Owner</label>
+        <input type="text" id="laTplOwner" value="${esc(t.owner || '')}"></div>
+      <div class="la-field"><label>Default project</label>
+        <input type="text" id="laTplProject" value="${esc(t.default_project_tag || '')}"></div>
+      <div class="la-field"><label>Duration unit</label>
+        <select id="laTplUnit">
+          <option value="calendar_days" ${t.duration_unit==='calendar_days'?'selected':''}>calendar days</option>
+          <option value="business_days" ${t.duration_unit==='business_days'?'selected':''}>business days</option>
+        </select></div>
+    </div>
+    <div class="la-field" style="margin-top:6px"><label>Description</label>
+      <input type="text" id="laTplDesc" value="${esc(t.description || '')}"></div>
+    <div style="margin-top:14px;font-weight:500;font-size:11px;color:var(--muted)">Tasks</div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:4px">
+      <thead><tr style="border-bottom:1px solid var(--border2);text-align:left;color:var(--muted);font-size:10px">
+        <th style="padding:4px 6px">ID</th><th style="padding:4px 6px">Title</th>
+        <th style="padding:4px 6px" title="offset from start_date">Day</th>
+        <th style="padding:4px 6px" title="starting shift (1/2/3)">Shift</th>
+        <th style="padding:4px 6px" title="duration in shifts">Len</th>
+        <th style="padding:4px 6px" title="comma-separated local_ids">Deps</th>
+        <th style="padding:4px 6px">Resources</th><th></th>
+      </tr></thead>
+      <tbody>${taskRows || '<tr><td colspan="8" style="padding:8px;color:var(--muted);text-align:center;font-size:11px">No tasks yet.</td></tr>'}</tbody>
+    </table>
+    <div style="margin-top:10px;display:flex;gap:8px">
+      <button class="ia" onclick="_laTplAddTask()" style="padding:4px 10px;font-size:11px">+ Add task</button>
+      <button class="ia" onclick="openTemplatesModal()" style="padding:4px 10px;font-size:11px;margin-left:auto">Cancel</button>
+      <button class="detail-save" onclick="_laSaveTemplate()" style="padding:5px 14px">Save</button>
+    </div>`;
+}
+
+function _laRenderTaskResources(taskIdx, task) {
+  const reqs = task.resource_requirements || [];
+  const options = (_LA.resources || []).map(r =>
+    `<option value="${r.id}">${esc(r.name)} (${r.type})</option>`).join('');
+  const chips = reqs.map((req, rIdx) => {
+    const res = (_LA.resources || []).find(r => r.id === req.named_resource_id);
+    const label = res ? `${esc(res.name)}×${req.quantity}` : (esc(req.role || req.resource_type) + '×' + req.quantity);
+    return `<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 6px;background:var(--bg);border:1px solid var(--border2);border-radius:8px;font-size:10px;margin-right:3px">${label}
+      <button class="ia" style="padding:0 3px;font-size:10px;color:var(--red);border:none;background:none" onclick="_laTplRemoveReq(${taskIdx},${rIdx})">✕</button></span>`;
+  }).join('');
+  return `${chips}<select onchange="_laTplAddReq(${taskIdx}, this.value); this.value=''" style="padding:1px 3px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:10px;max-width:120px">
+    <option value="">+ resource…</option>${options}
+  </select>`;
+}
+
+function _laTplEditField(idx, field, value) {
+  _LA.editingTemplate.tasks[idx][field] = value;
+}
+
+function _laTplEditDeps(idx, csv) {
+  _LA.editingTemplate.tasks[idx].depends_on = csv.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function _laTplAddTask() {
+  const tasks = _LA.editingTemplate.tasks = _LA.editingTemplate.tasks || [];
+  const nextId = String.fromCharCode(65 + tasks.length);
+  tasks.push({
+    local_id: nextId, title: '', offset_start_days: 0,
+    offset_start_shift: 1, duration_shifts: 1, depends_on: [], resource_requirements: [],
+  });
+  _laRenderTemplateEditor();
+}
+
+function _laTplRemoveTask(idx) {
+  _LA.editingTemplate.tasks.splice(idx, 1);
+  _laRenderTemplateEditor();
+}
+
+function _laTplAddReq(taskIdx, resourceIdStr) {
+  const rid = parseInt(resourceIdStr);
+  if (!rid) return;
+  const res = (_LA.resources || []).find(r => r.id === rid);
+  if (!res) return;
+  const task = _LA.editingTemplate.tasks[taskIdx];
+  task.resource_requirements = task.resource_requirements || [];
+  task.resource_requirements.push({
+    resource_type: res.type, named_resource_id: rid, quantity: 1,
+  });
+  _laRenderTemplateEditor();
+}
+
+function _laTplRemoveReq(taskIdx, reqIdx) {
+  _LA.editingTemplate.tasks[taskIdx].resource_requirements.splice(reqIdx, 1);
+  _laRenderTemplateEditor();
+}
+
+async function _laSaveTemplate() {
+  const t = _LA.editingTemplate;
+  t.name                = $('laTplName').value.trim();
+  t.description         = $('laTplDesc').value;
+  t.owner               = $('laTplOwner').value.trim();
+  t.default_project_tag = $('laTplProject').value.trim();
+  t.duration_unit       = $('laTplUnit').value;
+  if (!t.name) { alert('Name is required.'); return; }
+  try {
+    if (t.id) {
+      await api(`/lookahead/templates/${t.id}`, 'PATCH', t);
+    } else {
+      await api('/lookahead/templates', 'POST', t);
+    }
+    _LA.editingTemplate = null;
+    openTemplatesModal();
+  } catch(e) { alert('Save failed: ' + e.message); }
+}
+
+async function _laDeleteTemplate(tplId) {
+  if (!confirm('Delete this template? Existing instances keep their cards.')) return;
+  try {
+    await api(`/lookahead/templates/${tplId}`, 'DELETE');
+    openTemplatesModal();
+  } catch(e) { alert('Delete failed: ' + e.message); }
+}
+
+async function _laPromptInstantiate(tplId) {
+  const tpl = (_LA.templates || []).find(t => t.id === tplId);
+  if (!tpl) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const start_date = prompt(`Start date for "${tpl.name}" (YYYY-MM-DD):`, today);
+  if (!start_date) return;
+  const project_tag = prompt('Project tag:',
+    tpl.default_project_tag || _LA.project || '');
+  if (!project_tag) return;
+  try {
+    const inst = await api(`/lookahead/templates/${tplId}/instantiate`, 'POST',
+      { start_date, project_tag, owner: tpl.owner });
+    closeLaModal();
+    // Jump to the instance's project and reload the board.
+    _LA.project = project_tag;
+    _LA.mode = 'project';
+    localStorage.setItem('la.project', project_tag);
+    localStorage.setItem('la.mode', 'project');
+    const sel = $('laProjectSelect'); if (sel) sel.value = project_tag;
+    const mode = $('laMode'); if (mode) mode.value = 'project';
+    await _laLoadData();
+    renderLookahead();
+    $('statusMsg').textContent = `Instantiated "${tpl.name}" on ${start_date} — ${inst.cards.length} cards created.`;
+  } catch(e) { alert('Instantiate failed: ' + e.message); }
+}
+
+async function _laOpenInstancesPanel() {
+  let instances = [];
+  try { instances = await api('/lookahead/instances'); }
+  catch(e) { alert('Failed to load instances: ' + e.message); return; }
+  $('laModalTitle').textContent = 'Template instances';
+  const tplNameById = Object.fromEntries((_LA.templates || []).map(t => [t.id, t.name]));
+  const rows = instances.map(i => `
+    <tr style="border-bottom:1px solid var(--border2)">
+      <td style="padding:6px 8px">${esc(tplNameById[i.template_id] || i.template_id)}</td>
+      <td style="padding:6px 8px;color:var(--muted);font-size:10px">v${i.template_version}</td>
+      <td style="padding:6px 8px">${esc(i.project_tag)}</td>
+      <td style="padding:6px 8px">${esc(i.start_date)}</td>
+      <td style="padding:6px 8px"><span class="la-chip" style="color:${i.status==='complete'?'var(--green)':(i.status==='cancelled'?'var(--muted)':'var(--accent)')}">${esc(i.status)}</span></td>
+      <td style="padding:6px 8px;display:flex;gap:4px;justify-content:flex-end">
+        <button class="ia" style="padding:2px 8px;font-size:10px" onclick="_laRescheduleInstance('${esc(i.id)}','${esc(i.start_date)}')">Reschedule</button>
+        <button class="ia" style="padding:2px 8px;font-size:10px;color:var(--red)" onclick="_laDeleteInstance('${esc(i.id)}')">✕</button>
+      </td>
+    </tr>`).join('');
+  $('laModalBody').innerHTML = (instances.length
+    ? `<table style="width:100%;border-collapse:collapse;font-size:11px">
+         <thead><tr style="border-bottom:1px solid var(--border2);text-align:left">
+           <th style="padding:6px 8px">Template</th><th style="padding:6px 8px">Ver</th>
+           <th style="padding:6px 8px">Project</th><th style="padding:6px 8px">Start</th>
+           <th style="padding:6px 8px">Status</th><th></th>
+         </tr></thead><tbody>${rows}</tbody></table>`
+    : `<div style="padding:16px;text-align:center;color:var(--muted);font-size:11px">No instances yet.</div>`) + `
+    <div style="margin-top:12px"><button class="ia" onclick="openTemplatesModal()" style="padding:4px 10px;font-size:11px">← Back to templates</button></div>`;
+}
+
+async function _laRescheduleInstance(instanceId, currentStart) {
+  const start_date = prompt('New start date (YYYY-MM-DD):', currentStart);
+  if (!start_date || start_date === currentStart) return;
+  try {
+    await api(`/lookahead/instances/${instanceId}`, 'PATCH', { start_date });
+    await _laLoadData();
+    renderLookahead();
+    _laOpenInstancesPanel();
+  } catch(e) { alert('Reschedule failed: ' + e.message); }
+}
+
+async function _laDeleteInstance(instanceId) {
+  if (!confirm('Delete this instance and all attached cards? Detached cards stay.')) return;
+  try {
+    await api(`/lookahead/instances/${instanceId}`, 'DELETE');
+    await _laLoadData();
+    renderLookahead();
+    _laOpenInstancesPanel();
+  } catch(e) { alert('Delete failed: ' + e.message); }
 }
 
 // ── Modal plumbing ───────────────────────────────────────────────────────────
