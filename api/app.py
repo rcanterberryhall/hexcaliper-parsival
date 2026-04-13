@@ -1980,6 +1980,217 @@ def generate_briefing(background_tasks: BackgroundTasks):
     return {"ok": True}
 
 
+# ── Passdown generator ───────────────────────────────────────────────────────
+
+def _build_passdown(hours: int = 12) -> dict:
+    """
+    Build a structured shift-handoff passdown from recent activity.
+
+    Assembles sections from the current database state so the user can paste
+    the result into an email.  Nothing is written to the DB — this is a
+    read-only summary.
+
+    Sections:
+      * ``open_actions``    — highest-priority open todos (cap 15)
+      * ``active_situations`` — non-dismissed situations, highest score first
+      * ``upcoming_deadlines`` — open todos with a deadline set
+      * ``recent_high_priority`` — items processed in the last ``hours`` with
+        priority=high OR category=task
+      * ``recently_replied`` — items with ``replied_at`` in the last ``hours``
+
+    :param hours: Look-back window for recent-activity sections.
+    :return: Dict with ``generated_at``, ``hours``, ``sections`` (list of
+             ``{title, kind, items}``) and ``html`` (email-ready HTML).
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))
+    cutoff    = cutoff_dt.isoformat()
+
+    with db.lock:
+        todos_open = db.get_todos(done=False)
+        sits       = db.get_all_situations(include_dismissed=False)
+        items      = db.get_all_items()
+
+    # ── Open action items (top 15 by priority) ────────────────────────────────
+    open_actions = [{
+        "description": t.get("description", ""),
+        "priority":    t.get("priority", "medium"),
+        "deadline":    t.get("deadline"),
+        "owner":       t.get("owner") or "me",
+        "project_tag": t.get("project_tag") or "",
+    } for t in todos_open[:15]]
+
+    # ── Active situations (by score, cap 10) ──────────────────────────────────
+    active_sits = sorted(
+        [s for s in sits if s.get("status") not in ("resolved", "dismissed")],
+        key=lambda s: -(s.get("score") or 0.0),
+    )[:10]
+    active_situations = [{
+        "title":       s.get("title", ""),
+        "status":      s.get("status", ""),
+        "score":       round(s.get("score") or 0.0, 1),
+        "project_tag": s.get("project_tag") or "",
+    } for s in active_sits]
+
+    # ── Upcoming deadlines (todos with deadline set, chronological) ───────────
+    with_deadlines = [t for t in todos_open if t.get("deadline")]
+    with_deadlines.sort(key=lambda t: t["deadline"])
+    upcoming_deadlines = [{
+        "description": t.get("description", ""),
+        "deadline":    t.get("deadline"),
+        "priority":    t.get("priority", "medium"),
+    } for t in with_deadlines[:10]]
+
+    # ── Recent high-priority items (last N hours) ─────────────────────────────
+    recent_hi = [
+        a for a in items
+        if (a.get("processed_at") or "") >= cutoff
+        and (a.get("priority") == "high" or a.get("category") == "task")
+        and a.get("category") != "noise"
+    ]
+    recent_hi.sort(key=lambda a: a.get("processed_at") or "", reverse=True)
+    recent_high_priority = [{
+        "title":       a.get("title", "")[:140],
+        "author":      a.get("author", ""),
+        "priority":    a.get("priority", "medium"),
+        "category":    a.get("category", ""),
+        "summary":     a.get("summary", ""),
+        "source":      a.get("source", ""),
+        "url":         a.get("url", ""),
+    } for a in recent_hi[:10]]
+
+    # ── Recently replied items (last N hours) ─────────────────────────────────
+    recently_replied_items = [
+        a for a in items if (a.get("replied_at") or "") >= cutoff
+    ]
+    recently_replied_items.sort(key=lambda a: a.get("replied_at") or "", reverse=True)
+    recently_replied = [{
+        "title":     a.get("title", "")[:140],
+        "replied_at": a.get("replied_at"),
+        "source":    a.get("source", ""),
+        "author":    a.get("author", ""),
+    } for a in recently_replied_items[:10]]
+
+    sections = [
+        {"title": "Open Action Items",        "kind": "actions",    "items": open_actions},
+        {"title": "Active Situations",        "kind": "situations", "items": active_situations},
+        {"title": "Upcoming Deadlines",       "kind": "deadlines",  "items": upcoming_deadlines},
+        {"title": "Recent High-Priority",     "kind": "items",      "items": recent_high_priority},
+        {"title": "Recently Replied",         "kind": "replied",    "items": recently_replied},
+    ]
+
+    generated_at = now_iso()
+    html = _render_passdown_html(sections, generated_at, hours)
+    return {
+        "generated_at": generated_at,
+        "hours":        hours,
+        "sections":     sections,
+        "html":         html,
+    }
+
+
+def _render_passdown_html(sections: list[dict], generated_at: str, hours: int) -> str:
+    """
+    Render passdown sections as email-ready HTML (inline styles, table-free).
+
+    Kept deliberately simple so the output pastes cleanly into Outlook and
+    Gmail without CSS loss.  The user is expected to edit the result before
+    sending — this is a suggestion, not a final message.
+    """
+    from html import escape as _esc
+    user = config.USER_NAME or "the team"
+    parts: list[str] = []
+    parts.append(
+        f'<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222;max-width:760px">'
+        f'<h2 style="margin:0 0 4px 0">Shift passdown</h2>'
+        f'<div style="font-size:12px;color:#666;margin-bottom:14px">'
+        f'From {_esc(user)} — generated {_esc(generated_at)} — window: last {int(hours)}h'
+        f'</div>'
+    )
+
+    def _li(inner: str) -> str:
+        return f'<li style="margin:3px 0">{inner}</li>'
+
+    for sec in sections:
+        items = sec.get("items", [])
+        if not items:
+            continue
+        parts.append(
+            f'<h3 style="margin:16px 0 4px 0;border-bottom:1px solid #ddd;padding-bottom:2px">'
+            f'{_esc(sec["title"])}</h3>'
+        )
+        parts.append('<ul style="margin:4px 0 10px 18px;padding:0">')
+        kind = sec.get("kind")
+        for it in items:
+            if kind == "actions":
+                meta = []
+                if it.get("priority"):    meta.append(_esc(it["priority"]))
+                if it.get("owner"):       meta.append(f'owner: {_esc(it["owner"])}')
+                if it.get("deadline"):    meta.append(f'due {_esc(str(it["deadline"]))}')
+                if it.get("project_tag"): meta.append(_esc(str(it["project_tag"])))
+                suffix = f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>' if meta else ""
+                parts.append(_li(f'{_esc(it.get("description",""))}{suffix}'))
+            elif kind == "situations":
+                meta = []
+                if it.get("status"): meta.append(_esc(it["status"]))
+                if it.get("score"):  meta.append(f'score {it["score"]}')
+                if it.get("project_tag"): meta.append(_esc(str(it["project_tag"])))
+                suffix = f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>' if meta else ""
+                parts.append(_li(f'{_esc(it.get("title",""))}{suffix}'))
+            elif kind == "deadlines":
+                parts.append(_li(
+                    f'<strong>{_esc(str(it.get("deadline","")))}</strong> — '
+                    f'{_esc(it.get("description",""))} '
+                    f'<span style="color:#888;font-size:12px">({_esc(it.get("priority","medium"))})</span>'
+                ))
+            elif kind == "items":
+                src = it.get("source") or ""
+                url = it.get("url") or ""
+                title_html = f'<a href="{_esc(url)}">{_esc(it.get("title",""))}</a>' if url else _esc(it.get("title",""))
+                meta = []
+                if src: meta.append(_esc(src))
+                if it.get("author"):   meta.append(_esc(it["author"]))
+                if it.get("priority"): meta.append(_esc(it["priority"]))
+                meta_html = f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>' if meta else ""
+                summary = it.get("summary") or ""
+                summary_html = f'<div style="color:#555;font-size:12px;margin-left:4px">{_esc(summary)}</div>' if summary else ""
+                parts.append(_li(f'{title_html}{meta_html}{summary_html}'))
+            elif kind == "replied":
+                meta = []
+                if it.get("source"): meta.append(_esc(it["source"]))
+                if it.get("replied_at"): meta.append(f'at {_esc(str(it["replied_at"]))}')
+                meta_html = f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>' if meta else ""
+                parts.append(_li(f'{_esc(it.get("title",""))}{meta_html}'))
+        parts.append('</ul>')
+
+    if all(not sec.get("items") for sec in sections):
+        parts.append(
+            '<p style="color:#888;font-style:italic">No activity in the look-back window. '
+            'Consider increasing the window or leaving a short free-form note.</p>'
+        )
+
+    parts.append('</div>')
+    return "".join(parts)
+
+
+@app.post("/passdown/generate")
+def generate_passdown(body: dict | None = None):
+    """
+    Build a passdown suggestion from recent activity.
+
+    Stateless — nothing is written to the DB.  The caller is expected to edit
+    the HTML before sending.
+
+    :param body: Optional dict with ``hours`` (int, default 12).
+    :return: ``{"generated_at", "hours", "sections", "html"}``.
+    """
+    hours = 12
+    if body and isinstance(body.get("hours"), (int, float)):
+        hours = int(body["hours"])
+        hours = max(1, min(hours, 168))  # cap at one week
+    return _build_passdown(hours=hours)
+
+
 # ── Analyses ──────────────────────────────────────────────────────────────────
 
 def _deserialize_analysis(a: dict) -> dict:

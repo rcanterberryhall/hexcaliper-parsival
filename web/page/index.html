@@ -731,6 +731,30 @@ tr.attn-low  { opacity:0.65; }
   display: flex; align-items: center; gap: 8px; flex-shrink: 0;
 }
 
+/* ── Passdown modal ── */
+.pd-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 0 8px 0; border-bottom: 1px solid var(--border2);
+}
+.pd-toolbar label { font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.pd-toolbar select {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border2);
+  border-radius: var(--r); padding: 2px 6px; font-size: 11px;
+}
+.pd-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-height: 420px; }
+.pd-preview {
+  border: 1px solid var(--border2); border-radius: var(--r); padding: 12px;
+  overflow: auto; background: #fff; color: #222; max-height: 60vh;
+}
+.pd-html {
+  border: 1px solid var(--border2); border-radius: var(--r); padding: 8px;
+  background: var(--bg); color: var(--text); font-family: ui-monospace,monospace;
+  font-size: 11px; line-height: 1.35; resize: vertical; min-height: 400px; max-height: 60vh;
+}
+@media (max-width: 900px) {
+  .pd-layout { grid-template-columns: 1fr; }
+}
+
 /* ── Priority-change reason modal ── */
 .pri-reason-overlay {
   position: fixed; inset: 0; z-index: 120; background: rgba(0,0,0,.55);
@@ -980,6 +1004,7 @@ tr.attn-low  { opacity:0.65; }
         <label class="show-done" id="showResolvedLbl" style="display:none"><input type="checkbox" id="showResolved" onchange="onShowResolved()"> Show resolved</label>
         <button class="ia" id="addActionBtn" onclick="toggleAddAction()" title="Add manual action item" style="margin-left:auto;padding:3px 9px;font-size:11px">+ Add action</button>
         <button class="ia" id="regenerateBriefingBtn" onclick="regenerateBriefing()" title="Re-generate briefing with current data" style="display:none;margin-left:auto;padding:3px 9px;font-size:11px">↺ Regenerate</button>
+        <button class="ia" id="passdownBtn" onclick="openPassdownModal()" title="Generate a shift-handoff passdown email" style="padding:3px 9px;font-size:11px">📋 Passdown</button>
       </div>
       <div id="addActionForm" style="display:none;padding:10px 14px;border-bottom:1px solid var(--border2);background:var(--surface);gap:8px;flex-wrap:wrap;align-items:flex-end" class="frow">
         <input id="newTodoDesc"     type="text"   placeholder="Description…"  style="flex:2;min-width:180px;padding:4px 8px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px" onkeydown="if(event.key==='Enter')submitNewTodo()">
@@ -1298,6 +1323,12 @@ tr.attn-low  { opacity:0.65; }
     </div>
 
     <div class="help-section">
+      <h3>Passdown generator</h3>
+      <p>Click <strong>📋 Passdown</strong> above the action list to open the passdown modal. Parsival assembles a shift-handoff email from recent activity — open action items, active situations, upcoming deadlines, recent high-priority items, and items you've replied to.</p>
+      <p>The left pane is a live preview; the right pane is editable HTML. Tune the look-back window (6 h – 7 days), edit freely, then use <strong>Copy HTML</strong> to paste into Outlook or <strong>Copy text</strong> for plain-text channels. Nothing is sent automatically — you own the final message.</p>
+    </div>
+
+    <div class="help-section">
       <h3>Priority override feedback</h3>
       <p>When you change an item's priority in the detail panel, Parsival prompts for a one-click reason: <em>this person matters</em>, <em>this topic is hot right now</em>, <em>deadline is real</em>, or <em>other</em>. The override is stored and injected into future analysis prompts as a learned rule, so the LLM can weight similar items correctly next time. Pick <em>Skip</em> to change the priority without recording a reason.</p>
     </div>
@@ -1382,6 +1413,42 @@ tr.attn-low  { opacity:0.65; }
   </div>
   <div class="modal-foot" style="justify-content:flex-end">
     <button class="save-btn" onclick="closeHelp()">Close</button>
+  </div>
+</div>
+
+<!-- Passdown Modal -->
+<div class="modal-backdrop" id="passdownBackdrop" onclick="closePassdownModal()"></div>
+<div class="help-modal" id="passdownModal">
+  <div class="modal-head">
+    <span class="modal-head-title">PASSDOWN</span>
+    <button class="modal-close" onclick="closePassdownModal()">✕</button>
+  </div>
+  <div class="modal-body">
+    <div class="pd-toolbar">
+      <label>Window
+        <select id="pdHours" onchange="generatePassdown()">
+          <option value="6">last 6 h</option>
+          <option value="12" selected>last 12 h</option>
+          <option value="24">last 24 h</option>
+          <option value="48">last 48 h</option>
+          <option value="168">last 7 days</option>
+        </select>
+      </label>
+      <button class="ia" onclick="generatePassdown()" title="Re-build from current data">↺ Regenerate</button>
+      <button class="ia" onclick="copyPassdownHtml()" title="Copy HTML to clipboard">📋 Copy HTML</button>
+      <button class="ia" onclick="copyPassdownText()" title="Copy plain text">Copy text</button>
+      <span id="pdCopyMsg" style="margin-left:auto;font-size:11px;color:var(--accent)"></span>
+    </div>
+    <p class="help-tip" style="margin:6px 0 10px 0">
+      Edit the content on the right before pasting into email. The LLM only assembles the data — you own the final message.
+    </p>
+    <div class="pd-layout">
+      <div class="pd-preview" id="pdPreview"></div>
+      <textarea class="pd-html" id="pdHtml" spellcheck="false"></textarea>
+    </div>
+  </div>
+  <div class="modal-foot" style="justify-content:flex-end">
+    <button class="save-btn" onclick="closePassdownModal()">Close</button>
   </div>
 </div>
 
@@ -2659,6 +2726,81 @@ function renderBriefing(data) {
   el.innerHTML = ts + sections;
 }
 
+// ── Passdown modal ──────────────────────────────────────────────────────────
+
+function openPassdownModal() {
+  $('passdownBackdrop').classList.add('open');
+  $('passdownModal').classList.add('open');
+  generatePassdown();
+}
+
+function closePassdownModal() {
+  $('passdownBackdrop').classList.remove('open');
+  $('passdownModal').classList.remove('open');
+}
+
+async function generatePassdown() {
+  const hours = parseInt($('pdHours').value, 10) || 12;
+  const preview = $('pdPreview');
+  const textarea = $('pdHtml');
+  preview.innerHTML = '<em style="color:#666">Generating…</em>';
+  textarea.value = '';
+  try {
+    const data = await api('/passdown/generate', 'POST', { hours });
+    preview.innerHTML = data.html || '';
+    textarea.value    = data.html || '';
+  } catch (e) {
+    preview.innerHTML = `<em style="color:#a00">Failed: ${esc(String(e))}</em>`;
+    console.warn('passdown:', e);
+  }
+}
+
+function _flashPdCopyMsg(text) {
+  const el = $('pdCopyMsg');
+  if (!el) return;
+  el.textContent = text;
+  setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 2000);
+}
+
+async function copyPassdownHtml() {
+  const html = $('pdHtml').value;
+  if (!html) return;
+  try {
+    if (navigator.clipboard && window.ClipboardItem) {
+      const item = new ClipboardItem({
+        'text/html':  new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([html.replace(/<[^>]+>/g, '')], { type: 'text/plain' }),
+      });
+      await navigator.clipboard.write([item]);
+    } else {
+      await navigator.clipboard.writeText(html);
+    }
+    _flashPdCopyMsg('Copied HTML');
+  } catch (e) {
+    console.warn('copyPassdownHtml:', e);
+    _flashPdCopyMsg('Copy failed — select and copy manually');
+  }
+}
+
+async function copyPassdownText() {
+  const html = $('pdHtml').value;
+  if (!html) return;
+  const text = html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<\/h[1-6]>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  try {
+    await navigator.clipboard.writeText(text);
+    _flashPdCopyMsg('Copied text');
+  } catch (e) {
+    _flashPdCopyMsg('Copy failed — select and copy manually');
+  }
+}
+
 async function regenerateBriefing() {
   const btn = $('regenerateBriefingBtn');
   if (btn) { btn.disabled = true; btn.textContent = '↻ Generating…'; }
@@ -3458,6 +3600,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     if ($('helpModal').classList.contains('open'))     { closeHelp();     return; }
     if ($('settingsModal').classList.contains('open')) { closeSettings(); return; }
+    if ($('passdownModal').classList.contains('open')) { closePassdownModal(); return; }
     if ($('detailPanel').classList.contains('open'))   { closeDetail();   return; }
     closeSidebar();
   }

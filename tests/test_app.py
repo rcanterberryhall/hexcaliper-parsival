@@ -530,6 +530,50 @@ def test_patch_analysis_priority_reason_without_priority_change_ignored(client):
     assert not saved.get("priority_overrides")
 
 
+# ── /passdown/generate ────────────────────────────────────────────────────────
+
+def test_passdown_generate_empty_db(client):
+    """With no data, passdown still returns a valid structure."""
+    r = client.post("/passdown/generate")
+    assert r.status_code == 200
+    body = r.json()
+    assert "html" in body and "sections" in body
+    assert body["hours"] == 12
+    assert len(body["sections"]) == 5  # five canonical sections
+    # Every section should have items=[] with no data inserted.
+    for sec in body["sections"]:
+        assert sec["items"] == []
+    # HTML should still include the heading and an empty-state note.
+    assert "Shift passdown" in body["html"]
+
+
+def test_passdown_generate_populates_open_actions(client):
+    """Open todos appear in the Open Action Items section."""
+    _insert_analysis(item_id="pd1", priority="high", category="task")
+    todos.insert({
+        "item_id": "pd1", "source": "github", "title": "T",
+        "url": "https://example.com/x", "description": "Ship the release",
+        "deadline": "2026-04-15", "owner": "me", "priority": "high",
+        "done": False, "created_at": "2026-04-12T08:00:00+00:00",
+    })
+    r = client.post("/passdown/generate", json={"hours": 24})
+    body = r.json()
+    actions = next(s for s in body["sections"] if s["kind"] == "actions")
+    assert any(i["description"] == "Ship the release" for i in actions["items"])
+    deadlines = next(s for s in body["sections"] if s["kind"] == "deadlines")
+    assert any(i["deadline"] == "2026-04-15" for i in deadlines["items"])
+    assert "Ship the release" in body["html"]
+
+
+def test_passdown_generate_clamps_hours(client):
+    """Non-integer or out-of-range hours must be clamped, not crash."""
+    r = client.post("/passdown/generate", json={"hours": 9999})
+    assert r.status_code == 200
+    assert r.json()["hours"] == 168
+    r = client.post("/passdown/generate", json={"hours": 0})
+    assert r.json()["hours"] == 1
+
+
 # ── /reanalyze ─────────────────────────────────────────────────────────────────
 
 def test_reanalyze_rejects_concurrent_scan(client):
