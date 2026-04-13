@@ -10,6 +10,11 @@ def _wipe_lookahead():
     c = db.conn()
     for tbl in ("lookahead_card_resources", "lookahead_card_links",
                 "lookahead_card_deps", "lookahead_cards",
+                "lookahead_template_task_resources",
+                "lookahead_template_task_deps",
+                "lookahead_template_tasks",
+                "lookahead_template_instances",
+                "lookahead_templates",
                 "lookahead_resources", "project_shifts"):
         c.execute(f"DELETE FROM {tbl}")
 
@@ -235,3 +240,203 @@ def test_overview_groups_and_sorts_by_earliest(client):
     rows = client.get("/lookahead/overview").json()
     assert [r["project"] for r in rows] == ["EARLY", "LATE"]
     assert len(rows[0]["cards"]) == 1
+
+
+# ── Templates (parsival#49) ───────────────────────────────────────────────────
+
+def _template_payload(**overrides):
+    """Two-task template: A (day 0, 1 shift), B (day 2, 2 shifts) depends on A."""
+    body = {
+        "name": "Weekly inspection",
+        "description": "Routine weekly check",
+        "owner": "Alice",
+        "duration_unit": "calendar_days",
+        "default_project_tag": "P905",
+        "tasks": [
+            {
+                "local_id": "A",
+                "title": "Pre-check",
+                "offset_start_days": 0,
+                "offset_start_shift": 1,
+                "duration_shifts": 1,
+            },
+            {
+                "local_id": "B",
+                "title": "Main inspection",
+                "offset_start_days": 2,
+                "offset_start_shift": 1,
+                "duration_shifts": 2,
+                "depends_on": ["A"],
+            },
+        ],
+    }
+    body.update(overrides)
+    return body
+
+
+def test_template_create_and_round_trip(client):
+    _wipe_lookahead()
+    r = client.post("/lookahead/templates", json=_template_payload())
+    assert r.status_code == 200
+    tpl = r.json()
+    assert tpl["name"] == "Weekly inspection"
+    assert tpl["version"] == 1
+    assert len(tpl["tasks"]) == 2
+    task_b = [t for t in tpl["tasks"] if t["local_id"] == "B"][0]
+    assert task_b["depends_on"] == ["A"]
+
+
+def test_template_requires_name(client):
+    _wipe_lookahead()
+    r = client.post("/lookahead/templates", json={"tasks": []})
+    assert r.status_code == 400
+
+
+def test_template_rejects_invalid_duration_unit(client):
+    _wipe_lookahead()
+    r = client.post("/lookahead/templates",
+                    json=_template_payload(duration_unit="weeks"))
+    assert r.status_code == 400
+
+
+def test_template_patch_bumps_version_and_replaces_tasks(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    assert tpl["version"] == 1
+    r = client.patch(f"/lookahead/templates/{tpl['id']}", json={
+        "description": "Updated",
+        "tasks": [{"local_id": "solo", "title": "Just one",
+                   "offset_start_days": 0, "duration_shifts": 1}],
+    })
+    refreshed = r.json()
+    assert refreshed["version"] == 2
+    assert refreshed["description"] == "Updated"
+    assert [t["local_id"] for t in refreshed["tasks"]] == ["solo"]
+
+
+def test_template_delete_cascades_tasks(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    client.delete(f"/lookahead/templates/{tpl['id']}")
+    assert client.get(f"/lookahead/templates/{tpl['id']}").status_code == 404
+
+
+def test_instantiate_materializes_cards_with_correct_dates(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    r = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                    json={"start_date": "2026-05-04", "project_tag": "P905"})
+    assert r.status_code == 200
+    inst = r.json()
+    assert inst["status"] == "active"
+    assert inst["template_version"] == 1
+    cards_by_local = {c["template_task_local_id"]: c for c in inst["cards"]}
+    # Task A: day 0, shift 1, duration 1 → starts & ends 2026-05-04 shift 1
+    assert cards_by_local["A"]["start_date"] == "2026-05-04"
+    assert cards_by_local["A"]["end_date"]   == "2026-05-04"
+    assert cards_by_local["A"]["start_shift_num"] == 1
+    assert cards_by_local["A"]["end_shift_num"]   == 1
+    # Task B: day 2, shift 1, duration 2 → starts 2026-05-06, ends 2026-05-06 shift 2
+    assert cards_by_local["B"]["start_date"] == "2026-05-06"
+    assert cards_by_local["B"]["end_date"]   == "2026-05-06"
+    assert cards_by_local["B"]["end_shift_num"] == 2
+    # Dep wiring: B depends_on [A.id]
+    assert cards_by_local["B"]["depends_on"] == [cards_by_local["A"]["id"]]
+
+
+def test_instantiate_business_days_skips_weekends(client):
+    _wipe_lookahead()
+    body = _template_payload(duration_unit="business_days",
+                             tasks=[{"local_id": "x", "title": "X",
+                                     "offset_start_days": 3, "duration_shifts": 1}])
+    tpl = client.post("/lookahead/templates", json=body).json()
+    # 2026-05-04 is a Monday → +3 business days → 2026-05-07 (Thu)
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    assert inst["cards"][0]["start_date"] == "2026-05-07"
+
+
+def test_instantiate_copies_named_resources_to_bom(client):
+    _wipe_lookahead()
+    crane = client.post("/lookahead/resources",
+                        json={"name": "Crane", "type": "equipment"}).json()
+    body = _template_payload(tasks=[{
+        "local_id": "x", "title": "Lift",
+        "offset_start_days": 0, "duration_shifts": 1,
+        "resource_requirements": [
+            {"resource_type": "equipment",
+             "named_resource_id": crane["id"], "quantity": 1},
+            {"resource_type": "person", "role": "rigger", "quantity": 2},
+        ],
+    }])
+    tpl = client.post("/lookahead/templates", json=body).json()
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    card = inst["cards"][0]
+    # Named requirement → BOM entry; generic role-only requirement is skipped
+    # at instantiation time (user assigns it later by editing the card).
+    assert len(card["resources"]) == 1
+    assert card["resources"][0]["resource_id"] == crane["id"]
+
+
+def test_reschedule_instance_shifts_all_cards(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    r = client.patch(f"/lookahead/instances/{inst['id']}",
+                     json={"start_date": "2026-05-11"})
+    rescheduled = r.json()
+    by_local = {c["template_task_local_id"]: c for c in rescheduled["cards"]}
+    # Shift is +7 calendar days.
+    assert by_local["A"]["start_date"] == "2026-05-11"
+    assert by_local["B"]["start_date"] == "2026-05-13"
+
+
+def test_detach_card_keeps_it_out_of_reschedule(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    detached_card = [c for c in inst["cards"]
+                     if c["template_task_local_id"] == "A"][0]
+    client.post(f"/lookahead/cards/{detached_card['id']}/detach")
+    client.patch(f"/lookahead/instances/{inst['id']}",
+                 json={"start_date": "2026-05-11"})
+    # Re-fetch the detached card directly — it should not have moved.
+    fresh = client.get(f"/lookahead/cards/{detached_card['id']}").json()
+    assert fresh["start_date"] == "2026-05-04"
+    assert fresh["template_instance_id"] is None
+
+
+def test_instance_autocompletes_when_all_cards_done(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    for card in inst["cards"][:-1]:
+        client.patch(f"/lookahead/cards/{card['id']}", json={"status": "done"})
+    # Not yet complete — one card still planned.
+    assert client.get(f"/lookahead/instances/{inst['id']}").json()["status"] == "active"
+    # Flip the last one.
+    client.patch(f"/lookahead/cards/{inst['cards'][-1]['id']}",
+                 json={"status": "done"})
+    assert client.get(f"/lookahead/instances/{inst['id']}").json()["status"] == "complete"
+
+
+def test_delete_instance_cascades_attached_cards(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    card_ids = [c["id"] for c in inst["cards"]]
+    client.delete(f"/lookahead/instances/{inst['id']}")
+    for cid in card_ids:
+        assert client.get(f"/lookahead/cards/{cid}").status_code == 404
+    assert client.get(f"/lookahead/instances/{inst['id']}").status_code == 404

@@ -3474,7 +3474,8 @@ def lookahead_create_card(body: dict):
 def lookahead_update_card(card_id: str, body: dict):
     data = _card_input(body)
     with db.lock:
-        if not db.get_lookahead_card(card_id):
+        existing = db.get_lookahead_card(card_id)
+        if not existing:
             raise HTTPException(status_code=404, detail="card not found")
         if data:
             data["id"] = card_id
@@ -3485,7 +3486,10 @@ def lookahead_update_card(card_id: str, body: dict):
             db.set_card_links(card_id, body["links"] or [])
         if "resources" in body:
             db.set_card_resources(card_id, body["resources"] or [])
-        return db.get_lookahead_card(card_id)
+        card = db.get_lookahead_card(card_id)
+        if card.get("template_instance_id"):
+            db.maybe_autocomplete_instance(card["template_instance_id"])
+        return card
 
 
 @app.delete("/lookahead/cards/{card_id}")
@@ -3593,3 +3597,136 @@ def lookahead_overview(start: Optional[str] = None, end: Optional[str] = None):
         })
     rows.sort(key=lambda r: r["earliest"] or "")
     return rows
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Look-ahead templates (parsival#49)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# A template is a saved recipe of tasks with relative offsets, deps, and
+# resource requirements.  Instantiating a template with a ``start_date``
+# materialises cards on the board; they remember their instance so the whole
+# cohort can be rescheduled with a single date change.
+
+def _validate_template_body(body: dict, *, require_name: bool) -> None:
+    name = (body.get("name") or "").strip()
+    if require_name and not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    unit = body.get("duration_unit", "calendar_days")
+    if unit not in db._DURATION_UNITS:
+        raise HTTPException(status_code=400, detail=f"invalid duration_unit: {unit}")
+    for t in body.get("tasks") or []:
+        if not (t.get("local_id") or "").strip():
+            raise HTTPException(status_code=400, detail="every task needs local_id")
+
+
+@app.get("/lookahead/templates")
+def lookahead_list_templates(owner: Optional[str] = None):
+    with db.lock:
+        return db.list_templates(owner=owner)
+
+
+@app.get("/lookahead/templates/{template_id}")
+def lookahead_get_template(template_id: str):
+    with db.lock:
+        tpl = db.get_template(template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="template not found")
+    return tpl
+
+
+@app.post("/lookahead/templates")
+def lookahead_create_template(body: dict):
+    _validate_template_body(body, require_name=True)
+    data = dict(body)
+    data["id"] = body.get("id") or str(_uuid.uuid4())
+    with db.lock:
+        try:
+            return db.create_template(data)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/lookahead/templates/{template_id}")
+def lookahead_update_template(template_id: str, body: dict):
+    _validate_template_body(body, require_name=False)
+    with db.lock:
+        try:
+            tpl = db.update_template(template_id, body)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if not tpl:
+        raise HTTPException(status_code=404, detail="template not found")
+    return tpl
+
+
+@app.delete("/lookahead/templates/{template_id}")
+def lookahead_delete_template(template_id: str):
+    with db.lock:
+        db.delete_template(template_id)
+    return {"ok": True}
+
+
+@app.post("/lookahead/templates/{template_id}/instantiate")
+def lookahead_instantiate_template(template_id: str, body: dict):
+    start_date = (body.get("start_date") or "").strip()
+    if not start_date:
+        raise HTTPException(status_code=400, detail="start_date is required")
+    project = (body.get("project_tag") or "").strip()
+    owner   = (body.get("owner") or "").strip()
+    with db.lock:
+        inst = db.instantiate_template(template_id, start_date, project, owner)
+    if not inst:
+        raise HTTPException(status_code=404, detail="template not found")
+    if not inst["project_tag"]:
+        raise HTTPException(status_code=400,
+                            detail="project_tag is required (template has no default)")
+    return inst
+
+
+@app.get("/lookahead/instances")
+def lookahead_list_instances(project: Optional[str] = None,
+                              status:  Optional[str] = None):
+    with db.lock:
+        return db.list_instances(project=project, status=status)
+
+
+@app.get("/lookahead/instances/{instance_id}")
+def lookahead_get_instance(instance_id: str):
+    with db.lock:
+        inst = db.get_instance(instance_id)
+    if not inst:
+        raise HTTPException(status_code=404, detail="instance not found")
+    return inst
+
+
+@app.patch("/lookahead/instances/{instance_id}")
+def lookahead_update_instance(instance_id: str, body: dict):
+    with db.lock:
+        inst = db.get_instance(instance_id)
+        if not inst:
+            raise HTTPException(status_code=404, detail="instance not found")
+        if "start_date" in body and body["start_date"]:
+            inst = db.reschedule_instance(instance_id, body["start_date"])
+        if "status" in body:
+            try:
+                inst = db.set_instance_status(instance_id, body["status"])
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+    return inst
+
+
+@app.delete("/lookahead/instances/{instance_id}")
+def lookahead_delete_instance(instance_id: str):
+    with db.lock:
+        db.delete_instance(instance_id)
+    return {"ok": True}
+
+
+@app.post("/lookahead/cards/{card_id}/detach")
+def lookahead_detach_card(card_id: str):
+    with db.lock:
+        card = db.detach_card(card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="card not found")
+    return card

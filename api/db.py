@@ -504,6 +504,80 @@ def _create_schema(c: sqlite3.Connection) -> None:
         days        TEXT    NOT NULL DEFAULT '',
         PRIMARY KEY (project_tag, shift_num)
     );
+
+    -- ── Look-ahead templates (parsival#49) ───────────────────────────────────
+    --
+    -- Templates describe a repeatable piece of work as a tiny graph of tasks
+    -- with relative offsets, duration, dependencies and resource requirements.
+    -- Instantiating a template with a ``start_date`` materialises cards on the
+    -- look-ahead board; their ``template_instance_id`` + ``template_task_local_id``
+    -- fields tie them back to the originating instance so a future reschedule
+    -- can move them all by the same delta.
+
+    CREATE TABLE IF NOT EXISTS lookahead_templates (
+        id                  TEXT    PRIMARY KEY,
+        name                TEXT    NOT NULL DEFAULT '',
+        description         TEXT    NOT NULL DEFAULT '',
+        owner               TEXT    NOT NULL DEFAULT '',
+        version             INTEGER NOT NULL DEFAULT 1,
+        duration_unit       TEXT    NOT NULL DEFAULT 'calendar_days',
+        default_project_tag TEXT    NOT NULL DEFAULT '',
+        created_at          TEXT    NOT NULL DEFAULT '',
+        updated_at          TEXT    NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS lookahead_template_tasks (
+        template_id          TEXT    NOT NULL,
+        local_id             TEXT    NOT NULL,
+        title                TEXT    NOT NULL DEFAULT '',
+        offset_start_days    INTEGER NOT NULL DEFAULT 0,
+        offset_start_shift   INTEGER NOT NULL DEFAULT 1,
+        duration_shifts      INTEGER NOT NULL DEFAULT 1,
+        shift_preference     INTEGER NOT NULL DEFAULT 0,
+        linked_procedure_doc TEXT    NOT NULL DEFAULT '',
+        PRIMARY KEY (template_id, local_id),
+        FOREIGN KEY (template_id) REFERENCES lookahead_templates(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS lookahead_template_task_deps (
+        template_id         TEXT NOT NULL,
+        task_local_id       TEXT NOT NULL,
+        depends_on_local_id TEXT NOT NULL,
+        PRIMARY KEY (template_id, task_local_id, depends_on_local_id),
+        FOREIGN KEY (template_id) REFERENCES lookahead_templates(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS lookahead_template_task_resources (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        template_id       TEXT    NOT NULL,
+        task_local_id     TEXT    NOT NULL,
+        resource_type     TEXT    NOT NULL DEFAULT '',
+        role              TEXT    NOT NULL DEFAULT '',
+        named_resource_id INTEGER,
+        quantity          REAL    NOT NULL DEFAULT 1,
+        FOREIGN KEY (template_id) REFERENCES lookahead_templates(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_la_tpl_task_res_task
+        ON lookahead_template_task_resources(template_id, task_local_id);
+
+    CREATE TABLE IF NOT EXISTS lookahead_template_instances (
+        id               TEXT    PRIMARY KEY,
+        template_id      TEXT    NOT NULL,
+        template_version INTEGER NOT NULL DEFAULT 1,
+        start_date       TEXT    NOT NULL DEFAULT '',
+        project_tag      TEXT    NOT NULL DEFAULT '',
+        owner            TEXT    NOT NULL DEFAULT '',
+        status           TEXT    NOT NULL DEFAULT 'active',
+        created_at       TEXT    NOT NULL DEFAULT ''
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_la_tpl_instances_tpl
+        ON lookahead_template_instances(template_id);
+    CREATE INDEX IF NOT EXISTS idx_la_tpl_instances_project
+        ON lookahead_template_instances(project_tag);
+    CREATE INDEX IF NOT EXISTS idx_la_cards_tpl_instance
+        ON lookahead_cards(template_instance_id);
     """)
 
 
@@ -1778,3 +1852,414 @@ def delete_project_shift(project_tag: str, shift_num: int) -> None:
         "DELETE FROM project_shifts WHERE project_tag = ? AND shift_num = ?",
         (project_tag, int(shift_num)),
     )
+
+
+# ── Look-ahead templates (parsival#49) ────────────────────────────────────────
+#
+# A template is a graph of tasks with offsets, deps, and resource needs.
+# Instantiating a template copies its tasks into concrete cards at absolute
+# dates; the instance PK is stamped on each card's ``template_instance_id``
+# so later reschedules can move the whole cohort by the same delta.
+
+_DURATION_UNITS = ("calendar_days", "business_days")
+_INSTANCE_STATUSES = ("active", "complete", "cancelled")
+
+
+def _template_with_tasks(row: dict) -> dict:
+    if not row:
+        return None
+    c = conn()
+    tid = row["id"]
+    tasks = _rows_to_list(c.execute(
+        "SELECT * FROM lookahead_template_tasks "
+        "WHERE template_id = ? ORDER BY offset_start_days, offset_start_shift, local_id",
+        (tid,),
+    ).fetchall())
+    # Inline deps and resource requirements per task.
+    deps_by_task: dict[str, list[str]] = {}
+    for r in c.execute(
+        "SELECT task_local_id, depends_on_local_id "
+        "FROM lookahead_template_task_deps WHERE template_id = ?",
+        (tid,),
+    ).fetchall():
+        deps_by_task.setdefault(r["task_local_id"], []).append(r["depends_on_local_id"])
+    reqs_by_task: dict[str, list[dict]] = {}
+    for r in c.execute(
+        "SELECT id, task_local_id, resource_type, role, named_resource_id, quantity "
+        "FROM lookahead_template_task_resources WHERE template_id = ?",
+        (tid,),
+    ).fetchall():
+        d = dict(r)
+        reqs_by_task.setdefault(d["task_local_id"], []).append(d)
+    for t in tasks:
+        t["depends_on"] = deps_by_task.get(t["local_id"], [])
+        t["resource_requirements"] = reqs_by_task.get(t["local_id"], [])
+    row["tasks"] = tasks
+    return row
+
+
+def get_template(template_id: str) -> Optional[dict]:
+    row = conn().execute(
+        "SELECT * FROM lookahead_templates WHERE id = ?", (template_id,)
+    ).fetchone()
+    return _template_with_tasks(_row_to_dict(row)) if row else None
+
+
+def list_templates(owner: Optional[str] = None) -> list[dict]:
+    sql = "SELECT * FROM lookahead_templates"
+    args: list = []
+    if owner:
+        sql += " WHERE owner = ?"
+        args.append(owner)
+    sql += " ORDER BY name, id"
+    rows = _rows_to_list(conn().execute(sql, args).fetchall())
+    return [_template_with_tasks(r) for r in rows]
+
+
+def _write_template_tasks(template_id: str, tasks: list[dict]) -> None:
+    """Replace all tasks + deps + resource requirements for a template."""
+    c = conn()
+    c.execute("DELETE FROM lookahead_template_task_resources WHERE template_id = ?",
+              (template_id,))
+    c.execute("DELETE FROM lookahead_template_task_deps WHERE template_id = ?",
+              (template_id,))
+    c.execute("DELETE FROM lookahead_template_tasks WHERE template_id = ?",
+              (template_id,))
+    for t in tasks or []:
+        local_id = str(t.get("local_id") or "").strip()
+        if not local_id:
+            continue
+        c.execute(
+            "INSERT INTO lookahead_template_tasks "
+            "(template_id, local_id, title, offset_start_days, offset_start_shift, "
+            " duration_shifts, shift_preference, linked_procedure_doc) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (template_id, local_id,
+             (t.get("title") or "").strip(),
+             int(t.get("offset_start_days", 0)),
+             int(t.get("offset_start_shift", 1)),
+             max(1, int(t.get("duration_shifts", 1))),
+             int(t.get("shift_preference", 0)),
+             (t.get("linked_procedure_doc") or "").strip()),
+        )
+        for dep in t.get("depends_on") or []:
+            dep = str(dep).strip()
+            if not dep or dep == local_id:
+                continue
+            c.execute(
+                "INSERT OR IGNORE INTO lookahead_template_task_deps "
+                "(template_id, task_local_id, depends_on_local_id) VALUES (?, ?, ?)",
+                (template_id, local_id, dep),
+            )
+        for req in t.get("resource_requirements") or []:
+            rtype = (req.get("resource_type") or "").strip()
+            role  = (req.get("role") or "").strip()
+            named = req.get("named_resource_id")
+            # At least one of rtype/role/named must be present.
+            if not rtype and not role and named in (None, ""):
+                continue
+            c.execute(
+                "INSERT INTO lookahead_template_task_resources "
+                "(template_id, task_local_id, resource_type, role, named_resource_id, quantity) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (template_id, local_id, rtype, role,
+                 int(named) if named not in (None, "") else None,
+                 float(req.get("quantity", 1))),
+            )
+
+
+def create_template(data: dict) -> dict:
+    """Create a new template. Expects ``id`` set by caller (UUID)."""
+    tid = data["id"]
+    now = _now_iso()
+    unit = data.get("duration_unit", "calendar_days")
+    if unit not in _DURATION_UNITS:
+        raise ValueError(f"invalid duration_unit: {unit}")
+    c = conn()
+    c.execute(
+        "INSERT INTO lookahead_templates "
+        "(id, name, description, owner, version, duration_unit, default_project_tag, "
+        " created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
+        (tid,
+         (data.get("name") or "").strip(),
+         (data.get("description") or "").strip(),
+         (data.get("owner") or "").strip(),
+         unit,
+         (data.get("default_project_tag") or "").strip(),
+         now, now),
+    )
+    _write_template_tasks(tid, data.get("tasks") or [])
+    return get_template(tid)
+
+
+def update_template(template_id: str, updates: dict) -> Optional[dict]:
+    """Apply partial update. Bumps ``version`` unconditionally."""
+    current = get_template(template_id)
+    if not current:
+        return None
+    c = conn()
+    fields = {}
+    for k in ("name", "description", "owner", "duration_unit", "default_project_tag"):
+        if k in updates:
+            fields[k] = (updates[k] or "").strip() if isinstance(updates[k], str) else updates[k]
+    if "duration_unit" in fields and fields["duration_unit"] not in _DURATION_UNITS:
+        raise ValueError(f"invalid duration_unit: {fields['duration_unit']}")
+    fields["version"] = int(current["version"]) + 1
+    fields["updated_at"] = _now_iso()
+    set_clause = ", ".join(f'"{k}" = ?' for k in fields)
+    c.execute(
+        f"UPDATE lookahead_templates SET {set_clause} WHERE id = ?",
+        list(fields.values()) + [template_id],
+    )
+    if "tasks" in updates:
+        _write_template_tasks(template_id, updates["tasks"] or [])
+    return get_template(template_id)
+
+
+def delete_template(template_id: str) -> None:
+    conn().execute("DELETE FROM lookahead_templates WHERE id = ?", (template_id,))
+
+
+# ── Template instantiation ────────────────────────────────────────────────────
+
+def _add_days(date_str: str, n: int, unit: str) -> str:
+    """Add N days of the given unit to an ISO date string. Business days skip Sat/Sun."""
+    from datetime import date, timedelta
+    y, m, d = (int(x) for x in date_str.split("-"))
+    cur = date(y, m, d)
+    if unit == "business_days":
+        step = 1 if n >= 0 else -1
+        remaining = abs(n)
+        while remaining > 0:
+            cur = cur + timedelta(days=step)
+            if cur.weekday() < 5:  # 0..4 = Mon..Fri
+                remaining -= 1
+    else:
+        cur = cur + timedelta(days=n)
+    return cur.isoformat()
+
+
+def _duration_to_end(start_date: str, start_shift: int, duration_shifts: int,
+                     unit: str) -> tuple[str, int]:
+    """Convert a (start_date, start_shift, duration) triple into (end_date, end_shift)."""
+    total_shifts = max(1, int(duration_shifts))
+    # Each day holds up to 3 shifts.  Shifts past 3 wrap to the next day.
+    end_shift = int(start_shift) + total_shifts - 1
+    days_added = 0
+    while end_shift > 3:
+        end_shift -= 3
+        days_added += 1
+    end_date = _add_days(start_date, days_added, unit) if days_added else start_date
+    return end_date, end_shift
+
+
+def instantiate_template(template_id: str, start_date: str,
+                         project_tag: str, owner: str = "") -> Optional[dict]:
+    """Materialise a template instance.  Returns ``{instance, cards}``."""
+    import uuid as _uuid
+    tpl = get_template(template_id)
+    if not tpl:
+        return None
+    instance_id = str(_uuid.uuid4())
+    now = _now_iso()
+    unit = tpl["duration_unit"]
+    project = (project_tag or tpl.get("default_project_tag") or "").strip()
+    c = conn()
+    c.execute(
+        "INSERT INTO lookahead_template_instances "
+        "(id, template_id, template_version, start_date, project_tag, owner, "
+        " status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?)",
+        (instance_id, template_id, int(tpl["version"]), start_date, project,
+         (owner or tpl.get("owner") or "").strip(), now),
+    )
+    # Pass 1: create every card with computed dates.
+    local_to_card: dict[str, str] = {}
+    for task in tpl["tasks"]:
+        card_id = str(_uuid.uuid4())
+        local_to_card[task["local_id"]] = card_id
+        s_date  = _add_days(start_date, int(task["offset_start_days"]), unit)
+        s_shift = int(task["offset_start_shift"]) or 1
+        e_date, e_shift = _duration_to_end(
+            s_date, s_shift, int(task["duration_shifts"]), unit)
+        c.execute(
+            "INSERT INTO lookahead_cards "
+            "(id, title, project, assignee, start_date, start_shift_num, "
+            " end_date, end_shift_num, status, notes, "
+            " template_instance_id, template_task_local_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', '', ?, ?, ?, ?)",
+            (card_id, task["title"], project, "",
+             s_date, s_shift, e_date, e_shift,
+             instance_id, task["local_id"], now, now),
+        )
+        # Copy resource requirements to BOM entries (named_resource_id only).
+        for req in task["resource_requirements"]:
+            named = req.get("named_resource_id")
+            if named:
+                c.execute(
+                    "INSERT OR IGNORE INTO lookahead_card_resources "
+                    "(card_id, resource_id, quantity, status) VALUES (?, ?, ?, 'needed')",
+                    (card_id, int(named), float(req.get("quantity", 1))),
+                )
+    # Pass 2: translate template-local deps to concrete card deps.
+    for task in tpl["tasks"]:
+        cid = local_to_card[task["local_id"]]
+        for dep_local in task["depends_on"]:
+            dep_cid = local_to_card.get(dep_local)
+            if dep_cid:
+                c.execute(
+                    "INSERT OR IGNORE INTO lookahead_card_deps "
+                    "(card_id, depends_on_id) VALUES (?, ?)",
+                    (cid, dep_cid),
+                )
+    return get_instance(instance_id)
+
+
+def get_instance(instance_id: str) -> Optional[dict]:
+    row = conn().execute(
+        "SELECT * FROM lookahead_template_instances WHERE id = ?", (instance_id,)
+    ).fetchone()
+    if not row:
+        return None
+    inst = dict(row)
+    cards = list_lookahead_cards_for_instance(instance_id)
+    inst["cards"] = cards
+    return inst
+
+
+def list_instances(project: Optional[str] = None,
+                   status: Optional[str] = None) -> list[dict]:
+    sql = "SELECT * FROM lookahead_template_instances"
+    args: list = []
+    where: list[str] = []
+    if project:
+        where.append("project_tag = ?")
+        args.append(project)
+    if status:
+        where.append("status = ?")
+        args.append(status)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY start_date DESC, id"
+    return _rows_to_list(conn().execute(sql, args).fetchall())
+
+
+def list_lookahead_cards_for_instance(instance_id: str) -> list[dict]:
+    rows = _rows_to_list(conn().execute(
+        "SELECT * FROM lookahead_cards WHERE template_instance_id = ? "
+        "ORDER BY start_date, start_shift_num, id",
+        (instance_id,),
+    ).fetchall())
+    return [_card_with_relations(r) for r in rows]
+
+
+def reschedule_instance(instance_id: str, new_start_date: str) -> Optional[dict]:
+    """Shift all cards attached to the instance by (new_start_date - old_start_date).
+
+    Uses the instance's ``duration_unit`` via its template to honour
+    business-days vs calendar-days semantics.  Cards whose
+    ``template_instance_id`` has been nulled (detached) are untouched.
+    """
+    c = conn()
+    inst = c.execute(
+        "SELECT i.*, t.duration_unit FROM lookahead_template_instances i "
+        "JOIN lookahead_templates t ON t.id = i.template_id "
+        "WHERE i.id = ?", (instance_id,),
+    ).fetchone()
+    if not inst:
+        return None
+    inst = dict(inst)
+    old_start = inst["start_date"]
+    unit = inst["duration_unit"]
+    # Delta in calendar days — we apply it per-card using the same unit so
+    # business-day templates stay business-day aligned.
+    from datetime import date
+    def _as_date(s):
+        y, m, d = (int(x) for x in s.split("-"))
+        return date(y, m, d)
+    delta_calendar = (_as_date(new_start_date) - _as_date(old_start)).days
+    if delta_calendar == 0:
+        return get_instance(instance_id)
+    # For business-days templates, translate calendar delta into business-day
+    # delta by counting weekdays between the two dates.  Same sign as delta.
+    if unit == "business_days":
+        a, b = sorted([_as_date(old_start), _as_date(new_start_date)])
+        bdays = 0
+        from datetime import timedelta
+        cur = a
+        while cur < b:
+            cur += timedelta(days=1)
+            if cur.weekday() < 5:
+                bdays += 1
+        delta = bdays if delta_calendar > 0 else -bdays
+    else:
+        delta = delta_calendar
+    now = _now_iso()
+    cards = list_lookahead_cards_for_instance(instance_id)
+    for card in cards:
+        new_s = _add_days(card["start_date"], delta, unit)
+        new_e = _add_days(card["end_date"], delta, unit)
+        c.execute(
+            "UPDATE lookahead_cards SET start_date = ?, end_date = ?, updated_at = ? "
+            "WHERE id = ?",
+            (new_s, new_e, now, card["id"]),
+        )
+    c.execute(
+        "UPDATE lookahead_template_instances SET start_date = ? WHERE id = ?",
+        (new_start_date, instance_id),
+    )
+    return get_instance(instance_id)
+
+
+def set_instance_status(instance_id: str, status: str) -> Optional[dict]:
+    if status not in _INSTANCE_STATUSES:
+        raise ValueError(f"invalid instance status: {status}")
+    conn().execute(
+        "UPDATE lookahead_template_instances SET status = ? WHERE id = ?",
+        (status, instance_id),
+    )
+    return get_instance(instance_id)
+
+
+def delete_instance(instance_id: str) -> None:
+    """Delete an instance and its still-attached cards.  Detached cards stay."""
+    c = conn()
+    c.execute(
+        "DELETE FROM lookahead_cards WHERE template_instance_id = ?", (instance_id,)
+    )
+    c.execute(
+        "DELETE FROM lookahead_template_instances WHERE id = ?", (instance_id,)
+    )
+
+
+def detach_card(card_id: str) -> Optional[dict]:
+    """Remove the card from its template instance without deleting it."""
+    conn().execute(
+        "UPDATE lookahead_cards SET template_instance_id = NULL, "
+        "template_task_local_id = NULL WHERE id = ?",
+        (card_id,),
+    )
+    return get_lookahead_card(card_id)
+
+
+def maybe_autocomplete_instance(instance_id: str) -> None:
+    """Flip instance to ``complete`` if every attached card is done."""
+    if not instance_id:
+        return
+    c = conn()
+    inst = c.execute(
+        "SELECT status FROM lookahead_template_instances WHERE id = ?", (instance_id,)
+    ).fetchone()
+    if not inst or inst["status"] != "active":
+        return
+    row = c.execute(
+        "SELECT COUNT(*) AS n_total, "
+        "       SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS n_done "
+        "FROM lookahead_cards WHERE template_instance_id = ?",
+        (instance_id,),
+    ).fetchone()
+    if row and row["n_total"] and row["n_total"] == row["n_done"]:
+        c.execute(
+            "UPDATE lookahead_template_instances SET status = 'complete' WHERE id = ?",
+            (instance_id,),
+        )
