@@ -2050,7 +2050,7 @@ function makeTodo(t, analysisById) {
     : '';
 
   el.dataset.todoId = did;
-  const editBtn = `<button class="ia" onclick="event.stopPropagation();showTodoEdit(${did},${JSON.stringify(t.description)},${JSON.stringify(t.deadline||null)},${JSON.stringify(t.priority||'medium')})" title="Edit">✎</button>`;
+  const editBtn = `<button class="ia" onclick="event.stopPropagation();showTodoEdit(${did},${esc(JSON.stringify(t.description))},${esc(JSON.stringify(t.deadline||null))},${esc(JSON.stringify(t.priority||'medium'))})" title="Edit">✎</button>`;
   el.innerHTML = `
     <div style="display:flex;flex-direction:column;gap:3px;align-items:center;padding-top:1px;flex-shrink:0">
       <button class="cb" onclick="${cbClick}">${cbContent}</button>
