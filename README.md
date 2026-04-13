@@ -15,7 +15,7 @@ Browser (/page/)
                             ├── Microsoft Teams API (Graph)
                             ├── GitHub API
                             ├── Jira Cloud API
-                            └── SQLite WAL  (./data/squire.db)
+                            └── SQLite WAL  (./data/parsival.db)
 
 Email ingestion (host, not Docker):
   Windows  → scripts/outlook_sidecar.py      (win32com)
@@ -34,7 +34,7 @@ Runs alongside the existing Hexcaliper stack. Does not conflict with hexcaliper'
 |------------|-------------------------------------------------------------|
 | Frontend   | Vanilla JS + CSS, served by nginx                           |
 | API        | Python 3.12, FastAPI, uvicorn                               |
-| Storage    | SQLite WAL (`squire.db`) with knowledge-graph tables        |
+| Storage    | SQLite WAL (`parsival.db`) with knowledge-graph tables        |
 | LLM        | Ollama (local or cloud) or Claude API, via `llm.py` provider abstraction |
 | Networking | Bridge (`app` network) — same pattern as Hexcaliper         |
 
@@ -58,8 +58,8 @@ Runs alongside the existing Hexcaliper stack. Does not conflict with hexcaliper'
 ## Setup
 
 ```bash
-git clone <repo> hexcaliper-squire
-cd hexcaliper-squire
+git clone <repo> hexcaliper-parsival
+cd hexcaliper-parsival
 
 # Edit docker-compose.yml and fill in your credentials
 # (CTRL+F for "your-" to find all placeholders)
@@ -164,7 +164,7 @@ Copy Client ID and Client Secret (shown once). Add the token to the Access Polic
 
 ## Project configuration
 
-Projects let Squire associate items with named workstreams. Each project is a JSON object with the following keys:
+Projects let Parsival associate items with named workstreams. Each project is a JSON object with the following keys:
 
 | Key                | Type             | Description                                                                                       |
 |--------------------|------------------|---------------------------------------------------------------------------------------------------|
@@ -230,7 +230,7 @@ Every analysed item is assigned a `category` and, for tasks, an optional `task_t
 
 ## Project learning
 
-When you tag an item to a project via `POST /analyses/{item_id}/tag`, Squire:
+When you tag an item to a project via `POST /analyses/{item_id}/tag`, Parsival:
 
 1. Immediately updates the stored analysis with the new `project_tag`.
 2. Calls the LLM in the background to extract 5–10 characteristic keywords from the item's title and body preview.
@@ -245,7 +245,7 @@ The manually configured `senders` array works the same way as `learned_senders` 
 
 ## Noise filter
 
-When you mark an item as noise via `POST /analyses/{item_id}/noise`, Squire:
+When you mark an item as noise via `POST /analyses/{item_id}/noise`, Parsival:
 
 1. Immediately sets `category="noise"`, `priority="low"`, and `has_action=false` on the stored analysis.
 2. Calls the LLM in the background to extract keywords from the item.
@@ -459,7 +459,7 @@ Both sidecars POST to `/page/api/ingest`. The API deduplicates by message ID so 
 
 ## Seed workflow
 
-The seed workflow bootstraps project intelligence from existing data when you first set up Squire, or after adding new projects. It walks through a guided state machine:
+The seed workflow bootstraps project intelligence from existing data when you first set up Parsival, or after adding new projects. It walks through a guided state machine:
 
 1. **Ingest first** — run your email sidecar (or any connector) to load existing items into the database.
 2. **Start seed** (`POST /seed`) — the job enters `waiting_for_ingest` and polls until items arrive. An optional free-text `context` field in the request body is passed to the LLM to help identify projects. The context can be updated while waiting via `PATCH /seed/context`.
@@ -622,7 +622,7 @@ Intel items are key facts and completed-action notes extracted by the LLM that a
 
 ### Contacts
 
-The contacts table is a long-lived directory of every person Squire has seen across email headers, with full manual editing. Identity is a stable serial integer (`contact_id`), **not** an email address — people change addresses when they switch jobs, but the contact record outlives any single field. Multiple emails can belong to one contact via the `contact_emails` join table. Owner-resolution falls back to this table when an LLM-identified delegate isn't named in the current item's To/CC headers.
+The contacts table is a long-lived directory of every person Parsival has seen across email headers, with full manual editing. Identity is a stable serial integer (`contact_id`), **not** an email address — people change addresses when they switch jobs, but the contact record outlives any single field. Multiple emails can belong to one contact via the `contact_emails` join table. Owner-resolution falls back to this table when an LLM-identified delegate isn't named in the current item's To/CC headers.
 
 | Method   | Path                                       | Description                                                                                       |
 |----------|--------------------------------------------|---------------------------------------------------------------------------------------------------|
@@ -646,11 +646,11 @@ All HTTP requests are logged via middleware: timestamp, method, path, status cod
 
 ## Data persistence
 
-Stored in `./data/squire.db` (SQLite WAL). Bind-mounted and survives restarts.
+Stored in `./data/parsival.db` (SQLite WAL). Bind-mounted and survives restarts.
 
 ```bash
 docker compose down
-rm data/squire.db   # wipe all data
+rm data/parsival.db   # wipe all data
 docker compose up -d
 ```
 
@@ -658,26 +658,26 @@ Alternatively, use `POST /reset` to clear analyses, todos, and scan logs while k
 
 ### Database backup
 
-Back up `squire.db` while the container is running using the SQLite CLI's
+Back up `parsival.db` while the container is running using the SQLite CLI's
 online backup command (safe with WAL mode):
 
 ```bash
-sqlite3 data/squire.db ".backup 'backups/squire-$(date +%Y%m%d-%H%M%S).db'"
+sqlite3 data/parsival.db ".backup 'backups/parsival-$(date +%Y%m%d-%H%M%S).db'"
 ```
 
 **Scheduled backup via cron (run on the host):**
 
 ```bash
 # Back up every night at 03:00
-0 3 * * * sqlite3 /opt/hexcaliper-squire/data/squire.db \
-  ".backup '/opt/hexcaliper-squire/backups/squire-$(date +%Y%m%d-%H%M%S).db'" \
-  >> /var/log/squire-backup.log 2>&1
+0 3 * * * sqlite3 /opt/hexcaliper-parsival/data/parsival.db \
+  ".backup '/opt/hexcaliper-parsival/backups/parsival-$(date +%Y%m%d-%H%M%S).db'" \
+  >> /var/log/parsival-backup.log 2>&1
 ```
 
 Or with the helper script (if present):
 
 ```bash
-0 3 * * * /opt/hexcaliper-squire/backup_db.sh >> /var/log/squire-backup.log 2>&1
+0 3 * * * /opt/hexcaliper-parsival/backup_db.sh >> /var/log/parsival-backup.log 2>&1
 ```
 
 ### Migrating from an older TinyDB installation

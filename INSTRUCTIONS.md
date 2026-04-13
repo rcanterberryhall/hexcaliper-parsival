@@ -1,4 +1,4 @@
-# Hexcaliper Squire — User Guide
+# Parsival — User Guide
 
 ## Table of Contents
 
@@ -28,8 +28,8 @@
 ### Deploy the stack
 
 ```bash
-git clone <repo> hexcaliper-squire
-cd hexcaliper-squire
+git clone <repo> hexcaliper-parsival
+cd hexcaliper-parsival
 ```
 
 Edit `docker-compose.yml`. Search for `your-` to find every placeholder:
@@ -66,11 +66,11 @@ sudo chown -R $(whoami):$(whoami) data/
 
 ## 2. The seed workflow
 
-The seed workflow is the recommended starting point when you have existing email, Slack, or GitHub data you want Squire to learn from. It discovers your projects automatically rather than requiring you to configure them manually upfront.
+The seed workflow is the recommended starting point when you have existing email, Slack, or GitHub data you want Parsival to learn from. It discovers your projects automatically rather than requiring you to configure them manually upfront.
 
 ### Step 1 — Ingest existing data
 
-Before starting the seed, push some historical data into Squire:
+Before starting the seed, push some historical data into Parsival:
 
 - **Outlook**: run the sidecar in seed mode (fetches last 30 days):
   ```bash
@@ -96,7 +96,7 @@ When the state reaches `review`, the UI displays the LLM's proposed project list
 
 ### Step 4 — Apply
 
-Click **Apply** (`POST /seed/apply`). Squire will:
+Click **Apply** (`POST /seed/apply`). Parsival will:
 1. Save the confirmed projects and topics to settings.
 2. Re-tag all stored items by keyword match.
 3. Build semantic embeddings for each project.
@@ -419,7 +419,7 @@ Click **Dismiss** on an intel row to hide it. Unlike situations, dismissed intel
 
 ## 13. Project configuration
 
-Projects are the core of Squire's relevance engine. Each project acts as a named workstream that items can be tagged to.
+Projects are the core of Parsival's relevance engine. Each project acts as a named workstream that items can be tagged to.
 
 ### Adding a project
 
@@ -524,7 +524,7 @@ When `CREDENTIALS_KEY` is set, all OAuth tokens (Slack, Teams) are encrypted at 
 
 ## 15. Outlook sidecar (Windows)
 
-The Outlook sidecar reads from the local Outlook client via `win32com` and POSTs to Squire. It must run on the Windows machine where Outlook is installed.
+The Outlook sidecar reads from the local Outlook client via `win32com` and POSTs to Parsival. It must run on the Windows machine where Outlook is installed.
 
 ### Install dependencies
 
@@ -546,7 +546,7 @@ Enter your Cloudflare Access Client ID and Client Secret when prompted. They are
 python scripts\outlook_sidecar.py
 ```
 
-Fetches the last 48 hours from Inbox and Sent Items and POSTs to Squire.
+Fetches the last 48 hours from Inbox and Sent Items and POSTs to Parsival.
 
 ### Seed run (historical import)
 
@@ -612,7 +612,7 @@ crontab -e
 ```
 
 ```
-*/30 * * * * python3 /path/to/scripts/thunderbird_sidecar.py >> /tmp/squire-sidecar.log 2>&1
+*/30 * * * * python3 /path/to/scripts/thunderbird_sidecar.py >> /tmp/parsival-sidecar.log 2>&1
 ```
 
 ---
@@ -665,7 +665,7 @@ Truncates `items`, `todos`, `intel`, `situations`, `scan_logs`, and `embeddings`
 
 ```bash
 docker compose down
-rm data/squire.db
+rm data/parsival.db
 docker compose up -d
 ```
 

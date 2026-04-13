@@ -37,7 +37,7 @@ chunking or summarisation.
 | GPU | Port | Model | VRAM at Q4 | Primary consumer |
 |-----|------|-------|-----------|-----------------|
 | GPU 0 | 11434 | qwen3:32b | ~20 GB | Hexcaliper chat (interactive) |
-| GPU 1 | 11435 | qwen3:8b | ~5 GB | Squire analysis (batch throughput) |
+| GPU 1 | 11435 | qwen3:8b | ~5 GB | Parsival analysis (batch throughput) |
 
 Each model fits on a single GPU with comfortable KV cache headroom. No PCIe
 cross-talk during inference — both instances run fully independently.
@@ -97,7 +97,7 @@ CUDA_VISIBLE_DEVICES=0 ollama serve --port 11434
 CUDA_VISIBLE_DEVICES=1 ollama serve --port 11435
 ```
 
-### Squire (Parsival) changes required
+### Parsival (Parsival) changes required
 
 1. **Raise the semaphore** from `Semaphore(1)` to `Semaphore(2)` in `app.py`
 2. **Add a second Ollama URL** to config (`OLLAMA_URL_B = http://host.docker.internal:11435`)

@@ -1,10 +1,10 @@
-# Hexcaliper Squire — Software Design Document
+# Parsival — Software Design Document
 
 ## 1. Purpose
 
-Squire is a personal ops intelligence layer that sits alongside Hexcaliper. It ingests items from Outlook, Slack, GitHub, Jira, and Microsoft Teams, runs each through a local LLM, and presents a unified action dashboard. No data leaves your infrastructure.
+Parsival is a personal ops intelligence layer that sits alongside Hexcaliper. It ingests items from Outlook, Slack, GitHub, Jira, and Microsoft Teams, runs each through a local LLM, and presents a unified action dashboard. No data leaves your infrastructure.
 
-The core problem Squire solves is signal-to-noise at inbox scale. A typical engineer receives hundreds of messages per day across multiple systems. Most of them require no action. A handful are urgent. Squire reads everything, categorises it, extracts concrete action items, and surfaces only what matters — sorted by priority and grouped by workstream.
+The core problem Parsival solves is signal-to-noise at inbox scale. A typical engineer receives hundreds of messages per day across multiple systems. Most of them require no action. A handful are urgent. Parsival reads everything, categorises it, extracts concrete action items, and surfaces only what matters — sorted by priority and grouped by workstream.
 
 ---
 
@@ -15,7 +15,7 @@ graph TD
     Browser["Browser\n(Vanilla JS/CSS)"]
     Nginx["nginx :8082\n(reverse proxy + static files)"]
     API["FastAPI :8001\n(page-api container)"]
-    SQLite[("SQLite WAL\ndata/squire.db")]
+    SQLite[("SQLite WAL\ndata/parsival.db")]
     Ollama["Ollama\n(hexcaliper.com via CF Access)"]
 
     subgraph Connectors
@@ -44,7 +44,7 @@ graph TD
 
 The entire backend runs in two Docker containers: `page-api` (FastAPI/uvicorn on port 8001) and `page-nginx` (nginx on port 8082). nginx serves the static frontend from `/page/` and reverse-proxies all `/page/api/*` requests to the API container on an internal bridge network — the API port is never exposed to the host directly.
 
-The API is the single source of truth. All state lives in a SQLite WAL database bind-mounted at `data/squire.db`, which survives container restarts and rebuilds. The Ollama LLM endpoint runs on the existing Hexcaliper appliance and is reached through Cloudflare Access using a service token, so no AI inference runs on the Squire host.
+The API is the single source of truth. All state lives in a SQLite WAL database bind-mounted at `data/parsival.db`, which survives container restarts and rebuilds. The Ollama LLM endpoint runs on the existing Hexcaliper appliance and is reached through Cloudflare Access using a service token, so no AI inference runs on the Parsival host.
 
 Email sources (Outlook and Thunderbird) cannot run inside Docker because they require access to the local mail client's data store. Instead, lightweight Python sidecar scripts run on the host and POST normalised email items to the `/ingest` endpoint, which handles deduplication and queues them for analysis.
 
@@ -143,7 +143,7 @@ sequenceDiagram
     Note over Orch: Same analyze → save → index → situation loop as scan
 ```
 
-The ingest path is designed for the sidecar scripts and any external tooling that wants to push items into Squire without triggering a full connector scan. The deduplication step queries the `items` table by `item_id` before any LLM work is done, so re-running a sidecar is always safe — items already in the database are counted as `skipped` and returned in the response immediately. Only genuinely new items are forwarded to `process_ingest_items()`, which runs the same analysis loop as the scan pipeline.
+The ingest path is designed for the sidecar scripts and any external tooling that wants to push items into Parsival without triggering a full connector scan. The deduplication step queries the `items` table by `item_id` before any LLM work is done, so re-running a sidecar is always safe — items already in the database are counted as `skipped` and returned in the response immediately. Only genuinely new items are forwarded to `process_ingest_items()`, which runs the same analysis loop as the scan pipeline.
 
 ---
 
@@ -221,7 +221,7 @@ erDiagram
     nodes ||--o{ edges : "dst_id"
 ```
 
-The knowledge graph is a lightweight directed graph stored in two SQLite tables alongside the document tables. It is not a separate graph database — it uses the same `squire.db` file and is queried with plain SQL joins. This keeps the deployment simple while still enabling graph traversal for the GraphRAG feature.
+The knowledge graph is a lightweight directed graph stored in two SQLite tables alongside the document tables. It is not a separate graph database — it uses the same `parsival.db` file and is queried with plain SQL joins. This keeps the deployment simple while still enabling graph traversal for the GraphRAG feature.
 
 Every time an item is saved, `graph.index_item()` upserts a set of nodes and edges representing the relationships implicit in that item. An `item` node is created for the item itself. A `person` node is upserted for the sender. If the item has a `project_tag`, a `tagged_to` edge is created to the corresponding `project` node. If it has a `conversation_id` (Outlook thread), a `conversation` node is upserted and the item is linked to it via `in_conversation`. When a situation is formed, `in_situation` edges are added between all constituent items.
 
@@ -305,9 +305,9 @@ stateDiagram-v2
     done --> [*]
 ```
 
-The seed workflow solves the cold-start problem. When Squire is first deployed, the project list is empty, so the LLM has no project context to tag items against. The seed workflow inverts this: it ingests existing data first, then uses a map-reduce LLM pass to discover the project structure from that data, rather than requiring the user to configure projects from scratch.
+The seed workflow solves the cold-start problem. When Parsival is first deployed, the project list is empty, so the LLM has no project context to tag items against. The seed workflow inverts this: it ingests existing data first, then uses a map-reduce LLM pass to discover the project structure from that data, rather than requiring the user to configure projects from scratch.
 
-In the `analyzing` state, Squire samples the stored items in batches and asks the LLM to extract recurring themes, project names, and focus topics from each batch. The results are reduced into a deduplicated candidate list. In the `review` state, the user sees this list in the UI and can edit names, merge duplicates, or delete irrelevant entries before confirming.
+In the `analyzing` state, Parsival samples the stored items in batches and asks the LLM to extract recurring themes, project names, and focus topics from each batch. The results are reduced into a deduplicated candidate list. In the `review` state, the user sees this list in the UI and can edit names, merge duplicates, or delete irrelevant entries before confirming.
 
 Once applied, all stored items are re-analyzed with the newly-configured project list. This is the most expensive step — it runs the full LLM pipeline over every item in the database — but it only happens once per seed run. After re-analysis completes, the user is prompted to run a live connector scan to pull in fresh items with the now-fully-configured system.
 
@@ -413,7 +413,7 @@ The schema follows a hub-and-spoke pattern centred on the `items` table. Every `
 
 The `action_items`, `information_items`, `goals`, `key_dates`, and `references` columns on the `items` table store JSON arrays. This avoids the need for separate child tables for these LLM-extracted lists while keeping the schema flat enough to query efficiently. The `todos` and `intel` tables exist as first-class rows (rather than just JSON columns) because they need to be independently queried, sorted, filtered, edited, and deleted by the user.
 
-The `embeddings` table stores sentence-embedding centroids per project. Each row holds the centroid vector, a list of the item IDs that contributed to it, and per-cluster counts. This supports the embedding hint in the LLM prompt — Squire can compute the cosine similarity between a new item's embedding and each project centroid before the LLM call, injecting the nearest project name as a hint.
+The `embeddings` table stores sentence-embedding centroids per project. Each row holds the centroid vector, a list of the item IDs that contributed to it, and per-cluster counts. This supports the embedding hint in the LLM prompt — Parsival can compute the cosine similarity between a new item's embedding and each project centroid before the LLM call, injecting the nearest project name as a hint.
 
 All tables share the same SQLite WAL connection managed by `db.conn()`. WAL mode allows concurrent reads (the browser polling status while a scan runs) without blocking writes. All writes are serialised through `db.lock`, a module-level `threading.Lock`, to prevent interleaved writes from the scan thread, ingest background task, and situation manager.
 
@@ -444,7 +444,7 @@ When a user marks an item as noise (`POST /analyses/{item_id}/noise`), a backgro
 2. Extracts keywords via LLM.
 3. Merges into `config.NOISE_KEYWORDS` (capped at 200).
 
-Noise learning is the inverse of project learning. Marking something as noise teaches Squire which topics are irrelevant to the user without requiring them to write filter rules. The extracted keywords are included in every subsequent LLM prompt — the model is explicitly told "if content is primarily about these topics with no direct relevance to the user, set `category=noise`". On Slack scans, messages that match only noise keywords (and no positive project/topic signal) are silently dropped before the LLM step entirely.
+Noise learning is the inverse of project learning. Marking something as noise teaches Parsival which topics are irrelevant to the user without requiring them to write filter rules. The extracted keywords are included in every subsequent LLM prompt — the model is explicitly told "if content is primarily about these topics with no direct relevance to the user, set `category=noise`". On Slack scans, messages that match only noise keywords (and no positive project/topic signal) are silently dropped before the LLM step entirely.
 
 This makes noise learning asymmetric with project learning in an intentional way: a noise match will not override a direct-address or project signal. An item that is both about a noisy topic and directly addressed to the user will still be categorised correctly as a `task`.
 
@@ -452,7 +452,7 @@ This makes noise learning asymmetric with project learning in an intentional way
 
 ## 12. Category Learning
 
-When a user changes an item's category via `PATCH /analyses/{item_id}` or marks it irrelevant via `POST /analyses/{item_id}/noise`, Squire runs background keyword extraction and merges the results into the appropriate per-category list in config:
+When a user changes an item's category via `PATCH /analyses/{item_id}` or marks it irrelevant via `POST /analyses/{item_id}/noise`, Parsival runs background keyword extraction and merges the results into the appropriate per-category list in config:
 
 | User action | List updated |
 |-------------|-------------|
@@ -469,9 +469,9 @@ All four lists are injected into every subsequent LLM prompt as labelled context
 
 ## 13. Assignment Learning
 
-When the LLM identifies that an action item belongs to someone other than the user (i.e., `owner` is not `"me"`), Squire attempts to resolve the owner name to an email address by scanning the item's `To` and `CC` headers using an RFC-style name/email parser. If found, the action item is automatically marked `status="assigned"` and `assigned_to=<resolved email>`.
+When the LLM identifies that an action item belongs to someone other than the user (i.e., `owner` is not `"me"`), Parsival attempts to resolve the owner name to an email address by scanning the item's `To` and `CC` headers using an RFC-style name/email parser. If found, the action item is automatically marked `status="assigned"` and `assigned_to=<resolved email>`.
 
-If the user manually overrides an assignment, that override is preserved through re-analysis cycles: before deleting stale todos during reanalysis, Squire snapshots `assigned_to` and `status` values for existing rows, then re-applies them after the new todos are inserted. This means a manual reassignment is never lost by a routine reanalyze run.
+If the user manually overrides an assignment, that override is preserved through re-analysis cycles: before deleting stale todos during reanalysis, Parsival snapshots `assigned_to` and `status` values for existing rows, then re-applies them after the new todos are inserted. This means a manual reassignment is never lost by a routine reanalyze run.
 
 Assignment corrections — items where the user changed the assignment — are fed back into the LLM as few-shot examples in `config.ASSIGNMENT_CORRECTIONS`. These are formatted as prompt context: "When a message is addressed To John Johnson and asks them to complete a task, set owner to John Johnson." The model learns from these examples on the next scan or ingest, without any retraining.
 
@@ -479,7 +479,7 @@ Assignment corrections — items where the user changed the assignment — are f
 
 ## 14. Project Briefing
 
-After every scan or reanalyze run, Squire auto-generates a project briefing and caches it in the `briefings` table. The briefing is also available on demand via `POST /briefing/generate`.
+After every scan or reanalyze run, Parsival auto-generates a project briefing and caches it in the `briefings` table. The briefing is also available on demand via `POST /briefing/generate`.
 
 The briefing is scoped to efficiency: only projects (and the untagged pool) that have had new intel, situation, or todo activity since the last briefing are included in the LLM call. Inactive projects are silently omitted, keeping the prompt token count proportional to what has actually changed.
 
@@ -511,7 +511,7 @@ flowchart LR
     Sidecar["outlook_sidecar.py\n• Inbox (ReceivedTime)\n• Sent Items (SentOn)"]
     Normalize["Normalise\n• Strip Re:/Fwd: from subject\n• Truncate body to 3000 chars\n• Collapse blank lines\n• Extract To/CC recipients"]
     Post["POST /ingest\n(batches of 50)\nCF-Access headers"]
-    API["Squire API"]
+    API["Parsival API"]
 
     Outlook -->|win32com| Sidecar --> Normalize --> Post --> API
 ```
@@ -550,9 +550,9 @@ flowchart TD
     Decay -->|acquires| Lock
 ```
 
-Squire runs several concurrent threads against a shared SQLite database and a shared LLM endpoint (merLLM, which fronts every GPU in the stack). One in-process lock coordinates DB access; **GPU concurrency is owned entirely by merLLM**, not by parsival.
+Parsival runs several concurrent threads against a shared SQLite database and a shared LLM endpoint (merLLM, which fronts every GPU in the stack). One in-process lock coordinates DB access; **GPU concurrency is owned entirely by merLLM**, not by parsival.
 
-**LLM concurrency (squire#33).** Every parsival call to `agent.analyze()` is an HTTP call into merLLM, which round-robins across all available GPUs and runs its own unified tracked queue with priority lanes (interactive `_hi`, batch `_lo`). parsival used to wrap each call in a `threading.Semaphore(1)` named `_sem`, dating from the single-GPU era; that throttle was strictly subtractive (the lower of "merLLM queue depth" and "parsival semaphore count" wins, and ours was hard-coded to 1) and silently halved sync-path throughput on a 2-GPU stack. It was deleted in squire#33. The architectural rule is now:
+**LLM concurrency (parsival#33).** Every parsival call to `agent.analyze()` is an HTTP call into merLLM, which round-robins across all available GPUs and runs its own unified tracked queue with priority lanes (interactive `_hi`, batch `_lo`). parsival used to wrap each call in a `threading.Semaphore(1)` named `_sem`, dating from the single-GPU era; that throttle was strictly subtractive (the lower of "merLLM queue depth" and "parsival semaphore count" wins, and ours was hard-coded to 1) and silently halved sync-path throughput on a 2-GPU stack. It was deleted in parsival#33. The architectural rule is now:
 
 > merLLM is the single source of truth for GPU concurrency. parsival never gates LLM traffic on its own. If we ever need backpressure from merLLM, the right place is merLLM returning 429s (or its tracked queue blocking) — not a parsival-side pre-throttle.
 
