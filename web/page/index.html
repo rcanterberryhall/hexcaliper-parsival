@@ -862,24 +862,60 @@ tr.attn-low  { opacity:0.65; }
   .item-table th:nth-child(5), .item-table td:nth-child(5),
   .item-table th:nth-child(7), .item-table td:nth-child(7),
   .item-table th:nth-child(8), .item-table td:nth-child(8) { display: none; }
-  .t-title { max-width: 180px; }
+  .t-title { max-width: none; white-space: normal; }
+  .item-table td { padding: 10px 8px; }
 
   /* Toolbar wrapping */
   .main-toolbar { flex-wrap: wrap; gap: 6px; padding: 8px 12px; }
-  .vtabs .vtab  { padding: 5px 10px; }
+  .vtabs .vtab  { padding: 9px 14px; font-size: 11px; min-height: 36px; }
 
   /* Todo cards */
   #todo-view, #intel-view, #items-view, #situations-view { padding: 10px 12px; }
   .todo-meta { gap: 6px; }
+
+  /* Larger tap targets across interactive controls */
+  .ia { padding: 7px 10px; font-size: 12px; min-height: 34px; }
+  .sit-lc-sel { font-size: 12px; padding: 6px 8px; min-height: 34px; }
+  .sit-followup-input { font-size: 12px; padding: 6px 8px; min-height: 34px; }
+  .sit-notes-input { font-size: 12px; padding: 8px 10px; }
+  .src-btn { padding: 8px 12px; font-size: 11px; }
+  .search-input { padding: 9px 12px; font-size: 13px; }
+  input[type="checkbox"] { width: 18px; height: 18px; }
+
+  /* Situation card: actions move below meta on narrow widths so the title
+     and summary get full width instead of being crushed by the button column */
+  .sit-header { flex-wrap: wrap; }
+  .sit-main { flex-basis: calc(100% - 52px); }
+  .sit-actions {
+    flex-direction: row; flex-wrap: wrap; align-items: center;
+    width: 100%; margin-top: 6px; gap: 6px;
+  }
+  .sit-actions .ia, .sit-actions .restore-btn { flex: 0 0 auto; }
 }
 
 @media (max-width: 480px) {
   .wordmark-sub  { display: none; }
   .wordmark-main { font-size: 11px; }
   .topbar        { padding: 0 12px; }
-  .scan-btn      { padding: 6px 10px; font-size: 10px; }
-  .gear-btn      { padding: 5px 7px; }
+  .scan-btn      { padding: 8px 10px; font-size: 10px; min-height: 36px; }
+  .gear-btn, .help-btn { padding: 7px 10px; min-height: 36px; }
   .stat-val      { font-size: 17px; }
+
+  /* Items table: drop Priority column too (leaves Source + Title + Actions) */
+  .item-table th:nth-child(6), .item-table td:nth-child(6) { display: none; }
+}
+
+/* Foldable-folded (~384px outer display): hide power-user buttons from the
+   topbar so Scan + menu + gear fit comfortably. Seed / Re-analyze are
+   infrequent actions — users can open them via the sidebar or settings. */
+@media (max-width: 430px) {
+  #seedBtn, #reanalyzeBtn { display: none; }
+  .wordmark-main { font-size: 10px; }
+  .main-toolbar { padding: 6px 10px; }
+  .vtabs .vtab { padding: 8px 10px; }
+  .sit-score { font-size: 15px; min-width: 28px; }
+  .sit-title { font-size: 12px; }
+  .sit-summary { font-size: 10px; }
 }
 
 /* ── Resizable columns ── */
@@ -1446,6 +1482,12 @@ tr.attn-low  { opacity:0.65; }
         <tr><td>Escape</td><td>Close open panel or modal</td></tr>
         <tr><td>/</td><td>Focus search</td></tr>
       </table>
+    </div>
+
+    <div class="help-section">
+      <h3>Mobile layout</h3>
+      <p>Below 768px the sidebar becomes an overlay drawer (tap the <strong>☰</strong> button to open), the items table drops the Category / From / Summary / Time / Link columns, modals and the detail panel go full-screen, and interactive controls grow to comfortable tap-target sizes.</p>
+      <p>Below 480px the Priority column is also hidden from the items table, leaving Source + Title + action buttons. Below 430px (foldable phone in its folded outer display) the <strong>Seed</strong> and <strong>Re-analyze</strong> buttons are hidden from the topbar — run them from the unfolded view or a desktop session.</p>
     </div>
 
   </div>
