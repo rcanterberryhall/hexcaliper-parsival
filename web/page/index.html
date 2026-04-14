@@ -1376,8 +1376,8 @@ tr.attn-low  { opacity:0.65; }
   </div>
 
   <!-- Look-ahead modals -->
-  <div class="modal-backdrop" id="laModalBackdrop" onclick="closeLaModal()" style="display:none"></div>
-  <div class="modal" id="laModal" style="display:none;max-width:640px">
+  <div class="modal-backdrop" id="laModalBackdrop" onclick="closeLaModal()"></div>
+  <div class="modal" id="laModal" style="max-width:640px">
     <div class="modal-head">
       <span class="modal-head-title" id="laModalTitle">Look-ahead</span>
       <button class="modal-close" onclick="closeLaModal()">✕</button>
@@ -6371,13 +6371,13 @@ async function _laDeleteInstance(instanceId) {
 // ── Modal plumbing ───────────────────────────────────────────────────────────
 
 function _laShowModal() {
-  $('laModalBackdrop').style.display = '';
-  $('laModal').style.display = '';
+  $('laModalBackdrop').classList.add('open');
+  $('laModal').classList.add('open');
 }
 
 function closeLaModal() {
-  $('laModalBackdrop').style.display = 'none';
-  $('laModal').style.display = 'none';
+  $('laModalBackdrop').classList.remove('open');
+  $('laModal').classList.remove('open');
   _LA.editingCard = null;
 }
 
