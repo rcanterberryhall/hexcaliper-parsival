@@ -404,11 +404,20 @@ Narrow viewports get progressive adaptations instead of a separate mobile build:
 
 | Breakpoint | Behavior |
 |---|---|
-| ≤ 768 px | Sidebar becomes an overlay drawer (☰ hamburger toggles). Items table hides Category / From / Summary / Time / Link columns. Detail panel and settings modal go full-screen. Interactive controls grow to ≥ 34 px tap targets. Situation-card actions wrap below the title row. |
-| ≤ 480 px | Items table also hides the Priority column (leaves Source + Title + actions). Topbar wordmark subtitle is hidden. |
+| ≤ 916 px | Foldable-inner width. A **Right Now** summary card appears at the top of the main column showing the top 3 attention-ranked items, overdue todo count, next situation follow-up date, and a one-tap Scan button. Items table hides the Summary / Link columns. |
+| ≤ 768 px | Sidebar becomes an overlay drawer (☰ hamburger toggles). Items view switches from a table to a **single-column card layout** — each card shows source, category, title, priority, and author. Detail panel and settings modal go full-screen. Interactive controls grow to ≥ 34 px tap targets. Situation-card actions wrap below the title row. **Swipe gestures** on todo rows: swipe right to mark done, swipe left to delete. |
+| ≤ 480 px | Topbar wordmark subtitle is hidden. |
 | ≤ 430 px | Foldable-folded outer display. `Seed` and `Re-analyze` are hidden from the topbar — run them from the unfolded view or a desktop session. Wordmark and situation typography tighten. |
 
 `web/page/` is nginx-volume-mounted, so CSS changes are picked up without rebuilding the image.
+
+### Right Now panel
+
+The Right Now card is driven entirely by data already loaded into the page — no new API endpoint. It pulls the top 3 rows from `allAnalyses` sorted by `attention_score` descending (noise / replied items excluded), counts overdue deadlines from `allTodos`, and reads the nearest `follow_up_date` from `/situations`. It refreshes automatically when `loadItems` / `loadTodos` completes, and the in-panel Scan button re-uses the topbar's `startScan()` flow.
+
+### Swipe gestures
+
+Swipe handlers are attached at the document level behind a `window.innerWidth ≤ 768` gate, so desktop pointer events are unaffected. Thresholds: 80 px horizontal travel triggers the action; smaller swipes snap back. Interactive elements inside the todo row (buttons, links, checkboxes, chips) short-circuit the gesture so taps still work.
 
 ## Email ingestion (sidecar scripts)
 

@@ -919,6 +919,125 @@ tr.attn-low  { opacity:0.65; }
   .sit-summary { font-size: 10px; }
 }
 
+/* ── Right Now panel (#41) — mobile-only top-of-screen summary ─────────── */
+#right-now-panel { display: none; }
+@media (max-width: 916px) {
+  #right-now-panel {
+    display: block;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border2);
+    background: linear-gradient(180deg, var(--surface), var(--bg));
+  }
+  .rn-title {
+    font-family: var(--display); font-size: 10px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent); margin-bottom: 8px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .rn-title .rn-scan {
+    font-size: 10px; padding: 4px 10px; min-height: 28px;
+    border: 1px solid var(--accent); background: transparent; color: var(--accent);
+    border-radius: var(--r); cursor: pointer; letter-spacing: .1em;
+  }
+  .rn-title .rn-scan:hover { background: var(--accent); color: #1a1a1a; }
+  .rn-title .rn-scan:disabled { opacity: .5; cursor: not-allowed; }
+  .rn-stats {
+    display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+  }
+  .rn-stat {
+    flex: 1; min-width: 84px;
+    padding: 6px 8px; border: 1px solid var(--border2); border-radius: var(--r);
+    background: var(--bg);
+  }
+  .rn-stat-label { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .rn-stat-val { font-size: 18px; font-weight: 600; color: var(--text); margin-top: 2px; }
+  .rn-stat-val.warn { color: var(--red); }
+  .rn-stat-val.ok { color: var(--muted); font-size: 13px; font-weight: 400; }
+  .rn-stat-sub { font-size: 9px; color: var(--muted); margin-top: 2px; }
+  .rn-top-items { display: flex; flex-direction: column; gap: 4px; }
+  .rn-item {
+    padding: 6px 8px; border: 1px solid var(--border2); border-radius: var(--r);
+    background: var(--bg); font-size: 11px; cursor: pointer;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .rn-item:hover { border-color: var(--accent); }
+  .rn-item-src {
+    font-size: 9px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); flex-shrink: 0; min-width: 36px;
+  }
+  .rn-item-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rn-item-score {
+    font-size: 10px; color: var(--accent); flex-shrink: 0; font-family: ui-monospace,monospace;
+  }
+  .rn-empty { font-size: 11px; color: var(--muted); font-style: italic; padding: 4px 0; }
+}
+
+/* ── Foldable-inner (~916px) — softer tweaks before 768px full-mobile ─── */
+@media (max-width: 916px) and (min-width: 769px) {
+  /* Items table: drop Body preview + Author columns (keep Source, When, Title, Cat, Pri, Actions) */
+  .item-table th:nth-child(7), .item-table td:nth-child(7),
+  .item-table th:nth-child(8), .item-table td:nth-child(8) { display: none; }
+  .main-toolbar { flex-wrap: wrap; gap: 6px; }
+  .toolbar-filters { flex: 1; }
+}
+
+/* ── Mobile items card layout (#41) — replace table columns with cards ── */
+@media (max-width: 768px) {
+  .item-table { display: none; }
+  .item-cards { display: flex; flex-direction: column; gap: 8px; padding: 2px 0; }
+  .item-card {
+    border: 1px solid var(--border2); border-radius: var(--r);
+    background: var(--bg); padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 6px; cursor: pointer;
+    position: relative; overflow: hidden;
+  }
+  .item-card:hover, .item-card.active { border-color: var(--accent); }
+  .item-card-head {
+    display: flex; align-items: center; gap: 6px; font-size: 10px;
+    color: var(--muted); letter-spacing: .06em;
+  }
+  .item-card-src {
+    text-transform: uppercase; font-weight: 600; color: var(--text);
+    padding: 1px 6px; border: 1px solid var(--border2); border-radius: 3px;
+  }
+  .item-card-time { margin-left: auto; font-family: ui-monospace,monospace; }
+  .item-card-title { font-size: 13px; color: var(--text); line-height: 1.3; }
+  .item-card-meta {
+    display: flex; gap: 8px; flex-wrap: wrap; font-size: 10px; color: var(--muted);
+  }
+  .item-card-pri {
+    padding: 1px 6px; border-radius: 3px; text-transform: uppercase;
+    letter-spacing: .08em; font-weight: 600;
+  }
+  .item-card-pri.high { background: rgba(220,53,69,.18); color: var(--red); }
+  .item-card-pri.medium { background: rgba(212,160,23,.18); color: var(--accent); }
+  .item-card-pri.low { background: rgba(100,100,100,.18); color: var(--muted); }
+  .item-card-cat { color: var(--accent); }
+}
+@media (min-width: 769px) {
+  .item-cards { display: none; }
+}
+
+/* ── Swipe gestures on todos (#41) ─────────────────────────────────────── */
+@media (max-width: 768px) {
+  .todo { position: relative; touch-action: pan-y; overflow: hidden; }
+  .todo.swiping { transition: none; }
+  .todo.swipe-reset { transition: transform .2s ease; }
+  .todo-swipe-bg {
+    position: absolute; inset: 0; display: flex;
+    align-items: center; padding: 0 18px; font-size: 12px;
+    letter-spacing: .12em; text-transform: uppercase; font-weight: 600;
+    border-radius: var(--r); pointer-events: none; opacity: 0;
+    z-index: 0;
+  }
+  .todo-swipe-bg.right {
+    justify-content: flex-start; color: #fff; background: var(--green, #28a745);
+  }
+  .todo-swipe-bg.left {
+    justify-content: flex-end; color: #fff; background: var(--red, #dc3545);
+  }
+  .todo.swiping > *:not(.todo-swipe-bg) { position: relative; z-index: 1; background: var(--bg); }
+}
+
 /* ── Resizable columns ── */
 .item-table th { position: relative; }
 .col-resize-handle {
@@ -1142,6 +1261,24 @@ tr.attn-low  { opacity:0.65; }
     </aside>
 
     <div class="main">
+      <div id="right-now-panel" aria-label="Right Now summary">
+        <div class="rn-title">
+          <span>Right Now</span>
+          <button class="rn-scan" id="rnScanBtn" onclick="rnScan()">⟳ Scan</button>
+        </div>
+        <div class="rn-stats">
+          <div class="rn-stat">
+            <div class="rn-stat-label">Overdue todos</div>
+            <div class="rn-stat-val" id="rnOverdueTodos">—</div>
+          </div>
+          <div class="rn-stat">
+            <div class="rn-stat-label">Next follow-up</div>
+            <div class="rn-stat-val ok" id="rnNextFollowup">—</div>
+            <div class="rn-stat-sub" id="rnNextFollowupSub"></div>
+          </div>
+        </div>
+        <div class="rn-top-items" id="rnTopItems"></div>
+      </div>
       <div class="main-toolbar">
         <div class="vtabs">
           <button class="vtab active" onclick="setView('todos',this)">Action Items</button>
@@ -1646,8 +1783,9 @@ tr.attn-low  { opacity:0.65; }
 
     <div class="help-section">
       <h3>Mobile layout</h3>
-      <p>Below 768px the sidebar becomes an overlay drawer (tap the <strong>☰</strong> button to open), the items table drops the Category / From / Summary / Time / Link columns, modals and the detail panel go full-screen, and interactive controls grow to comfortable tap-target sizes.</p>
-      <p>Below 480px the Priority column is also hidden from the items table, leaving Source + Title + action buttons. Below 430px (foldable phone in its folded outer display) the <strong>Seed</strong> and <strong>Re-analyze</strong> buttons are hidden from the topbar — run them from the unfolded view or a desktop session.</p>
+      <p>Below 916px (foldable-inner width) a <strong>Right Now</strong> card appears at the top of the main view with the top 3 attention-ranked items, overdue todo count, next situation follow-up, and a one-tap Scan button.</p>
+      <p>Below 768px the sidebar becomes an overlay drawer (tap the <strong>☰</strong> button to open), the items table is replaced by a single-column card layout, modals and the detail panel go full-screen, and interactive controls grow to comfortable tap-target sizes. <strong>Swipe right</strong> on a todo to mark it done; <strong>swipe left</strong> to delete it.</p>
+      <p>Below 480px the topbar wordmark subtitle is hidden. Below 430px (foldable phone in its folded outer display) the <strong>Seed</strong> and <strong>Re-analyze</strong> buttons are hidden from the topbar — run them from the unfolded view, the in-panel Right Now Scan button, or a desktop session.</p>
     </div>
 
   </div>
@@ -2093,6 +2231,7 @@ async function loadTodos() {
     updateCounts(visible);
     // Badge count reflects ALL open delegated tasks, not the current filter.
     refreshAssignedBadge();
+    if (typeof refreshRightNow === 'function') refreshRightNow();
   } catch (e) { console.warn('todos:', e); }
 }
 
@@ -2386,8 +2525,151 @@ async function loadItems() {
       const visible = _filterTodos(allTodos);
       renderTodos(visible);
     }
+    refreshRightNow();
   } catch (e) { console.warn('items:', e); }
 }
+
+// ── Right Now panel (#41) — mobile-only summary card ───────────────────────
+async function refreshRightNow() {
+  const panel = $('right-now-panel');
+  if (!panel || getComputedStyle(panel).display === 'none') return;
+  try {
+    // Items: already in allAnalyses; rank by attention_score desc, ignore noise/dismissed
+    const top = (allAnalyses || [])
+      .filter(a => a.category !== 'noise' && !a.is_replied)
+      .slice()
+      .sort((a,b) => (b.attention_score ?? 0.5) - (a.attention_score ?? 0.5))
+      .slice(0, 3);
+    const topHtml = top.length
+      ? top.map(i => `<div class="rn-item" onclick="openItemDetail('${esc(i.item_id)}')">
+          <span class="rn-item-src">${esc(i.source || '')}</span>
+          <span class="rn-item-title">${esc(i.title || '')}</span>
+          <span class="rn-item-score">${((i.attention_score ?? 0.5) * 100).toFixed(0)}</span>
+        </div>`).join('')
+      : `<div class="rn-empty">No items — run a scan to pull fresh data.</div>`;
+    $('rnTopItems').innerHTML = topHtml;
+
+    // Overdue todos count (from allTodos if loaded, else fetch)
+    const todos = (allTodos && allTodos.length) ? allTodos : await api('/todos?done=false').catch(() => []);
+    const today = new Date().toISOString().slice(0, 10);
+    const overdue = todos.filter(t => !t.done && t.deadline && t.deadline < today).length;
+    const oEl = $('rnOverdueTodos');
+    oEl.textContent = overdue;
+    oEl.className = 'rn-stat-val' + (overdue > 0 ? ' warn' : '');
+
+    // Next situation follow-up
+    try {
+      const sits = await api('/situations');
+      const withFu = sits
+        .filter(s => s.follow_up_date && (s.lifecycle_status === 'new' || s.lifecycle_status === 'investigating' || s.lifecycle_status === 'waiting'))
+        .sort((a,b) => a.follow_up_date.localeCompare(b.follow_up_date));
+      if (withFu.length) {
+        const n = withFu[0];
+        const d = n.follow_up_date;
+        const isOverdue = d < today;
+        const nf = $('rnNextFollowup');
+        nf.textContent = d;
+        nf.className = 'rn-stat-val' + (isOverdue ? ' warn' : ' ok');
+        $('rnNextFollowupSub').textContent = (n.title || '').slice(0, 40);
+      } else {
+        $('rnNextFollowup').textContent = 'None';
+        $('rnNextFollowup').className = 'rn-stat-val ok';
+        $('rnNextFollowupSub').textContent = '';
+      }
+    } catch (e) { /* silent */ }
+  } catch (e) { console.warn('right-now:', e); }
+}
+
+async function rnScan() {
+  const btn = $('rnScanBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ Scanning…'; }
+  try {
+    if (typeof startScan === 'function') await startScan();
+    else await api('/scan', { method: 'POST' });
+  } catch (e) { console.warn('rn-scan:', e); }
+  finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⟳ Scan'; }
+  }
+}
+
+// ── Swipe gestures on todos (#41) ──────────────────────────────────────────
+(function() {
+  const SWIPE_THRESHOLD = 80;
+  let active = null; // { el, startX, startY, dx, locked }
+
+  function onStart(e) {
+    if (window.innerWidth > 768) return;
+    const todo = e.target.closest('.todo');
+    if (!todo) return;
+    // Avoid starting on interactive controls
+    if (e.target.closest('button, a, input, select, textarea, .chip')) return;
+    const pt = e.touches ? e.touches[0] : e;
+    active = { el: todo, startX: pt.clientX, startY: pt.clientY, dx: 0, locked: null };
+
+    // Inject swipe backgrounds lazily
+    if (!todo.querySelector('.todo-swipe-bg.right')) {
+      const r = document.createElement('div');
+      r.className = 'todo-swipe-bg right';
+      r.textContent = '✓ Done';
+      todo.prepend(r);
+      const l = document.createElement('div');
+      l.className = 'todo-swipe-bg left';
+      l.textContent = 'Snooze';
+      todo.prepend(l);
+    }
+    todo.classList.remove('swipe-reset');
+  }
+
+  function onMove(e) {
+    if (!active) return;
+    const pt = e.touches ? e.touches[0] : e;
+    const dx = pt.clientX - active.startX;
+    const dy = pt.clientY - active.startY;
+    if (active.locked === null) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      active.locked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      if (active.locked === 'x') active.el.classList.add('swiping');
+    }
+    if (active.locked !== 'x') return;
+    if (e.cancelable) e.preventDefault();
+    active.dx = dx;
+    active.el.style.transform = `translateX(${dx}px)`;
+    const r = active.el.querySelector('.todo-swipe-bg.right');
+    const l = active.el.querySelector('.todo-swipe-bg.left');
+    if (r) r.style.opacity = dx > 0 ? Math.min(1, dx / SWIPE_THRESHOLD) : 0;
+    if (l) l.style.opacity = dx < 0 ? Math.min(1, -dx / SWIPE_THRESHOLD) : 0;
+  }
+
+  function onEnd() {
+    if (!active) return;
+    const { el, dx, locked } = active;
+    active = null;
+    if (locked !== 'x') {
+      el.classList.remove('swiping');
+      el.style.transform = '';
+      return;
+    }
+    const todoId = parseInt(el.dataset.todoId || '0');
+    if (dx > SWIPE_THRESHOLD && todoId) {
+      el.style.transform = `translateX(100%)`;
+      el.classList.add('swipe-reset');
+      setTimeout(() => { try { toggleDone(todoId, true); } catch(e) {} }, 180);
+    } else if (dx < -SWIPE_THRESHOLD && todoId) {
+      el.style.transform = `translateX(-100%)`;
+      el.classList.add('swipe-reset');
+      setTimeout(() => { try { deleteTodo(todoId); } catch(e) {} }, 180);
+    } else {
+      el.classList.add('swipe-reset');
+      el.style.transform = '';
+      setTimeout(() => { el.classList.remove('swiping', 'swipe-reset'); }, 220);
+    }
+  }
+
+  document.addEventListener('touchstart', onStart, { passive: true });
+  document.addEventListener('touchmove',  onMove,  { passive: false });
+  document.addEventListener('touchend',   onEnd,   { passive: true });
+  document.addEventListener('touchcancel', onEnd,  { passive: true });
+})();
 
 function updateTypeCounts(items) {
   $('tc-all').textContent      = items.length;
@@ -2484,8 +2766,32 @@ function renderItems(items) {
         <th>From</th><th>Summary</th>${sTh('priority','Pri')}${sTh('timestamp','Time')}<th>Link</th><th></th>
       </tr></thead>
       <tbody>${filtered.map(itemRow).join('')}</tbody>
-    </table>`;
+    </table>
+    <div class="item-cards">${filtered.map(itemCard).join('')}</div>`;
   initResizableCols();
+}
+
+function itemCard(i) {
+  const t        = i.timestamp ? new Date(i.timestamp).toLocaleDateString([], {month:'short', day:'numeric'}) : '';
+  const catKey   = i.task_type ? `task-${i.task_type}` : (i.category || 'fyi');
+  const catLabel = i.task_type ? `task · ${i.task_type}` : (i.category || 'fyi');
+  const pri      = i.priority || 'low';
+  const isNoise  = i.category === 'noise';
+  const author   = i.author ? esc(i.author) : '';
+  const pd       = i.is_passdown ? ` · passdown` : '';
+  return `<div class="item-card ${isNoise ? 'row-hidden' : ''}" onclick="openItemDetail('${esc(i.item_id)}')">
+    <div class="item-card-head">
+      <span class="item-card-src">${esc(i.source || '')}</span>
+      <span class="item-card-cat">${esc(catLabel)}${pd}</span>
+      <span class="item-card-time">${t}</span>
+    </div>
+    <div class="item-card-title">${esc(i.title || '')}</div>
+    <div class="item-card-meta">
+      <span class="item-card-pri ${pri}">${pri}</span>
+      ${author ? `<span>${author}</span>` : ''}
+      ${i.url ? `<a href="${esc(i.url)}" target="_blank" onclick="event.stopPropagation()" style="color:var(--accent)">open ↗</a>` : ''}
+    </div>
+  </div>`;
 }
 
 function _reRenderItems() { renderItems(allAnalyses); }
