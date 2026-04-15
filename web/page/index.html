@@ -5589,11 +5589,13 @@ function _laRenderProjectBoard() {
     const endRow   = rowCursor + subrowCount; // grid-row end is exclusive
     const span = `grid-row:${startRow} / ${endRow}`;
     body += `<div class="la-lane-label" title="${esc(lane)}" style="${span}">${esc(lane)}</div>`;
-    body += `<div class="la-day-cell overdue-gutter" style="${span}"></div>`;
+    body += `<div class="la-day-cell overdue-gutter" style="grid-column:2; ${span}"></div>`;
     for (let i = 0; i < 14; i++) {
       const iso = _laAddDays(_LA.rangeStart, i);
       const cls = iso === todayISO ? 'la-day-cell today' : 'la-day-cell';
-      body += `<div class="${cls}" data-day-iso="${iso}" style="${span}"></div>`;
+      // Pin each cell to its explicit column so auto-flow can't shuffle it
+      // around cards that happen to span the same rows.
+      body += `<div class="${cls}" data-day-iso="${iso}" style="grid-column:${3 + i}; ${span}"></div>`;
     }
     laneCards.forEach((card, idx) => {
       body += _laRenderCardBar(card, startRow + assigned[idx]);
