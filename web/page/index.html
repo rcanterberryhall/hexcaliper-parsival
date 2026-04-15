@@ -5311,6 +5311,7 @@ const _LA = {
   cards: [],
   overview: [],
   resources: [],
+  contacts: [],          // names from /contacts, used for assignee autocomplete
   shifts: {},            // {shift_num: shift_row}
   rangeStart: null,      // YYYY-MM-DD (today)
   rangeEnd: null,        // YYYY-MM-DD (today + 13)
@@ -5371,7 +5372,7 @@ async function loadLookahead() {
   }
   const savedMode = localStorage.getItem('la.mode');
   if (savedMode === 'overview') setLookaheadMode('overview', true);
-  await Promise.all([_laLoadResources(), _laLoadData()]);
+  await Promise.all([_laLoadResources(), _laLoadContacts(), _laLoadData()]);
   renderLookahead();
 }
 
@@ -5394,6 +5395,15 @@ async function _laLoadResources() {
       _LA.resources.map(r => `<option value="${r.id}">${esc(r.name)} (${esc(r.type)})</option>`).join('');
     sel.value = prev;
   }
+}
+
+async function _laLoadContacts() {
+  // Powers the assignee autocomplete in the card modal.  We only need names
+  // here — the look-ahead stores assignees as a free-text string, not an FK.
+  try {
+    const r = await api('/contacts?limit=500');
+    _LA.contacts = (r.contacts || []).map(c => c.name).filter(Boolean);
+  } catch(e) { _LA.contacts = []; }
 }
 
 async function _laLoadData() {
@@ -5714,7 +5724,12 @@ async function editLookaheadCard(cardId) {
 
 function _laShowCardModal(card) {
   $('laModalTitle').textContent = card.id ? `Card — ${card.title}` : 'New card';
-  const assignees = [...new Set(_LA.cards.map(c => c.assignee).filter(Boolean))];
+  // Union of names already used on cards and known contacts so the autocomplete
+  // covers both prior assignments and people we have on file.
+  const assignees = [...new Set([
+    ..._LA.cards.map(c => c.assignee).filter(Boolean),
+    ...(_LA.contacts || []),
+  ])].sort((a, b) => a.localeCompare(b));
   const bomRows = (card.resources || []).map((r, i) => `
     <div class="la-bom-row" data-bom-idx="${i}">
       <span style="flex:1">${esc(r.name)} <span style="color:var(--muted)">(${esc(r.type)})</span></span>
