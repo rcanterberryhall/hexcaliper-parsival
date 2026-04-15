@@ -5722,31 +5722,47 @@ function _laWireDragHandlers() {
   board.addEventListener('drop', async (e) => {
     e.preventDefault();
     const id = e.dataTransfer.getData('text/plain');
-    if (!id) return;
+    console.log('[la-drop] fire', { id, x: e.clientX, y: e.clientY });
+    if (!id) { console.warn('[la-drop] no id in dataTransfer'); return; }
     // Find the day cell whose on-screen rect actually contains the cursor.
-    // Every cell carries its own iso date, so we don't have to reconstruct
-    // offsets from the range start — we just read the date off the cell.
     let newStart = null;
+    let matchedCell = null;
+    const candidates = [];
     for (const cell of board.querySelectorAll('.la-day-cell[data-day-iso]')) {
       const r = cell.getBoundingClientRect();
-      if (e.clientX >= r.left && e.clientX < r.right &&
-          e.clientY >= r.top  && e.clientY < r.bottom) {
+      const hitX = e.clientX >= r.left && e.clientX < r.right;
+      const hitY = e.clientY >= r.top  && e.clientY < r.bottom;
+      if (hitX) {
+        candidates.push({
+          iso: cell.dataset.dayIso,
+          left: Math.round(r.left), right: Math.round(r.right),
+          top: Math.round(r.top), bottom: Math.round(r.bottom),
+          hitY,
+        });
+      }
+      if (hitX && hitY && !newStart) {
         newStart = cell.dataset.dayIso;
-        break;
+        matchedCell = { iso: cell.dataset.dayIso, left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom) };
       }
     }
-    if (!newStart) return;  // dropped in a gap / label column / outside the day grid
+    console.log('[la-drop] x-candidates', candidates);
+    console.log('[la-drop] matchedCell', matchedCell);
+    if (!newStart) { console.warn('[la-drop] no cell under cursor — dropping'); return; }
     const card = _LA.cards.find(c => c.id === id);
-    if (!card) return;
+    if (!card) { console.warn('[la-drop] card not in _LA.cards', id); return; }
     const span = _laDayDiff(card.start_date, card.end_date);
     const newEnd = _laAddDays(newStart, Math.max(0, span));
-    if (newStart === card.start_date && newEnd === card.end_date) return;
+    console.log('[la-drop] plan', { was_start: card.start_date, was_end: card.end_date, newStart, newEnd, span });
+    if (newStart === card.start_date && newEnd === card.end_date) { console.log('[la-drop] noop — same dates'); return; }
     try {
-      await api(`/lookahead/cards/${id}`, 'PATCH',
+      const resp = await api(`/lookahead/cards/${id}`, 'PATCH',
                 { start_date: newStart, end_date: newEnd });
+      console.log('[la-drop] PATCH ok', { start_date: resp.start_date, end_date: resp.end_date });
       await _laLoadData();
+      const after = _LA.cards.find(c => c.id === id);
+      console.log('[la-drop] after reload', { start_date: after && after.start_date, end_date: after && after.end_date });
       renderLookahead();
-    } catch(err) { alert('Reschedule failed: ' + err.message); }
+    } catch(err) { console.error('[la-drop] PATCH failed', err); alert('Reschedule failed: ' + err.message); }
   });
 }
 
