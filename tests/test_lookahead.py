@@ -432,6 +432,159 @@ def test_instance_autocompletes_when_all_cards_done(client):
     assert client.get(f"/lookahead/instances/{inst['id']}").json()["status"] == "complete"
 
 
+def test_instance_lists_outdated_flag_after_template_edit(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                json={"start_date": "2026-05-04", "project_tag": "P905"})
+    fresh = client.get("/lookahead/instances").json()[0]
+    assert fresh["outdated"] is False
+    assert fresh["template_current_version"] == 1
+    # Bump the template; the instance should now report itself outdated
+    # without us having to touch it.
+    client.patch(f"/lookahead/templates/{tpl['id']}", json={"description": "v2"})
+    after = client.get("/lookahead/instances").json()[0]
+    assert after["outdated"] is True
+    assert after["template_version"] == 1
+    assert after["template_current_version"] == 2
+
+
+def test_upgrade_instance_refreshes_template_fields_and_preserves_user_edits(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    card_a = [c for c in inst["cards"] if c["template_task_local_id"] == "A"][0]
+    # User edits A: assign someone, add notes, mark in_progress.
+    client.patch(f"/lookahead/cards/{card_a['id']}", json={
+        "assignee": "Bob", "notes": "Bob is on it", "status": "in_progress"})
+    # Template author rewrites A: new title, slid to day 1, new procedure doc.
+    client.patch(f"/lookahead/templates/{tpl['id']}", json={"tasks": [
+        {"local_id": "A", "title": "Pre-check (revised)",
+         "offset_start_days": 1, "offset_start_shift": 1, "duration_shifts": 1,
+         "linked_procedure_doc": "https://docs/sop-A2"},
+        {"local_id": "B", "title": "Main inspection",
+         "offset_start_days": 2, "offset_start_shift": 1, "duration_shifts": 2,
+         "depends_on": ["A"]},
+    ]})
+    upgraded = client.post(
+        f"/lookahead/instances/{inst['id']}/upgrade").json()
+    assert upgraded["template_version"] == 2
+    assert upgraded["outdated"] is False
+    by_local = {c["template_task_local_id"]: c for c in upgraded["cards"]}
+    a = by_local["A"]
+    assert a["title"] == "Pre-check (revised)"
+    assert a["start_date"] == "2026-05-05"  # slid by +1 calendar day
+    assert a["linked_procedure_doc"] == "https://docs/sop-A2"
+    assert a["assignee"] == "Bob"             # preserved
+    assert a["notes"] == "Bob is on it"       # preserved
+    assert a["status"] == "in_progress"        # preserved
+
+
+def test_upgrade_instance_creates_card_for_newly_added_task(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    assert len(inst["cards"]) == 2
+    # Add a new task C to the template.
+    client.patch(f"/lookahead/templates/{tpl['id']}", json={"tasks": [
+        {"local_id": "A", "title": "Pre-check",
+         "offset_start_days": 0, "offset_start_shift": 1, "duration_shifts": 1},
+        {"local_id": "B", "title": "Main inspection",
+         "offset_start_days": 2, "offset_start_shift": 1, "duration_shifts": 2,
+         "depends_on": ["A"]},
+        {"local_id": "C", "title": "Sign-off",
+         "offset_start_days": 4, "offset_start_shift": 1, "duration_shifts": 1,
+         "depends_on": ["B"]},
+    ]})
+    upgraded = client.post(
+        f"/lookahead/instances/{inst['id']}/upgrade").json()
+    by_local = {c["template_task_local_id"]: c for c in upgraded["cards"]}
+    assert "C" in by_local
+    c_card = by_local["C"]
+    assert c_card["title"] == "Sign-off"
+    assert c_card["start_date"] == "2026-05-08"
+    assert c_card["depends_on"] == [by_local["B"]["id"]]
+
+
+def test_upgrade_instance_leaves_orphaned_card_attached(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    card_b = [c for c in inst["cards"] if c["template_task_local_id"] == "B"][0]
+    # Drop task B from the template.  Its card already exists and may be in
+    # flight, so the upgrade must leave it intact rather than deleting work.
+    client.patch(f"/lookahead/templates/{tpl['id']}", json={"tasks": [
+        {"local_id": "A", "title": "Pre-check",
+         "offset_start_days": 0, "offset_start_shift": 1, "duration_shifts": 1},
+    ]})
+    client.post(f"/lookahead/instances/{inst['id']}/upgrade")
+    fresh = client.get(f"/lookahead/cards/{card_b['id']}")
+    assert fresh.status_code == 200
+    assert fresh.json()["template_instance_id"] == inst["id"]
+
+
+def test_upgrade_instance_adds_missing_required_resource_without_dropping_user_bom(client):
+    _wipe_lookahead()
+    crane = client.post("/lookahead/resources",
+                        json={"name": "Crane", "type": "equipment"}).json()
+    welder = client.post("/lookahead/resources",
+                         json={"name": "Welder", "type": "equipment"}).json()
+    body = _template_payload(tasks=[{
+        "local_id": "x", "title": "Lift",
+        "offset_start_days": 0, "duration_shifts": 1,
+        "resource_requirements": [
+            {"resource_type": "equipment",
+             "named_resource_id": crane["id"], "quantity": 1},
+        ],
+    }])
+    tpl = client.post("/lookahead/templates", json=body).json()
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    card = inst["cards"][0]
+    # User adds welder as an extra BOM entry on the card (PATCH replaces
+    # the full resource list, so include the existing crane row too).
+    client.patch(f"/lookahead/cards/{card['id']}", json={"resources": [
+        {"resource_id": crane["id"], "quantity": 1, "status": "needed"},
+        {"resource_id": welder["id"], "quantity": 1, "status": "secured"},
+    ]})
+    # Template author also requires welder going forward.
+    client.patch(f"/lookahead/templates/{tpl['id']}", json={"tasks": [{
+        "local_id": "x", "title": "Lift",
+        "offset_start_days": 0, "duration_shifts": 1,
+        "resource_requirements": [
+            {"resource_type": "equipment",
+             "named_resource_id": crane["id"], "quantity": 1},
+            {"resource_type": "equipment",
+             "named_resource_id": welder["id"], "quantity": 1},
+        ],
+    }]})
+    upgraded = client.post(
+        f"/lookahead/instances/{inst['id']}/upgrade").json()
+    bom = upgraded["cards"][0]["resources"]
+    welder_rows = [r for r in bom if r["resource_id"] == welder["id"]]
+    # User's pre-existing welder row is preserved (status stays 'secured').
+    assert len(welder_rows) == 1
+    assert welder_rows[0]["status"] == "secured"
+
+
+def test_upgrade_instance_is_noop_when_already_current(client):
+    _wipe_lookahead()
+    tpl = client.post("/lookahead/templates", json=_template_payload()).json()
+    inst = client.post(f"/lookahead/templates/{tpl['id']}/instantiate",
+                       json={"start_date": "2026-05-04",
+                             "project_tag": "P905"}).json()
+    r = client.post(f"/lookahead/instances/{inst['id']}/upgrade")
+    assert r.status_code == 200
+    assert r.json()["template_version"] == 1
+
+
 def test_template_task_carries_linked_procedure_doc_to_card(client):
     _wipe_lookahead()
     tpl = client.post("/lookahead/templates", json=_template_payload(tasks=[{

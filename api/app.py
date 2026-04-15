@@ -3728,6 +3728,21 @@ def lookahead_delete_instance(instance_id: str):
     return {"ok": True}
 
 
+@app.post("/lookahead/instances/{instance_id}/upgrade")
+def lookahead_upgrade_instance(instance_id: str):
+    """Re-apply the latest template version to this instance (parsival#60).
+
+    Opt-in: the UI surfaces an "outdated" badge from
+    ``GET /lookahead/instances`` and the user clicks Upgrade per instance.
+    """
+    with db.lock:
+        inst = db.upgrade_instance(instance_id)
+    if not inst:
+        raise HTTPException(status_code=404,
+                            detail="instance or template not found")
+    return inst
+
+
 @app.post("/lookahead/cards/{card_id}/detach")
 def lookahead_detach_card(card_id: str):
     with db.lock:

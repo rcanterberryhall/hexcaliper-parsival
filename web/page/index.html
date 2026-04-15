@@ -6370,18 +6370,29 @@ async function _laOpenInstancesPanel() {
   catch(e) { alert('Failed to load instances: ' + e.message); return; }
   $('laModalTitle').textContent = 'Template instances';
   const tplNameById = Object.fromEntries((_LA.templates || []).map(t => [t.id, t.name]));
-  const rows = instances.map(i => `
+  const rows = instances.map(i => {
+    // Template version may have advanced since this instance was materialised
+    // (parsival#60).  Show the gap and an opt-in upgrade button when outdated.
+    const verCell = i.outdated
+      ? `<span style="color:var(--accent)">v${i.template_version} → v${i.template_current_version}</span>`
+      : `<span style="color:var(--muted)">v${i.template_version}</span>`;
+    const upgradeBtn = i.outdated
+      ? `<button class="ia" style="padding:2px 8px;font-size:10px;color:var(--accent)" onclick="_laUpgradeInstance('${esc(i.id)}')">Upgrade</button>`
+      : '';
+    return `
     <tr style="border-bottom:1px solid var(--border2)">
       <td style="padding:6px 8px">${esc(tplNameById[i.template_id] || i.template_id)}</td>
-      <td style="padding:6px 8px;color:var(--muted);font-size:10px">v${i.template_version}</td>
+      <td style="padding:6px 8px;font-size:10px">${verCell}</td>
       <td style="padding:6px 8px">${esc(i.project_tag)}</td>
       <td style="padding:6px 8px">${esc(i.start_date)}</td>
       <td style="padding:6px 8px"><span class="la-chip" style="color:${i.status==='complete'?'var(--green)':(i.status==='cancelled'?'var(--muted)':'var(--accent)')}">${esc(i.status)}</span></td>
       <td style="padding:6px 8px;display:flex;gap:4px;justify-content:flex-end">
+        ${upgradeBtn}
         <button class="ia" style="padding:2px 8px;font-size:10px" onclick="_laRescheduleInstance('${esc(i.id)}','${esc(i.start_date)}')">Reschedule</button>
         <button class="ia" style="padding:2px 8px;font-size:10px;color:var(--red)" onclick="_laDeleteInstance('${esc(i.id)}')">✕</button>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
   $('laModalBody').innerHTML = (instances.length
     ? `<table style="width:100%;border-collapse:collapse;font-size:11px">
          <thead><tr style="border-bottom:1px solid var(--border2);text-align:left">
@@ -6402,6 +6413,18 @@ async function _laRescheduleInstance(instanceId, currentStart) {
     renderLookahead();
     _laOpenInstancesPanel();
   } catch(e) { alert('Reschedule failed: ' + e.message); }
+}
+
+async function _laUpgradeInstance(instanceId) {
+  if (!confirm('Re-apply the latest template version to this instance? '
+             + 'Card titles, schedule, and required resources update; assignee, '
+             + 'status, notes, and any extra BOM entries are preserved.')) return;
+  try {
+    await api(`/lookahead/instances/${instanceId}/upgrade`, 'POST', {});
+    await _laLoadData();
+    renderLookahead();
+    _laOpenInstancesPanel();
+  } catch(e) { alert('Upgrade failed: ' + e.message); }
 }
 
 async function _laDeleteInstance(instanceId) {

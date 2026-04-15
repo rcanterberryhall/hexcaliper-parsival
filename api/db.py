@@ -2140,6 +2140,25 @@ def instantiate_template(template_id: str, start_date: str,
     return get_instance(instance_id)
 
 
+def _annotate_instance_outdated(inst: dict) -> dict:
+    """Add ``template_current_version`` and ``outdated`` to an instance row.
+
+    The instance carries the template version it was *materialised* against;
+    the template's own ``version`` rises every time the user edits the template.
+    Surfacing the gap lets the UI offer an opt-in upgrade per parsival#60.
+    """
+    if not inst:
+        return inst
+    cur = conn().execute(
+        "SELECT version FROM lookahead_templates WHERE id = ?",
+        (inst["template_id"],),
+    ).fetchone()
+    current = int(cur["version"]) if cur else int(inst.get("template_version") or 1)
+    inst["template_current_version"] = current
+    inst["outdated"] = current > int(inst.get("template_version") or 0)
+    return inst
+
+
 def get_instance(instance_id: str) -> Optional[dict]:
     row = conn().execute(
         "SELECT * FROM lookahead_template_instances WHERE id = ?", (instance_id,)
@@ -2149,7 +2168,7 @@ def get_instance(instance_id: str) -> Optional[dict]:
     inst = dict(row)
     cards = list_lookahead_cards_for_instance(instance_id)
     inst["cards"] = cards
-    return inst
+    return _annotate_instance_outdated(inst)
 
 
 def list_instances(project: Optional[str] = None,
@@ -2166,7 +2185,8 @@ def list_instances(project: Optional[str] = None,
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY start_date DESC, id"
-    return _rows_to_list(conn().execute(sql, args).fetchall())
+    rows = _rows_to_list(conn().execute(sql, args).fetchall())
+    return [_annotate_instance_outdated(r) for r in rows]
 
 
 def list_lookahead_cards_for_instance(instance_id: str) -> list[dict]:
@@ -2232,6 +2252,115 @@ def reschedule_instance(instance_id: str, new_start_date: str) -> Optional[dict]
     c.execute(
         "UPDATE lookahead_template_instances SET start_date = ? WHERE id = ?",
         (new_start_date, instance_id),
+    )
+    return get_instance(instance_id)
+
+
+def upgrade_instance(instance_id: str) -> Optional[dict]:
+    """Re-apply the current template version to an existing instance.
+
+    Per parsival#60: the user opted in to this upgrade.  Existing cards keep
+    their assignee, status, notes, and any user-added BOM entries; the template-
+    derived fields (title, schedule offsets, linked procedure doc, required
+    named resources) get refreshed.  Tasks added since the original
+    instantiation become new cards.  Tasks that were removed from the template
+    leave their existing cards alone — they may already be in flight.
+    Dependencies are rebuilt from the current template graph.
+    """
+    import uuid as _uuid
+    c = conn()
+    inst_row = c.execute(
+        "SELECT * FROM lookahead_template_instances WHERE id = ?", (instance_id,)
+    ).fetchone()
+    if not inst_row:
+        return None
+    inst = dict(inst_row)
+    tpl = get_template(inst["template_id"])
+    if not tpl:
+        return None
+    if int(inst["template_version"]) >= int(tpl["version"]):
+        return get_instance(instance_id)  # already current
+
+    start_date = inst["start_date"]
+    project    = inst["project_tag"]
+    unit       = tpl["duration_unit"]
+    now        = _now_iso()
+
+    existing = _rows_to_list(c.execute(
+        "SELECT * FROM lookahead_cards WHERE template_instance_id = ?",
+        (instance_id,),
+    ).fetchall())
+    card_by_local: dict[str, dict] = {
+        r["template_task_local_id"]: r for r in existing if r["template_task_local_id"]
+    }
+
+    # Pass 1: update or create one card per template task.
+    local_to_card_id: dict[str, str] = {}
+    for task in tpl["tasks"]:
+        local_id = task["local_id"]
+        s_date  = _add_days(start_date, int(task["offset_start_days"]), unit)
+        s_shift = int(task["offset_start_shift"]) or 1
+        e_date, e_shift = _duration_to_end(
+            s_date, s_shift, int(task["duration_shifts"]), unit)
+        existing_card = card_by_local.get(local_id)
+        if existing_card:
+            cid = existing_card["id"]
+            c.execute(
+                "UPDATE lookahead_cards SET title = ?, start_date = ?, "
+                "start_shift_num = ?, end_date = ?, end_shift_num = ?, "
+                "linked_procedure_doc = ?, updated_at = ? WHERE id = ?",
+                (task["title"], s_date, s_shift, e_date, e_shift,
+                 task.get("linked_procedure_doc", ""), now, cid),
+            )
+        else:
+            cid = str(_uuid.uuid4())
+            c.execute(
+                "INSERT INTO lookahead_cards "
+                "(id, title, project, assignee, start_date, start_shift_num, "
+                " end_date, end_shift_num, status, notes, linked_procedure_doc, "
+                " template_instance_id, template_task_local_id, "
+                " created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', '', ?, ?, ?, ?, ?)",
+                (cid, task["title"], project, "",
+                 s_date, s_shift, e_date, e_shift,
+                 task.get("linked_procedure_doc", ""),
+                 instance_id, local_id, now, now),
+            )
+        local_to_card_id[local_id] = cid
+
+        # BOM: add any required named resource that isn't already on the card.
+        # We never remove existing entries — the user may have flipped a row to
+        # 'consumed' or added their own.
+        for req in task["resource_requirements"]:
+            named = req.get("named_resource_id")
+            if named:
+                c.execute(
+                    "INSERT OR IGNORE INTO lookahead_card_resources "
+                    "(card_id, resource_id, quantity, status) VALUES (?, ?, ?, 'needed')",
+                    (cid, int(named), float(req.get("quantity", 1))),
+                )
+
+    # Pass 2: rebuild deps for cards that map to the current template.
+    # Deps for cards whose local_id was dropped from the template stay alone;
+    # those cards are no longer part of the template graph.
+    for cid in local_to_card_id.values():
+        c.execute(
+            "DELETE FROM lookahead_card_deps WHERE card_id = ?", (cid,)
+        )
+    for task in tpl["tasks"]:
+        cid = local_to_card_id[task["local_id"]]
+        for dep_local in task["depends_on"]:
+            dep_cid = local_to_card_id.get(dep_local)
+            if dep_cid:
+                c.execute(
+                    "INSERT OR IGNORE INTO lookahead_card_deps "
+                    "(card_id, depends_on_id) VALUES (?, ?)",
+                    (cid, dep_cid),
+                )
+
+    c.execute(
+        "UPDATE lookahead_template_instances SET template_version = ? WHERE id = ?",
+        (int(tpl["version"]), instance_id),
     )
     return get_instance(instance_id)
 
