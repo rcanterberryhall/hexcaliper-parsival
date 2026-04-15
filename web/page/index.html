@@ -1099,13 +1099,15 @@ tr.attn-low  { opacity:0.65; }
 .la-day-cell.today { background:rgba(212,160,23,.07); }
 .la-day-cell.overdue-gutter { background:rgba(230,80,80,.05); border-right:2px solid var(--red); }
 .la-card {
-  background:var(--surface); border:1px solid var(--border2);
+  background:var(--surface); border:1px solid var(--muted);
   border-radius:var(--r); padding:4px 7px; font-size:11px;
-  display:flex; flex-direction:column; gap:2px; cursor:pointer;
-  min-height:36px; box-shadow:0 1px 2px rgba(0,0,0,.12);
+  display:flex; flex-direction:column; gap:2px; cursor:grab;
+  min-height:36px; box-shadow:0 1px 3px rgba(0,0,0,.35);
   z-index:1; position:relative;
 }
 .la-card:hover { border-color:var(--accent); z-index:2; }
+.la-board.dragging-card .la-card { pointer-events:none; }
+.la-card.dragging { cursor:grabbing; }
 .la-card.planned   { border-left:3px solid var(--muted); }
 .la-card.in_progress { border-left:3px solid var(--blue); }
 .la-card.done      { border-left:3px solid var(--green); opacity:.55; }
@@ -5709,8 +5711,14 @@ function _laWireDragHandlers() {
     el.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData('text/card-id', el.dataset.cardId);
       el.classList.add('dragging');
+      // Let drops pass through to the day-cells below every card, not just
+      // cells not covered by a card.
+      board.classList.add('dragging-card');
     });
-    el.addEventListener('dragend', () => el.classList.remove('dragging'));
+    el.addEventListener('dragend', () => {
+      el.classList.remove('dragging');
+      board.classList.remove('dragging-card');
+    });
   });
   board.querySelectorAll('.la-day-cell').forEach((cell, idx) => {
     // Lane grid layout: overdue gutter at idx 0, then 14 day cells per lane.
