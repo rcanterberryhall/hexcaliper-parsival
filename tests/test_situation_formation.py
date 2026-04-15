@@ -198,6 +198,80 @@ def test_update_situation_record_runs_synthesis():
     assert updated["title"] == "Synthesized Title XYZ"
 
 
+# ── Completed actions context (parsival#56) ──────────────────────────────────
+
+def test_synthesis_receives_completed_actions_from_done_todos():
+    """The narrative call should be told which action items are already done so
+    it doesn't restate finished work as still pending (parsival#56)."""
+    import db as _db
+    sit_id = str(uuid.uuid4())
+    _insert_analysis("d1", refs=["proj-77"])
+    _insert_analysis("d2", refs=["proj-77"])
+    _insert_situation(sit_id, ["d1", "d2"])
+    # One done todo on d1, one open todo on d2 — only the done one should reach
+    # the synthesizer's completed_actions argument.
+    _db.insert_todo({"item_id": "d1", "description": "Order the part",
+                     "done": 1, "status": "done", "owner": "Alice",
+                     "created_at": "2026-04-12T10:00:00+00:00"})
+    _db.insert_todo({"item_id": "d2", "description": "Schedule the lift",
+                     "done": 0, "status": "open",
+                     "created_at": "2026-04-13T10:00:00+00:00"})
+
+    with patch("situation_manager._correlator.synthesize_situation",
+               return_value=MOCK_SYNTHESIS) as synth:
+        _update_situation_record(sit_id, ["d1", "d2"])
+
+    kwargs = synth.call_args.kwargs
+    completed = kwargs.get("completed_actions") or []
+    descs = [t["description"] for t in completed]
+    assert "Order the part" in descs
+    assert "Schedule the lift" not in descs
+
+
+def test_synthesize_prompt_includes_completed_actions_block():
+    """When completed_actions are passed, the prompt rendered to the LLM must
+    contain the Completed actions section (parsival#56)."""
+    import correlator as _correlator_mod
+    captured = {}
+
+    def fake_generate(prompt, **kw):
+        captured["prompt"] = prompt
+        return '{"title":"t","summary":"s","status":"in_progress","open_actions":[],"key_context":null}'
+
+    items = [{"source": "email", "title": "Lift planning",
+              "summary": "Crew is staging the rig",
+              "priority": "high", "category": "task"}]
+    completed = [{"description": "Confirm crane reservation",
+                  "owner": "Alice", "done": 1}]
+    with patch("correlator.config.OLLAMA_URL", "http://stub"), \
+         patch("correlator.llm.generate", side_effect=fake_generate):
+        _correlator_mod.synthesize_situation(
+            items, "Bob", completed_actions=completed)
+
+    assert "Completed actions" in captured["prompt"]
+    assert "Confirm crane reservation" in captured["prompt"]
+
+
+def test_synthesize_prompt_omits_completed_block_when_empty():
+    """No completed todos means no Completed actions noise in the prompt."""
+    import correlator as _correlator_mod
+    captured = {}
+
+    def fake_generate(prompt, **kw):
+        captured["prompt"] = prompt
+        return '{"title":"t","summary":"s","status":"in_progress","open_actions":[],"key_context":null}'
+
+    items = [{"source": "email", "title": "x", "summary": "y",
+              "priority": "low", "category": "fyi"}]
+    with patch("correlator.config.OLLAMA_URL", "http://stub"), \
+         patch("correlator.llm.generate", side_effect=fake_generate):
+        _correlator_mod.synthesize_situation(items, "Bob")
+
+    # The trailing prompt instruction always references "Completed actions";
+    # the section header itself (with the colon) only appears when items exist.
+    assert "Completed actions (treat as already done" not in captured["prompt"]
+
+
 def test_situation_not_formed_when_cancelled():
     """The cancellation guard inside _maybe_form_situation must prevent situation
     creation even when a valid cluster has been found."""

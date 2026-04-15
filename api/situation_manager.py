@@ -61,6 +61,22 @@ def _pri_rank(p: str) -> int:
     return {"high": 3, "medium": 2, "low": 1}.get(p, 1)
 
 
+def _completed_todos_for_items(item_ids: list) -> list[dict]:
+    """Return done todos across the given items, most-recent-first (parsival#56).
+
+    Caller must already hold ``db.lock``.  Used to give the situation
+    synthesizer awareness of work that's already been finished so the narrative
+    doesn't restate completed actions as open.
+    """
+    done: list[dict] = []
+    for iid in set(item_ids):
+        for t in db.get_todos_for_item(iid):
+            if t.get("done"):
+                done.append(t)
+    done.sort(key=lambda t: t.get("created_at", ""), reverse=True)
+    return done
+
+
 # ── Score decay ────────────────────────────────────────────────────────────────
 
 def _rescore_situation(sit_id: str) -> None:
@@ -152,7 +168,13 @@ def _update_situation_record(sit_id: str, item_ids: list) -> None:
 
         with db.lock:
             cluster_intel = db.get_intel_for_items(list(set(item_ids)))
-        synthesis   = _correlator.synthesize_situation(cluster_records, config.USER_NAME or "the user", intel_items=cluster_intel)
+            cluster_done  = _completed_todos_for_items(item_ids)
+        synthesis   = _correlator.synthesize_situation(
+            cluster_records,
+            config.USER_NAME or "the user",
+            intel_items=cluster_intel,
+            completed_actions=cluster_done,
+        )
         score       = _correlator.score_situation(item_ids, cluster_records)
         max_pri     = max(cluster_records, key=lambda r: _pri_rank(r.get("priority", "low")))
         all_refs    = list(set(r for rec in cluster_records
@@ -337,7 +359,13 @@ def _maybe_form_situation(item_id: str) -> None:
         # Create new situation
         with db.lock:
             cluster_intel = db.get_intel_for_items(list(set(all_ids)))
-        synthesis   = _correlator.synthesize_situation(cluster_records, config.USER_NAME or "the user", intel_items=cluster_intel)
+            cluster_done  = _completed_todos_for_items(all_ids)
+        synthesis   = _correlator.synthesize_situation(
+            cluster_records,
+            config.USER_NAME or "the user",
+            intel_items=cluster_intel,
+            completed_actions=cluster_done,
+        )
         score       = _correlator.score_situation(all_ids, cluster_records)
         max_pri     = max(cluster_records, key=lambda r: _pri_rank(r.get("priority", "low")))
         all_refs    = list(set(r for rec in cluster_records

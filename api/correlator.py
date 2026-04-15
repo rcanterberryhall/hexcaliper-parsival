@@ -170,13 +170,12 @@ The following items from different sources all appear to be about the same situa
 Synthesize them into a single coherent picture.
 
 {items_block}
-{intel_block}
-
+{intel_block}{completed_block}
 Respond ONLY with valid JSON. No explanation, no markdown fences.
 
 {{
   "title": "short descriptive title for this situation (10 words max)",
-  "summary": "2-3 sentences: what is happening, current status, what is needed",
+  "summary": "2-3 sentences: what is happening, current status, what is needed. Reflect any completed actions in the current state — do not describe finished work as still pending.",
   "status": "blocked" or "in_progress" or "waiting" or "needs_decision" or "informational",
   "open_actions": [
     {{
@@ -188,16 +187,23 @@ Respond ONLY with valid JSON. No explanation, no markdown fences.
   ],
   "key_context": "one sentence of essential background, or null"
 }}
+
+Do NOT list anything in ``open_actions`` that already appears under "Completed actions".
 """
 
 
-def synthesize_situation(item_records: list, user_name: str, intel_items: list = None) -> dict:
+def synthesize_situation(item_records: list, user_name: str,
+                         intel_items: list = None,
+                         completed_actions: list = None) -> dict:
     """
     Call Ollama to produce a cross-source narrative for a situation cluster.
     Falls back to a minimal dict on failure.
 
     items_block: per-item summary lines capped at 6 items × 200 chars each.
     intel_items: optional list of information_items dicts from the intel table.
+    completed_actions: optional list of done todo dicts (parsival#56) so the
+        narrative reflects work that is already finished instead of treating
+        every action item as still pending.
     """
     capped = item_records[:6]
     lines = []
@@ -215,6 +221,24 @@ def synthesize_situation(item_records: list, user_name: str, intel_items: list =
     else:
         intel_block = ""
 
+    if completed_actions:
+        # Cap to bound prompt size when a long-running cluster has racked up
+        # many done items.  Caller passes most-recent-first.
+        done_lines = []
+        for t in completed_actions[:12]:
+            desc = (t.get("user_edited_text") or t.get("description") or "").strip()
+            if not desc:
+                continue
+            owner = t.get("assigned_to") or t.get("owner") or ""
+            who   = f" ({owner})" if owner else ""
+            done_lines.append(f"- {desc}{who}")
+        completed_block = (
+            "Completed actions (treat as already done; do not re-raise):\n"
+            + "\n".join(done_lines) + "\n"
+        ) if done_lines else ""
+    else:
+        completed_block = ""
+
     fallback = {
         "title":        _fallback_title(item_records),
         "summary":      "Multiple related items detected across sources.",
@@ -229,9 +253,10 @@ def synthesize_situation(item_records: list, user_name: str, intel_items: list =
     try:
         text = llm.generate(
             SYNTHESIS_PROMPT.format(
-                user_name   = user_name or "the user",
-                items_block = items_block,
-                intel_block = intel_block,
+                user_name       = user_name or "the user",
+                items_block     = items_block,
+                intel_block     = intel_block,
+                completed_block = completed_block,
             ),
             format="json", temperature=0.1, num_predict=512, timeout=60,
             priority="feedback",
