@@ -1106,8 +1106,7 @@ tr.attn-low  { opacity:0.65; }
   z-index:1; position:relative;
 }
 .la-card:hover { border-color:var(--accent); z-index:2; }
-.la-board.dragging-card .la-card { pointer-events:none; }
-.la-card.dragging { cursor:grabbing; }
+.la-card.dragging { cursor:grabbing; opacity:.5; }
 .la-card.planned   { border-left:3px solid var(--muted); }
 .la-card.in_progress { border-left:3px solid var(--blue); }
 .la-card.done      { border-left:3px solid var(--green); opacity:.55; }
@@ -1121,7 +1120,6 @@ tr.attn-low  { opacity:0.65; }
 }
 .la-card .la-resize-handle.left  { left:-3px; }
 .la-card .la-resize-handle.right { right:-3px; }
-.la-card.dragging { opacity:.5; }
 .la-card .la-card-shift { font-size:9px; color:var(--muted); font-style:italic; }
 
 .la-overview-bar {
@@ -5595,7 +5593,7 @@ function _laRenderProjectBoard() {
     for (let i = 0; i < 14; i++) {
       const iso = _laAddDays(_LA.rangeStart, i);
       const cls = iso === todayISO ? 'la-day-cell today' : 'la-day-cell';
-      body += `<div class="${cls}" style="${span}"></div>`;
+      body += `<div class="${cls}" data-day-offset="${i}" style="${span}"></div>`;
     }
     laneCards.forEach((card, idx) => {
       body += _laRenderCardBar(card, startRow + assigned[idx]);
@@ -5704,44 +5702,47 @@ function _laJumpToProject(project, cardId) {
 // ── Drag-to-reschedule ────────────────────────────────────────────────────────
 
 function _laWireDragHandlers() {
-  // Use HTML5 drag; drop on a day cell to reschedule while preserving span.
+  // Use HTML5 drag; drop anywhere on the board and resolve the target day from
+  // pointer geometry so a card sitting on top of the cell doesn't swallow the
+  // drop. text/plain payload works across all browsers (Safari needs it).
   const board = document.querySelector('#laBoardWrap .la-board');
   if (!board) return;
   board.querySelectorAll('.la-card[draggable]').forEach(el => {
     el.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('text/card-id', el.dataset.cardId);
+      e.dataTransfer.setData('text/plain', el.dataset.cardId);
+      e.dataTransfer.effectAllowed = 'move';
       el.classList.add('dragging');
-      // Let drops pass through to the day-cells below every card, not just
-      // cells not covered by a card.
-      board.classList.add('dragging-card');
     });
-    el.addEventListener('dragend', () => {
-      el.classList.remove('dragging');
-      board.classList.remove('dragging-card');
-    });
+    el.addEventListener('dragend', () => el.classList.remove('dragging'));
   });
-  board.querySelectorAll('.la-day-cell').forEach((cell, idx) => {
-    // Lane grid layout: overdue gutter at idx 0, then 14 day cells per lane.
-    // idx%15 gives position within a lane (0 = overdue, 1..14 = day 0..13).
-    cell.addEventListener('dragover', (e) => e.preventDefault());
-    cell.addEventListener('drop', async (e) => {
-      e.preventDefault();
-      const id = e.dataTransfer.getData('text/card-id');
-      const pos = idx % 15;
-      if (!id || pos === 0) return;
-      const dayOffset = pos - 1;
-      const newStart  = _laAddDays(_LA.rangeStart, dayOffset);
-      const card = _LA.cards.find(c => c.id === id);
-      if (!card) return;
-      const span = _laDayDiff(card.start_date, card.end_date);
-      const newEnd = _laAddDays(newStart, Math.max(0, span));
-      try {
-        await api(`/lookahead/cards/${id}`, 'PATCH',
-                  { start_date: newStart, end_date: newEnd });
-        await _laLoadData();
-        renderLookahead();
-      } catch(err) { alert('Reschedule failed: ' + err.message); }
-    });
+  board.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  });
+  board.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    const id = e.dataTransfer.getData('text/plain');
+    if (!id) return;
+    // elementsFromPoint walks the z-stack, so we can skip over any card that
+    // happens to be under the cursor and land on the day cell beneath it.
+    const stack = document.elementsFromPoint(e.clientX, e.clientY);
+    const cell = stack.find(n => n.classList &&
+                                 n.classList.contains('la-day-cell') &&
+                                 !n.classList.contains('overdue-gutter'));
+    if (!cell) return;
+    const dayOffset = Number(cell.dataset.dayOffset);
+    if (!Number.isFinite(dayOffset)) return;
+    const newStart = _laAddDays(_LA.rangeStart, dayOffset);
+    const card = _LA.cards.find(c => c.id === id);
+    if (!card) return;
+    const span = _laDayDiff(card.start_date, card.end_date);
+    const newEnd = _laAddDays(newStart, Math.max(0, span));
+    try {
+      await api(`/lookahead/cards/${id}`, 'PATCH',
+                { start_date: newStart, end_date: newEnd });
+      await _laLoadData();
+      renderLookahead();
+    } catch(err) { alert('Reschedule failed: ' + err.message); }
   });
 }
 
