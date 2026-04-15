@@ -5719,24 +5719,6 @@ function _laWireDragHandlers() {
       // aim at the ghost but the cursor lands on a different day.
       const r = el.getBoundingClientRect();
       _LA._dragGrabOffsetX = e.clientX - r.left;
-      console.log('[la-drag] start', { cardId: el.dataset.cardId, grabOffsetX: _LA._dragGrabOffsetX, cardLeft: Math.round(r.left), cardWidth: Math.round(r.width) });
-      // Dump every day-cell's iso and x-range so we can see whether the
-      // day-cells the drop handler sees line up with where this card is.
-      const boards = document.querySelectorAll('.la-board');
-      console.log('[la-drag] boards found:', boards.length);
-      boards.forEach((b, bi) => {
-        const br = b.getBoundingClientRect();
-        console.log(`[la-drag] board[${bi}] classes="${b.className}" left=${Math.round(br.left)} right=${Math.round(br.right)} scrollLeft=${b.scrollLeft} parent.scrollLeft=${b.parentElement && b.parentElement.scrollLeft}`);
-        const cells = b.querySelectorAll('.la-day-cell[data-day-iso]');
-        const rows = {};
-        cells.forEach(c => {
-          const cr = c.getBoundingClientRect();
-          const key = cr.top;
-          rows[key] = rows[key] || [];
-          rows[key].push(`${c.dataset.dayIso}@${Math.round(cr.left)}-${Math.round(cr.right)}`);
-        });
-        Object.keys(rows).slice(0, 2).forEach(k => console.log(`[la-drag]   row top=${Math.round(k)}:`, rows[k].join(' | ')));
-      });
       el.classList.add('dragging');
     });
     el.addEventListener('dragend', () => el.classList.remove('dragging'));
@@ -5748,52 +5730,31 @@ function _laWireDragHandlers() {
   board.addEventListener('drop', async (e) => {
     e.preventDefault();
     const id = e.dataTransfer.getData('text/plain');
+    if (!id) return;
     // Shift the hit-test x by the grab offset so we find the cell under the
-    // LEFT edge of the drag ghost (which is what the user visually aims at),
-    // not the cursor itself.
-    const grabOffsetX = _LA._dragGrabOffsetX || 0;
-    const hitX = e.clientX - grabOffsetX;
-    console.log('[la-drop] fire', { id, cursorX: e.clientX, cursorY: e.clientY, grabOffsetX, hitX });
-    if (!id) { console.warn('[la-drop] no id in dataTransfer'); return; }
-    // Find the day cell whose on-screen rect actually contains the adjusted x.
+    // left edge of the drag ghost, which is what the user visually aims at.
+    const hitX = e.clientX - (_LA._dragGrabOffsetX || 0);
     let newStart = null;
-    let matchedCell = null;
-    const candidates = [];
     for (const cell of board.querySelectorAll('.la-day-cell[data-day-iso]')) {
       const r = cell.getBoundingClientRect();
-      const xIn = hitX >= r.left && hitX < r.right;
-      const yIn = e.clientY >= r.top && e.clientY < r.bottom;
-      if (xIn) {
-        candidates.push({
-          iso: cell.dataset.dayIso,
-          left: Math.round(r.left), right: Math.round(r.right),
-          top: Math.round(r.top), bottom: Math.round(r.bottom),
-          yIn,
-        });
-      }
-      if (xIn && yIn && !newStart) {
+      if (hitX >= r.left && hitX < r.right &&
+          e.clientY >= r.top && e.clientY < r.bottom) {
         newStart = cell.dataset.dayIso;
-        matchedCell = { iso: cell.dataset.dayIso, left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom) };
+        break;
       }
     }
-    console.log('[la-drop] x-candidates', candidates);
-    console.log('[la-drop] matchedCell', matchedCell);
-    if (!newStart) { console.warn('[la-drop] no cell under cursor — dropping'); return; }
+    if (!newStart) return;
     const card = _LA.cards.find(c => c.id === id);
-    if (!card) { console.warn('[la-drop] card not in _LA.cards', id); return; }
+    if (!card) return;
     const span = _laDayDiff(card.start_date, card.end_date);
     const newEnd = _laAddDays(newStart, Math.max(0, span));
-    console.log('[la-drop] plan', { was_start: card.start_date, was_end: card.end_date, newStart, newEnd, span });
-    if (newStart === card.start_date && newEnd === card.end_date) { console.log('[la-drop] noop — same dates'); return; }
+    if (newStart === card.start_date && newEnd === card.end_date) return;
     try {
-      const resp = await api(`/lookahead/cards/${id}`, 'PATCH',
+      await api(`/lookahead/cards/${id}`, 'PATCH',
                 { start_date: newStart, end_date: newEnd });
-      console.log('[la-drop] PATCH ok', { start_date: resp.start_date, end_date: resp.end_date });
       await _laLoadData();
-      const after = _LA.cards.find(c => c.id === id);
-      console.log('[la-drop] after reload', { start_date: after && after.start_date, end_date: after && after.end_date });
       renderLookahead();
-    } catch(err) { console.error('[la-drop] PATCH failed', err); alert('Reschedule failed: ' + err.message); }
+    } catch(err) { alert('Reschedule failed: ' + err.message); }
   });
 }
 
