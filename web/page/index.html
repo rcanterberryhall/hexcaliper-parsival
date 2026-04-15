@@ -5718,7 +5718,9 @@ function _laShowCardModal(card) {
   const bomRows = (card.resources || []).map((r, i) => `
     <div class="la-bom-row" data-bom-idx="${i}">
       <span style="flex:1">${esc(r.name)} <span style="color:var(--muted)">(${esc(r.type)})</span></span>
-      <span class="la-bom-status ${esc(r.status)}" onclick="_laCycleBom(${i})">${esc(r.status)}</span>
+      <span class="la-bom-status ${esc(r.status)}" onclick="_laCycleBom(${i})"
+            title="click to cycle: needed → secured → consumed"
+            style="cursor:pointer;user-select:none">${esc(r.status)}</span>
       <input type="number" step="0.5" min="0" value="${r.quantity}" data-qty="${i}"
              style="width:64px;padding:2px 4px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:11px">
       <button class="ia" style="padding:1px 6px;font-size:10px" onclick="_laRemoveBom(${i})">✕</button>
@@ -5835,10 +5837,31 @@ function _laShowCardModal(card) {
   if (card.id) _laLoadSuggestions(card.id);
 }
 
-function _laCycleBom(idx) {
+async function _laCycleBom(idx) {
   const states = ['needed','secured','consumed'];
   const r = _LA.editingCard.resources[idx];
   r.status = states[(states.indexOf(r.status) + 1) % states.length];
+  // Persist immediately for existing cards so the change sticks even if the
+  // user closes the modal without hitting Save (parsival#62). New cards
+  // keep the change in memory until Create; nothing to patch yet.
+  if (_LA.editingCard.id && r.resource_id) {
+    try {
+      await api(
+        `/lookahead/cards/${_LA.editingCard.id}/resources/${r.resource_id}`,
+        'PATCH',
+        { status: r.status },
+      );
+      // Mirror the new status onto the board-level cache so the
+      // "⚠ N missing" chip stays in sync without a full reload.
+      const boardCard = (_LA.cards || []).find(c => c.id === _LA.editingCard.id);
+      const boardRes = boardCard && (boardCard.resources || [])
+        .find(x => String(x.resource_id) === String(r.resource_id));
+      if (boardRes) boardRes.status = r.status;
+      renderLookahead();
+    } catch (e) {
+      alert('Failed to update resource status: ' + e.message);
+    }
+  }
   _laShowCardModal(_LA.editingCard);
 }
 
