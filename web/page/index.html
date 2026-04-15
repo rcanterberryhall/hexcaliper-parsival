@@ -1660,6 +1660,7 @@ tr.attn-low  { opacity:0.65; }
         <dt>Follow-up date</dt><dd>Set a date when the situation needs attention next. Situations in "waiting" status past their follow-up date surface at the top of the list with a visual indicator.</dd>
         <dt>Score</dt><dd>Composite urgency — higher means more attention needed now.</dd>
         <dt>Action items</dt><dd>Each situation card lists your action items inline. Completed items appear with a strikethrough and checkmark so you can see progress at a glance.</dd>
+        <dt>Completed work in the narrative</dt><dd>When the LLM re-synthesizes a situation, done todos attached to the cluster's items are fed in as "Completed actions (treat as already done; do not re-raise)". The narrative summary reflects the current state instead of restating finished work as pending, and the open-actions list no longer surfaces items you've already closed. Use <strong>↺ Resynth</strong> to pick up newly-completed work.</dd>
         <dt>Default filter</dt><dd>The list shows <strong>new</strong>, <strong>investigating</strong>, and <strong>waiting</strong> situations by default. Toggle to see resolved/dismissed.</dd>
         <dt>Transition log</dt><dd>Every status change is logged with timestamp and optional note.</dd>
       </dl>

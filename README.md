@@ -478,6 +478,8 @@ Resources are typed (`person`, `equipment`, `space`, `part`, `supply`) and share
 
 Open the board from the vertical tab rail. Use the toolbar to switch between overview and a specific project, filter by assignee / status / resource (including a "missing resources" preset that surfaces cards with unsecured BOM items), drag a card between days to reschedule, or click a card to edit its BOM and cross-system links. The "Resources" and "⚙ Shifts" buttons open catalog / schedule editors. Phase one is local-only; templates (#49) and LLM-driven cross-system linking (#50) land in follow-up issues.
 
+In the card editor, the assignee input autocompletes from both prior card assignees and the contacts table (`/contacts`) — typing "Jo" surfaces "Jose" even if no card has been assigned to them yet. BOM status badges in the card modal are click-to-cycle (`needed` → `secured` → `consumed`) and persist immediately via `PATCH /lookahead/cards/{card_id}/resources/{resource_id}`.
+
 The board is mobile-friendly — on narrow screens the 14-day grid collapses to a vertical day-list so the view works on foldables.
 
 ### Templates
@@ -489,8 +491,9 @@ Repeatable work can be saved as a **template**: a small graph of tasks with rela
 - **Reschedule** — PATCH an instance with a new `start_date` and every attached card shifts by the same delta (business-day templates stay aligned to weekdays).
 - **Detach** — `POST /lookahead/cards/{id}/detach` pops a card out of its instance so later reschedules leave it alone. The card itself stays.
 - **Auto-complete** — when every attached card reaches `status=done`, the instance flips to `complete` automatically.
+- **Opt-in upgrade** — after a template is edited, its existing instances report `outdated: true` alongside the new `template_current_version`. `POST /lookahead/instances/{id}/upgrade` re-applies the latest template: refreshes title / schedule / procedure-doc on existing cards, creates cards for newly-added tasks, leaves orphaned cards attached (their task was removed), rebuilds dependencies, and adds any newly-required named resources without touching user-edited BOM rows. Assignee, status, and notes are always preserved. The instances panel surfaces the version gap and an "Upgrade" button per instance so the user decides per cohort.
 
-Nested templates and "apply changes to active instance" are explicitly out of scope for v2; cross-system LLM linking lands with #50.
+Nested templates stay out of scope for v2; cross-system LLM linking lands with #50.
 
 ### Cross-system linking
 
@@ -564,6 +567,8 @@ Interactive docs: `http://localhost:8001/docs`
 ### Situations
 
 Situations are cross-source groupings of related analyses identified automatically by the correlation layer. Each situation has a composite urgency score, a lifecycle status, optional follow-up date, and a list of open actions.
+
+The narrative synthesizer is aware of completed work: when a situation is formed or re-synthesized, done todos attached to the cluster's items are fed into the prompt under a "Completed actions (treat as already done; do not re-raise)" block, so the `summary` reflects the current state instead of restating finished work as still pending, and `open_actions` no longer surfaces items the user has already closed.
 
 | Method   | Path                                  | Description                                                                        |
 |----------|---------------------------------------|------------------------------------------------------------------------------------|
@@ -712,10 +717,11 @@ See [Look-ahead board](#look-ahead-board) for an overview of the feature. All en
 | `PATCH`  | `/lookahead/templates/{id}`                       | Update template fields. Passing `tasks` replaces the whole task graph. `version` is bumped on every PATCH |
 | `DELETE` | `/lookahead/templates/{id}`                       | Delete a template. Existing instances keep their cards; cards' `template_instance_id` still points at the orphaned instance row |
 | `POST`   | `/lookahead/templates/{id}/instantiate`           | Materialise an instance. Body: `{"start_date", "project_tag", "owner"}`. Returns `{instance, cards}` |
-| `GET`    | `/lookahead/instances`                            | List instances (params: `project`, `status` — `active` / `complete` / `cancelled`)                |
+| `GET`    | `/lookahead/instances`                            | List instances (params: `project`, `status` — `active` / `complete` / `cancelled`). Each row carries `template_version`, `template_current_version`, and `outdated` so the UI can offer per-instance upgrades |
 | `GET`    | `/lookahead/instances/{id}`                       | Fetch an instance plus its attached cards                                                         |
 | `PATCH`  | `/lookahead/instances/{id}`                       | Reschedule the instance (`{"start_date"}`) or flip status. Reschedule shifts every attached card by the same delta |
 | `DELETE` | `/lookahead/instances/{id}`                       | Delete the instance and cascade-remove still-attached cards. Detached cards are left untouched    |
+| `POST`   | `/lookahead/instances/{id}/upgrade`               | Opt-in: re-apply the latest template version to the instance. Refreshes template-derived fields on existing cards, creates cards for newly-added tasks, preserves user edits (assignee, status, notes, added BOM rows). No-op if already current |
 | `POST`   | `/lookahead/cards/{id}/detach`                    | Remove a card from its template instance without deleting it. Future reschedules of the instance no longer move this card |
 | `GET`    | `/lookahead/cards/{id}/suggestions`               | List pending cross-system link suggestions for a card. Item suggestions include `target_title`, `target_source`, `target_url` |
 | `POST`   | `/lookahead/cards/{id}/annotate`                  | Run the LLM annotator synchronously for one card — surfaces related items from the same project as pending suggestions |
