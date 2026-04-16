@@ -1119,6 +1119,12 @@ tr.attn-low  { opacity:0.65; }
 .la-card.done      { border-left:3px solid var(--green); opacity:.55; }
 .la-card.blocked   { border-left:3px solid var(--red); }
 .la-card .la-card-title { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.la-card .la-card-notes {
+  font-size:10px; color:var(--muted); line-height:1.3;
+  overflow:hidden; text-overflow:ellipsis;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+  white-space:normal; word-break:break-word;
+}
 .la-card .la-card-meta { font-size:10px; color:var(--muted); display:flex; gap:6px; flex-wrap:wrap; }
 .la-card .la-chip { padding:0 5px; border-radius:3px; background:var(--bg); font-size:9px; letter-spacing:.04em; }
 .la-card .la-chip.bom-missing { background:rgba(230,80,80,.15); color:var(--red); }
@@ -5721,16 +5727,21 @@ function _laRenderProjectBoard() {
 
 function _laRenderCardBar(card, gridRow) {
   const statusCls = card.status || 'planned';
+  const notes = (card.notes || '').trim();
+  // Exclude the auto-managed 'todo' mirror link from the visible link count;
+  // it's always 1-per-card and not user-actionable.
+  const userLinks = (card.links || []).filter(l => l.type !== 'todo');
   return `<div class="la-card ${esc(statusCls)}" style="${_laBarStyle(card, gridRow)}" data-card-id="${esc(card.id)}" draggable="true"
               onclick="editLookaheadCard('${esc(card.id)}')">
     <div class="la-card-title">${esc(card.title)}</div>
+    ${notes ? `<div class="la-card-notes" title="${esc(notes)}">${esc(notes)}</div>` : ''}
     <div class="la-card-meta">
       ${card.assignee ? `<span>${esc(card.assignee)}</span>` : ''}
       ${_laShiftChip(card)}
       ${_laBomChip(card)}
       ${card.status === 'blocked' ? '<span class="la-chip" style="color:var(--red)">blocked</span>' : ''}
       ${card.linked_procedure_doc ? '<span class="la-chip" title="Has linked procedure doc" style="color:var(--blue)">📄</span>' : ''}
-      ${(card.links || []).length ? `<span class="la-chip" title="${card.links.length} linked item${card.links.length===1?'':'s'}" style="color:var(--accent)">🔗 ${card.links.length}</span>` : ''}
+      ${userLinks.length ? `<span class="la-chip" title="${userLinks.length} linked item${userLinks.length===1?'':'s'}" style="color:var(--accent)">🔗 ${userLinks.length}</span>` : ''}
     </div>
   </div>`;
 }
