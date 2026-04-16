@@ -1068,6 +1068,13 @@ tr.attn-low  { opacity:0.65; }
   color:var(--muted); border-radius:var(--r); cursor:pointer; font-size:11px;
 }
 .la-mode.active { color:var(--text); background:var(--surface2, var(--surface)); border-color:var(--accent); }
+.la-nav { display:flex; align-items:center; gap:4px; }
+.la-nav-btn {
+  padding:3px 9px; border:1px solid var(--border2); background:var(--bg);
+  color:var(--text); border-radius:var(--r); cursor:pointer; font-size:11px;
+}
+.la-nav-btn:hover { border-color:var(--accent); }
+.la-nav-range { margin-left:6px; font-size:11px; color:var(--muted); min-width:130px; }
 .la-empty { padding:40px 20px; text-align:center; color:var(--muted); font-size:12px; }
 .la-board-wrap { overflow-x:auto; padding:6px 0 12px; }
 .la-board {
@@ -1115,6 +1122,7 @@ tr.attn-low  { opacity:0.65; }
 .la-card .la-card-meta { font-size:10px; color:var(--muted); display:flex; gap:6px; flex-wrap:wrap; }
 .la-card .la-chip { padding:0 5px; border-radius:3px; background:var(--bg); font-size:9px; letter-spacing:.04em; }
 .la-card .la-chip.bom-missing { background:rgba(230,80,80,.15); color:var(--red); }
+.la-card .la-chip.multi-shift { background:rgba(64,184,255,.12); color:var(--blue); }
 .la-card .la-drag-handle, .la-card .la-resize-handle {
   position:absolute; top:0; bottom:0; width:6px; cursor:ew-resize;
 }
@@ -1362,6 +1370,12 @@ tr.attn-low  { opacity:0.65; }
         <div class="la-toolbar">
           <button class="la-mode active" id="laModeProject" onclick="setLookaheadMode('project')">Project</button>
           <button class="la-mode"        id="laModeOverview" onclick="setLookaheadMode('overview')">Overview</button>
+          <div class="la-nav">
+            <button class="la-nav-btn" onclick="_laShiftWindow(-14)" title="Previous two weeks">◀</button>
+            <button class="la-nav-btn" onclick="_laJumpToday()" title="Jump to current two-week window">Today</button>
+            <button class="la-nav-btn" onclick="_laShiftWindow(14)" title="Next two weeks">▶</button>
+            <span class="la-nav-range" id="laRangeLabel"></span>
+          </div>
           <select id="laProjectSel" onchange="onLookaheadProjectChange(this.value)">
             <option value="">— select project —</option>
           </select>
@@ -5383,11 +5397,51 @@ function _laFmtDayHead(iso) {
   return { dow, num: d };
 }
 
+function _laFmtRangeLabel(startIso, endIso) {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const [sy,sm,sd] = startIso.split('-').map(Number);
+  const [ey,em,ed] = endIso.split('-').map(Number);
+  const s = `${months[sm-1]} ${sd}`;
+  const e = sy === ey ? `${months[em-1]} ${ed}` : `${months[em-1]} ${ed}, ${ey}`;
+  return `${s} – ${e}`;
+}
+
+function _laSundayOnOrBefore(d) {
+  // Align to the Sunday of the calendar week containing ``d``. Date math
+  // uses local days so DST transitions don't offset the boundary.
+  const out = new Date(d);
+  out.setHours(0,0,0,0);
+  out.setDate(out.getDate() - out.getDay());
+  return out;
+}
+
+function _laSetWindow(startDate) {
+  // Anchor the 14-day window to a Sunday so it always covers two full
+  // Sun-Sat calendar weeks.
+  const sun = _laSundayOnOrBefore(startDate);
+  _LA.rangeStart = _laISO(sun);
+  _LA.rangeEnd   = _laISO(new Date(sun.getTime() + 13 * 86400000));
+  const lbl = document.getElementById('laRangeLabel');
+  if (lbl) lbl.textContent = _laFmtRangeLabel(_LA.rangeStart, _LA.rangeEnd);
+}
+
+function _laShiftWindow(deltaDays) {
+  const [y,m,d] = _LA.rangeStart.split('-').map(Number);
+  const next = new Date(y, m-1, d + deltaDays);
+  _laSetWindow(next);
+  _laLoadData().then(renderLookahead);
+}
+
+function _laJumpToday() {
+  _laSetWindow(_laToday());
+  _laLoadData().then(renderLookahead);
+}
+
 async function loadLookahead() {
   // Resolve window once per view open; reloads keep the same calendar range.
-  const today = _laToday();
-  _LA.rangeStart = _laISO(today);
-  _LA.rangeEnd   = _laISO(new Date(today.getTime() + 13 * 86400000));
+  // The window always covers two full Sun-Sat weeks containing today; the
+  // user can shift it backward/forward in 14-day increments via the toolbar.
+  _laSetWindow(_laToday());
   await _laRefreshProjects();
   // Restore sticky selection if valid; else fall through to first project.
   const saved = localStorage.getItem('la.project');
@@ -5564,13 +5618,30 @@ function _laPackLane(cards) {
   return { assigned, subrowCount: Math.max(1, subrowEnds.length) };
 }
 
+function _laShiftLabel(n) {
+  // Prefer the configured label; fall back to "shift N".
+  const s = _LA.shifts[n];
+  return (s && s.label) ? s.label : `shift ${n}`;
+}
+
 function _laShiftChip(card) {
-  const s = _LA.shifts[card.start_shift_num];
-  if (s && s.label) {
-    const range = (s.start_time && s.end_time) ? ` ${s.start_time}–${s.end_time}` : '';
-    return `<span class="la-chip">${esc(s.label)}${esc(range)}</span>`;
+  // start_shift_num and end_shift_num delimit the inclusive range of shifts
+  // the task occupies. When equal, show the single shift (with time range if
+  // configured). When different, render each shift so it's visible that the
+  // task spans more than one — e.g. "shift 1 / shift 2" or "Morning / Second".
+  const lo = Math.min(card.start_shift_num, card.end_shift_num || card.start_shift_num);
+  const hi = Math.max(card.start_shift_num, card.end_shift_num || card.start_shift_num);
+  if (lo === hi) {
+    const s = _LA.shifts[lo];
+    if (s && s.label) {
+      const range = (s.start_time && s.end_time) ? ` ${s.start_time}–${s.end_time}` : '';
+      return `<span class="la-chip">${esc(s.label)}${esc(range)}</span>`;
+    }
+    return `<span class="la-chip">shift ${lo}</span>`;
   }
-  return `<span class="la-chip">shift ${card.start_shift_num}</span>`;
+  const labels = [];
+  for (let n = lo; n <= hi; n++) labels.push(_laShiftLabel(n));
+  return `<span class="la-chip multi-shift" title="Occupies shifts ${lo}–${hi}">${esc(labels.join(' / '))}</span>`;
 }
 
 function _laBomChip(card) {
@@ -5871,18 +5942,21 @@ function _laShowCardModal(card) {
         <label>Start date</label>
         <input id="laCardStart" type="date" value="${esc(card.start_date)}">
       </div>
-      <div class="la-field" style="max-width:100px">
-        <label>Shift</label>
+      <div class="la-field" style="max-width:120px">
+        <label title="First shift the task occupies. Set equal to End shift for a single-shift task.">Start shift</label>
         <select id="laCardStartShift">${[1,2,3].map(n => `<option value="${n}" ${n===card.start_shift_num?'selected':''}>${n}</option>`).join('')}</select>
       </div>
       <div class="la-field">
         <label>End date</label>
         <input id="laCardEnd" type="date" value="${esc(card.end_date)}">
       </div>
-      <div class="la-field" style="max-width:100px">
-        <label>Shift</label>
+      <div class="la-field" style="max-width:120px">
+        <label title="Last shift the task occupies. Combine with Start shift to span multiple shifts on the same day, e.g. 1 + 2.">End shift</label>
         <select id="laCardEndShift">${[1,2,3].map(n => `<option value="${n}" ${n===card.end_shift_num?'selected':''}>${n}</option>`).join('')}</select>
       </div>
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin:-4px 0 8px 2px">
+      Shifts are an inclusive range: set both equal for a single-shift task, or pick different start/end shifts (e.g. 1 &amp; 2) for a task that spans multiple shifts.
     </div>
     <div class="la-field-row">
       <div class="la-field">

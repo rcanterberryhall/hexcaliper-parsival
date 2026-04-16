@@ -219,6 +219,21 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
         )
     """)
 
+    # Slack scan dedup (parsival#69): record every message (team, channel, ts)
+    # once we've surfaced it, so subsequent scans skip messages the user has
+    # already seen. Without this, the channel/DM path emitted a fresh item
+    # every scan (keyed by the latest msg ts), regenerating the same todos.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS slack_seen_messages (
+            team       TEXT NOT NULL DEFAULT '',
+            channel_id TEXT NOT NULL,
+            ts         TEXT NOT NULL,
+            seen_at    TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (team, channel_id, ts)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_slack_seen_chan ON slack_seen_messages(channel_id)")
+
 
 def _create_schema(c: sqlite3.Connection) -> None:
     """Create all tables and indexes if they do not already exist."""
@@ -2491,6 +2506,58 @@ def decide_card_suggestion(suggestion_id: int, decision: str) -> Optional[dict]:
         "SELECT * FROM lookahead_card_link_suggestions WHERE id = ?",
         (int(suggestion_id),),
     ).fetchone())
+
+
+# ── Slack scan dedup (parsival#69) ────────────────────────────────────────────
+
+def slack_unseen_message_ts(team: str, channel_id: str,
+                            ts_list: list[str]) -> set[str]:
+    """
+    Return the subset of ``ts_list`` that has not yet been recorded as seen
+    for the given ``(team, channel_id)``.
+
+    Used by ``connector_slack._fetch_for_token`` to keep only newly-surfaced
+    messages in each scan.  The connector calls this to filter the raw
+    channel/DM/mention message list before building a ``RawItem``; if the
+    filtered list is empty no item is emitted.
+
+    :param team: Slack workspace name, or ``""`` for the legacy bot path.
+    :param channel_id: Slack channel ID (``C...``, ``D...``, or ``G...``).
+    :param ts_list: Message timestamps to test (native Slack ``ts`` strings).
+    :return: Set of ts strings that are not yet in ``slack_seen_messages``.
+    """
+    if not ts_list:
+        return set()
+    c = conn()
+    placeholders = ",".join(["?"] * len(ts_list))
+    rows = c.execute(
+        f"SELECT ts FROM slack_seen_messages WHERE team = ? AND channel_id = ? "
+        f"AND ts IN ({placeholders})",
+        (team, channel_id, *ts_list),
+    ).fetchall()
+    seen = {row["ts"] for row in rows}
+    return {ts for ts in ts_list if ts not in seen}
+
+
+def slack_mark_messages_seen(team: str, channel_id: str,
+                             ts_list: list[str]) -> None:
+    """
+    Record ``(team, channel_id, ts)`` tuples as already surfaced.
+
+    Called by the Slack connector right after it emits a ``RawItem`` built
+    from ``ts_list`` so subsequent scans can skip those messages.  Uses
+    ``INSERT OR IGNORE`` to stay idempotent — re-calling with the same
+    timestamps is a no-op.
+    """
+    if not ts_list:
+        return
+    now = _now_iso()
+    c = conn()
+    c.executemany(
+        "INSERT OR IGNORE INTO slack_seen_messages "
+        "(team, channel_id, ts, seen_at) VALUES (?, ?, ?, ?)",
+        [(team, channel_id, ts, now) for ts in ts_list],
+    )
 
 
 def candidate_items_for_card(project: str, start_date: str, end_date: str,

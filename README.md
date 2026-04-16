@@ -130,6 +130,8 @@ Connect your Slack workspaces via the Settings page (OAuth flow) to use per-user
 
 Required OAuth user scopes: `channels:history` `channels:read` `groups:history` `groups:read` `im:history` `im:read` `mpim:history` `mpim:read` `search:read` `users:read`
 
+Every message the connector surfaces is recorded in the `slack_seen_messages` table, so subsequent scans skip timestamps it has already ingested. Channel and DM aggregate items use a stable `(team, channel)` id and are only emitted when there's genuinely new content — todos you've already acted on are not re-created the next time the scheduler fires.
+
 ### Microsoft Teams
 
 | Variable              | Description                                              |
@@ -468,7 +470,7 @@ Both sidecars POST to `/page/api/ingest`. The API deduplicates by message ID so 
 
 ## Look-ahead board
 
-A two-week planning view that sits alongside todos, situations, and intel. Each project gets its own 14-day board; a global overview rolls up every project sorted by the earliest card start. Cards are UUID-keyed, carry a status (`planned`, `in_progress`, `done`, `blocked`), optional assignee, start/end date + shift, and three kinds of relations:
+A two-week planning view that sits alongside todos, situations, and intel. Each project gets its own 14-day board anchored to a Sun–Sat calendar week — the window always covers two full calendar weeks and can be paged back/forward in 2-week increments via the `◀ Today ▶` toolbar controls. A global overview rolls up every project sorted by the earliest card start. Cards are UUID-keyed, carry a status (`planned`, `in_progress`, `done`, `blocked`), optional assignee, start/end date + shift, and three kinds of relations:
 
 A color legend below the toolbar explains the visual encoding: card status is shown as a colored left border (gray = planned, blue = in progress, green = done, red = blocked), today's column has an amber tint, overdue cards sit in a red-bordered gutter, and missing-resource chips use a red highlight.
 
@@ -476,7 +478,7 @@ A color legend below the toolbar explains the visual encoding: card status is sh
 - **Links** — cross-system references to `todo`, `situation`, or `key_date` targets
 - **Resources (BOM)** — entries from the global resource catalog with a per-card status of `needed` / `secured` / `consumed`
 
-Resources are typed (`person`, `equipment`, `space`, `part`, `supply`) and shared across all projects. Each project owns its own shift schedule (up to 6 shifts per day with human-readable `HH:MM` start/end and a comma-separated day-of-week mask like `M,T,W,Th,F`).
+Resources are typed (`person`, `equipment`, `space`, `part`, `supply`) and shared across all projects. Each project owns its own shift schedule (up to 6 shifts per day with human-readable `HH:MM` start/end and a comma-separated day-of-week mask like `M,T,W,Th,F`). A card's `start_shift_num` and `end_shift_num` delimit the inclusive range of shifts the task occupies, so a single card can span multiple shifts (e.g. shift 1 + 2 on the same day) or stay confined to a single shift across multiple days (e.g. 2nd-shift-only for three days); multi-shift cards render a blue range chip on the board to make the span visible at a glance.
 
 Open the board from the vertical tab rail. Use the toolbar to switch between overview and a specific project, filter by assignee / status / resource (including a "missing resources" preset that surfaces cards with unsecured BOM items), drag a card between days to reschedule, or click a card to edit its BOM and cross-system links. The "Resources" and "⚙ Shifts" buttons open catalog / schedule editors. Phase one is local-only; templates (#49) and LLM-driven cross-system linking (#50) land in follow-up issues.
 

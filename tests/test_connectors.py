@@ -96,6 +96,88 @@ def test_slack_returns_empty_on_api_error(monkeypatch):
     assert items == []
 
 
+# ── Slack dedup (parsival#69) ─────────────────────────────────────────────────
+
+def test_slack_unseen_filter_roundtrip():
+    import db
+    db.conn().execute("DELETE FROM slack_seen_messages")
+    ts_list = ["100.0", "200.0", "300.0"]
+    # Nothing marked yet → all unseen
+    assert db.slack_unseen_message_ts("W1", "C1", ts_list) == set(ts_list)
+    db.slack_mark_messages_seen("W1", "C1", ["100.0", "200.0"])
+    # Only the unmarked one comes back
+    assert db.slack_unseen_message_ts("W1", "C1", ts_list) == {"300.0"}
+    # Scoping by (team, channel) — same ts in another channel is unaffected
+    assert db.slack_unseen_message_ts("W1", "C2", ts_list) == set(ts_list)
+    # Idempotent re-mark
+    db.slack_mark_messages_seen("W1", "C1", ["100.0"])
+    assert db.slack_unseen_message_ts("W1", "C1", ts_list) == {"300.0"}
+
+
+def test_slack_fetch_skips_already_seen_channel(monkeypatch):
+    """Channel where every message has been seen in a prior scan emits nothing."""
+    import db
+    db.conn().execute("DELETE FROM slack_seen_messages")
+    monkeypatch.setattr(config, "SLACK_USER_TOKENS", [])
+    monkeypatch.setattr(config, "SLACK_BOT_TOKEN", "xoxb-real")
+    monkeypatch.setattr(config, "LOOKBACK_HOURS", 48)
+    monkeypatch.setattr(config, "SLACK_CHANNELS", [])
+
+    # Pre-mark the two msg timestamps as already seen; legacy path uses "" team.
+    db.slack_mark_messages_seen("", "CABC", ["1700000000.0", "1700000100.0"])
+
+    def fake_get_impl(token, endpoint, params=None):
+        if endpoint == "auth.test":
+            return {"ok": True, "user_id": "UBOT", "team": "T1"}
+        if endpoint == "conversations.list":
+            return {"ok": True, "channels": [{"id": "CABC", "name": "general"}]}
+        if endpoint == "conversations.history":
+            return {"ok": True, "messages": [
+                {"ts": "1700000100.0", "text": "<@UBOT> ping",   "user": "U1"},
+                {"ts": "1700000000.0", "text": "<@UBOT> older",  "user": "U1"},
+            ]}
+        return {"ok": True}
+
+    with patch("connector_slack._get", side_effect=fake_get_impl):
+        items = connector_slack.fetch()
+
+    assert items == []
+
+
+def test_slack_fetch_emits_only_new_messages(monkeypatch):
+    """Only the unseen message becomes a RawItem; its ts is then marked seen."""
+    import db
+    db.conn().execute("DELETE FROM slack_seen_messages")
+    monkeypatch.setattr(config, "SLACK_USER_TOKENS", [])
+    monkeypatch.setattr(config, "SLACK_BOT_TOKEN", "xoxb-real")
+    monkeypatch.setattr(config, "LOOKBACK_HOURS", 48)
+    monkeypatch.setattr(config, "SLACK_CHANNELS", [])
+
+    db.slack_mark_messages_seen("", "CABC", ["1700000000.0"])
+
+    def fake_get_impl(token, endpoint, params=None):
+        if endpoint == "auth.test":
+            return {"ok": True, "user_id": "UBOT", "team": "T1"}
+        if endpoint == "conversations.list":
+            return {"ok": True, "channels": [{"id": "CABC", "name": "general"}]}
+        if endpoint == "conversations.history":
+            return {"ok": True, "messages": [
+                {"ts": "1700000100.0", "text": "<@UBOT> new",   "user": "U1"},
+                {"ts": "1700000000.0", "text": "<@UBOT> older", "user": "U1"},
+            ]}
+        if endpoint == "users.info":
+            return {"ok": True, "user": {"real_name": "Alice"}}
+        return {"ok": True}
+
+    with patch("connector_slack._get", side_effect=fake_get_impl):
+        items = connector_slack.fetch()
+
+    assert len(items) == 1
+    assert items[0].item_id == "CABC_1700000100.0"
+    # Connector records the new ts so a subsequent scan doesn't re-emit it.
+    assert db.slack_unseen_message_ts("", "CABC", ["1700000100.0"]) == set()
+
+
 # ── Jira ──────────────────────────────────────────────────────────────────────
 
 def test_jira_skips_when_not_configured(monkeypatch):

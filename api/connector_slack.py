@@ -25,6 +25,7 @@ import requests
 from datetime import datetime, timedelta, timezone
 from models import RawItem
 import config
+import db
 
 log = logging.getLogger(__name__)
 
@@ -184,6 +185,10 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
     log.info("%s: my_uid=%s, cutoff=%s", team, my_uid, datetime.fromtimestamp(cutoff_ts, tz=timezone.utc).isoformat())
 
     # ── 1. @mentions via search API ──────────────────────────────────────────
+    # Mentions use a per-message item_id (stable across scans) so todo dedup
+    # via ``todo_exists(item_id, description)`` works naturally.  We still
+    # consult ``slack_seen_messages`` to skip LLM work on mentions surfaced
+    # in an earlier scan.
     try:
         search_result = _get(token, "search.messages", {
             "query":    f"<@{my_uid}>",
@@ -194,30 +199,51 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
         matches = search_result.get("messages", {}).get("matches", [])
         log.info("%s: mentions search: %d total matches", team, len(matches))
 
+        # Group mentions by channel so we can run one unseen-filter query per
+        # channel instead of one per message.
+        by_channel: dict[str, list[dict]] = {}
         for m in matches:
-            ts = float(m.get("ts", 0))
-            if ts < cutoff_ts:
+            ch_id = m.get("channel", {}).get("id", "")
+            by_channel.setdefault(ch_id, []).append(m)
+
+        for ch_id, msgs in by_channel.items():
+            ts_candidates = [m["ts"] for m in msgs
+                             if float(m.get("ts", 0)) >= cutoff_ts]
+            unseen = db.slack_unseen_message_ts(team, ch_id, ts_candidates)
+            if not unseen:
                 continue
-            mid = f"mention_{my_uid}_{m['ts']}"
-            if mid in seen:
-                continue
-            seen.add(mid)
-            ch = m.get("channel", {})
-            items.append(RawItem(
-                source    = "slack",
-                item_id   = mid,
-                title     = f"[@mention] #{ch.get('name','?')} ({team}): {m.get('text','')[:80]}",
-                body      = m.get("text", "")[:3000],
-                url       = m.get("permalink", f"https://slack.com/app_redirect?channel={ch.get('id','')}"),
-                author    = _username(token, m.get("user", "?"), cache),
-                timestamp = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
-                metadata  = {"channel": ch.get("name", ""), "workspace": team, "type": "mention"},
-            ))
+            new_ts_for_channel = []
+            for m in msgs:
+                if m["ts"] not in unseen:
+                    continue
+                mid = f"mention_{my_uid}_{m['ts']}"
+                if mid in seen:
+                    continue
+                seen.add(mid)
+                ts = float(m["ts"])
+                ch = m.get("channel", {})
+                items.append(RawItem(
+                    source    = "slack",
+                    item_id   = mid,
+                    title     = f"[@mention] #{ch.get('name','?')} ({team}): {m.get('text','')[:80]}",
+                    body      = m.get("text", "")[:3000],
+                    url       = m.get("permalink", f"https://slack.com/app_redirect?channel={ch.get('id','')}"),
+                    author    = _username(token, m.get("user", "?"), cache),
+                    timestamp = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                    metadata  = {"channel": ch.get("name", ""), "workspace": team, "type": "mention"},
+                ))
+                new_ts_for_channel.append(m["ts"])
+            if new_ts_for_channel:
+                db.slack_mark_messages_seen(team, ch_id, new_ts_for_channel)
     except Exception as e:
         log.error("%s: mentions: %s", team, e)
 
     # ── 2. Direct messages and group DMs ─────────────────────────────────────
-    # DMs are not filtered by cutoff — always surface the most recent thread.
+    # One aggregate item per DM conversation.  item_id is the (team, channel)
+    # pair so todo dedup keyed on ``(item_id, description)`` works across
+    # scans; the body is rebuilt from ONLY the messages the user hasn't seen
+    # yet, so the LLM isn't re-analysing the same thread after the user has
+    # already acted on it (parsival#69).
     try:
         channels = _get(token, "conversations.list", {
             "types":            "im,mpim",
@@ -239,27 +265,35 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
             if not msgs:
                 continue
 
-            # Build a single RawItem per DM conversation with full context.
+            unseen = db.slack_unseen_message_ts(
+                team, ch_id, [m["ts"] for m in msgs]
+            )
+            new_msgs = [m for m in msgs if m["ts"] in unseen]
+            if not new_msgs:
+                continue
+
+            # Build a single RawItem per DM conversation from the unseen msgs.
             lines = []
-            for msg in reversed(msgs):
+            for msg in reversed(new_msgs):
                 sender = _username(token, msg.get("user", "?"), cache)
                 lines.append(f"[{sender}]: {msg.get('text', '')}")
 
-            mid = f"dm_{ch_id}_{msgs[0]['ts']}"
+            mid = f"dm_{team}_{ch_id}"
             if mid in seen:
                 continue
             seen.add(mid)
-            first_ts = float(msgs[0]["ts"])
+            first_ts = float(new_msgs[0]["ts"])
             items.append(RawItem(
                 source    = "slack",
                 item_id   = mid,
-                title     = f"[DM] ({team}): {msgs[0].get('text','')[:70]}",
+                title     = f"[DM] ({team}): {new_msgs[0].get('text','')[:70]}",
                 body      = "\n".join(lines)[:3000],
                 url       = f"https://slack.com/app_redirect?channel={ch_id}",
-                author    = _username(token, msgs[0].get("user", "?"), cache),
+                author    = _username(token, new_msgs[0].get("user", "?"), cache),
                 timestamp = datetime.fromtimestamp(first_ts, tz=timezone.utc).isoformat(),
                 metadata  = {"workspace": team, "type": "dm"},
             ))
+            db.slack_mark_messages_seen(team, ch_id, [m["ts"] for m in new_msgs])
     except Exception as e:
         log.error("%s: DMs: %s", team, e)
 
@@ -313,18 +347,30 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 if not msgs:
                     continue
 
-            log.info("%s: #%s: %d msgs — including", team, ch_name, len(msgs))
+            # Filter out messages we've already surfaced in a previous scan so
+            # the LLM only re-analyses when there's genuinely new content in
+            # the channel (parsival#69).
+            unseen = db.slack_unseen_message_ts(
+                team, ch_id, [m["ts"] for m in msgs]
+            )
+            new_msgs = [m for m in msgs if m["ts"] in unseen]
+            if not new_msgs:
+                continue
+
+            log.info("%s: #%s: %d new msgs — including", team, ch_name, len(new_msgs))
 
             lines = []
-            for msg in reversed(msgs):
+            for msg in reversed(new_msgs):
                 sender = _username(token, msg.get("user", "?"), cache)
                 lines.append(f"[{sender}]: {msg.get('text', '')}")
 
-            mid = f"ch_{ch_id}_{msgs[0]['ts']}"
+            # Stable item_id per (team, channel) so upserts land on the same
+            # items row and todo_exists() dedup kicks in.
+            mid = f"ch_{team}_{ch_id}"
             if mid in seen:
                 continue
             seen.add(mid)
-            first_ts = float(msgs[0]["ts"])
+            first_ts = float(new_msgs[0]["ts"])
             items.append(RawItem(
                 source    = "slack",
                 item_id   = mid,
@@ -341,6 +387,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                     "project_tag": ch_project,
                 },
             ))
+            db.slack_mark_messages_seen(team, ch_id, [m["ts"] for m in new_msgs])
     except Exception as e:
         log.error("%s: channels: %s", team, e)
 
@@ -413,10 +460,19 @@ def fetch() -> list[RawItem]:
                 log.error("#%s: %s", ch_name, e)
                 continue
 
-            for msg in msgs:
+            # Skip messages already surfaced in a previous scan.  The legacy
+            # path uses a per-message item_id so todo dedup is already stable;
+            # the seen filter just avoids redundant LLM work (parsival#69).
+            candidates = [
+                m for m in msgs
+                if is_im or f"<@{bot_uid}>" in m.get("text", "")
+            ]
+            unseen = db.slack_unseen_message_ts(
+                "", ch_id, [m["ts"] for m in candidates]
+            )
+            candidates = [m for m in candidates if m["ts"] in unseen]
+            for msg in candidates:
                 text = msg.get("text", "")
-                if not (is_im or f"<@{bot_uid}>" in text):
-                    continue
                 body = text
                 if msg.get("reply_count", 0) > 0:
                     try:
@@ -437,6 +493,10 @@ def fetch() -> list[RawItem]:
                     timestamp = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
                     metadata  = {"channel": ch_name, "is_dm": is_im},
                 ))
+            if candidates:
+                db.slack_mark_messages_seen(
+                    "", ch_id, [m["ts"] for m in candidates]
+                )
     except Exception as e:
         log.error("legacy error: %s", e)
 
