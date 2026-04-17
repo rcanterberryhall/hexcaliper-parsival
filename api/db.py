@@ -808,6 +808,46 @@ def todo_exists(item_id: str, description: str) -> bool:
     return row is not None
 
 
+def _normalize_todo_description(text: str) -> str:
+    """Normalize a todo description for conversation-scoped dedup.
+
+    Lowercases, collapses internal whitespace, strips trailing
+    punctuation (``.!,;:``).  Intended to catch trivial rewrites the
+    LLM emits across replies in the same thread.
+    """
+    if not text:
+        return ""
+    collapsed = " ".join(text.split())
+    return collapsed.lower().rstrip(".!,;: ")
+
+
+def todo_exists_in_conversation(conversation_id: str, description: str) -> bool:
+    """Return True if any todo linked to an item in ``conversation_id``
+    has a description that normalizes to the same string as ``description``.
+
+    Covers the reply-chain dedup case where each message has its own
+    ``item_id`` but the LLM re-extracts the same action on every reply
+    (see squire#77).  Falls back cleanly — an empty or missing
+    ``conversation_id`` returns False so callers can layer this check
+    in front of the existing item-scoped ``todo_exists``.
+    """
+    if not conversation_id:
+        return False
+    target = _normalize_todo_description(description)
+    if not target:
+        return False
+    rows = conn().execute(
+        "SELECT todos.description FROM todos "
+        "JOIN items ON items.item_id = todos.item_id "
+        "WHERE items.conversation_id = ?",
+        (conversation_id,),
+    ).fetchall()
+    for row in rows:
+        if _normalize_todo_description(row["description"]) == target:
+            return True
+    return False
+
+
 def insert_todo(data: dict) -> int:
     """Insert a todo row and return its auto-generated id."""
     c    = conn()

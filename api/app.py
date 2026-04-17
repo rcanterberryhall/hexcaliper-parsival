@@ -641,6 +641,15 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
 
         if a.has_action and a.category != "fyi":
             for item in a.action_items:
+                # squire#77: reply chains produce distinct item_ids for each
+                # message, so the item-scoped check alone lets the LLM's
+                # re-extracted action slip through as duplicates.  When the
+                # source provides a conversation_id, also check across every
+                # item in that thread using a normalized-description match.
+                if a.conversation_id and db.todo_exists_in_conversation(
+                    a.conversation_id, item.description
+                ):
+                    continue
                 if not db.todo_exists(a.item_id, item.description):
                     # Auto-assign when the LLM identifies the task belongs to
                     # someone other than the user.  Resolve their email from
