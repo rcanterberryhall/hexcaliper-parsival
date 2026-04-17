@@ -126,6 +126,65 @@ def test_sync_path_allows_concurrent_llm_calls():
             assert not t1.is_alive() and not t2.is_alive()
 
 
+def test_single_ingest_batch_fans_out_over_merllm(monkeypatch):
+    """One ``process_ingest_items`` call must fan its items out concurrently.
+
+    parsival#75: parsival was looping items sequentially, so merLLM's
+    scheduler only ever saw one outstanding job and routed every call to
+    the same GPU slot. A batch of 4 items must land at least 2 analyze()
+    calls in flight at once so both GPUs can be utilised.
+    """
+    monkeypatch.setenv("INGEST_CONCURRENCY", "4")
+
+    in_flight = 0
+    in_flight_lock = threading.Lock()
+    concurrent_peak = 0
+    arrivals = threading.Event()
+    arrivals_count = 0
+    arrivals_lock = threading.Lock()
+    release = threading.Event()
+
+    def fake_analyze(item, **_kwargs):
+        nonlocal in_flight, concurrent_peak, arrivals_count
+        with in_flight_lock:
+            in_flight += 1
+            if in_flight > concurrent_peak:
+                concurrent_peak = in_flight
+        with arrivals_lock:
+            arrivals_count += 1
+            if arrivals_count >= 2:
+                arrivals.set()
+        released = release.wait(timeout=5.0)
+        with in_flight_lock:
+            in_flight -= 1
+        assert released, "release event was never signalled — test deadlocked"
+        return _analysis(item.item_id)
+
+    with patch("orchestrator.analyze", side_effect=fake_analyze), \
+         patch.object(orchestrator, "_save_analysis", lambda *a, **k: None), \
+         patch.object(orchestrator, "_spawn_situation_task", lambda *a, **k: None), \
+         patch("orchestrator.graph.index_item", lambda *a, **k: None):
+
+        worker = threading.Thread(
+            target=orchestrator.process_ingest_items,
+            args=([_raw("a"), _raw("b"), _raw("c"), _raw("d")],),
+        )
+        worker.start()
+        try:
+            assert arrivals.wait(timeout=5.0), (
+                "Only one analyze() call was in flight — parsival is "
+                "serialising items inside a single ingest batch. "
+                "parsival#75: fan items out so merLLM sees >1 job."
+            )
+            assert concurrent_peak >= 2, (
+                f"concurrent_peak={concurrent_peak}, expected >= 2"
+            )
+        finally:
+            release.set()
+            worker.join(timeout=5.0)
+            assert not worker.is_alive()
+
+
 def test_orchestrator_has_no_concurrency_semaphore():
     """Module-level guard: ``_sem`` and ``get_sem`` must stay deleted.
 
