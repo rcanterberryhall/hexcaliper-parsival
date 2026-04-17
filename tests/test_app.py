@@ -468,6 +468,52 @@ def test_save_analysis_does_not_duplicate_todos():
     assert len(todos.all()) == 1
 
 
+def _make_thread_analysis(item_id, conversation_id, description):
+    action = ActionItem(description=description, deadline=None, owner="me")
+    a = _make_analysis(item_id, has_action=True, category="task",
+                       action_items=[action])
+    a.conversation_id = conversation_id
+    return a
+
+
+def test_save_analysis_dedups_todos_across_reply_chain():
+    """squire#77: two items in the same conversation_id with the same
+    action description must only produce one todo, even though their
+    item_ids differ."""
+    _save_analysis(_make_thread_analysis("m1", "conv-1", "Order the part"))
+    _save_analysis(_make_thread_analysis("m2", "conv-1", "Order the part"))
+    assert len(todos.all()) == 1
+
+
+def test_save_analysis_dedups_normalized_rewrites_within_conversation():
+    """Case, whitespace, and trailing-punctuation differences must collapse
+    to a single todo when they share a conversation_id."""
+    _save_analysis(_make_thread_analysis(
+        "m1", "conv-2", "Order the part."
+    ))
+    _save_analysis(_make_thread_analysis(
+        "m2", "conv-2", "order  the part"
+    ))
+    assert len(todos.all()) == 1
+
+
+def test_save_analysis_does_not_dedup_across_different_conversations():
+    """Same description in two different conversations must still
+    produce two todos — dedup is conversation-scoped, not global."""
+    _save_analysis(_make_thread_analysis("m1", "conv-A", "Order the part"))
+    _save_analysis(_make_thread_analysis("m2", "conv-B", "Order the part"))
+    assert len(todos.all()) == 2
+
+
+def test_save_analysis_skips_conversation_dedup_when_id_missing():
+    """Items without a conversation_id (e.g. some connectors) must fall
+    back to the existing item-scoped check — two different item_ids with
+    the same description still produce two todos."""
+    _save_analysis(_make_thread_analysis("m1", "", "Order the part"))
+    _save_analysis(_make_thread_analysis("m2", "", "Order the part"))
+    assert len(todos.all()) == 2
+
+
 def test_save_analysis_does_not_duplicate_intel():
     """Calling _save_analysis twice with the same information_item must produce
     exactly one intel row."""
