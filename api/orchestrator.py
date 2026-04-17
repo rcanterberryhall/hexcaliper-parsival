@@ -29,9 +29,11 @@ returning 429s (or its tracked queue blocking) — not a parsival-side
 pre-throttle that has to be kept in sync by hand every time the GPU
 topology changes.
 """
+import os
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import logging
@@ -74,6 +76,17 @@ _generate_briefing          = None
 # only: on restart we lose the set, but lost items then reappear via the
 # sidecar's normal lookback window, which is the correct behaviour.
 _in_flight_ids: set[str] = set()
+
+# Fan-out for /ingest: number of items analysed concurrently so merLLM's
+# scheduler sees more than one parsival job at a time and can distribute
+# them across GPU slots (squire#75). merLLM still owns GPU concurrency —
+# this cap only governs how many HTTP calls parsival holds open at once.
+def _ingest_concurrency() -> int:
+    try:
+        n = int(os.environ.get("INGEST_CONCURRENCY", "4"))
+    except ValueError:
+        n = 4
+    return max(1, n)
 
 
 def init(scan_state: dict, save_analysis_fn, spawn_situation_fn,
@@ -658,29 +671,29 @@ def process_ingest_items(raw: list[RawItem]) -> None:
     Called as a FastAPI background task.  Respects ``scan_state["cancelled"]``
     and tracks in-flight count via ``scan_state["ingest_pending"]``.
 
+    Items are fanned out over a bounded ``ThreadPoolExecutor`` so merLLM's
+    scheduler sees multiple parsival jobs at once and can dispatch them
+    across GPU slots (squire#75). Concurrency is capped by
+    ``INGEST_CONCURRENCY`` (default 4) — enough to keep both GPUs busy
+    with a little queue headroom, without holding hundreds of HTTP calls
+    open at once. GPU-level concurrency remains owned by merLLM.
+
     :param raw: List of deduplicated ``RawItem`` objects to analyse.
     :type raw: list[RawItem]
     """
     noise_rules = _get_noise_rules()
     with db.lock:
         _scan_state["ingest_pending"] += len(raw)
-    for idx, item in enumerate(raw):
+
+    def _handle_item(item: RawItem) -> None:
+        # Cancel check at task start so items queued in the executor bail
+        # out instead of hitting merLLM after the user asked to stop.
         if _scan_state["cancelled"]:
-            with db.lock:
-                _scan_state["ingest_pending"] = 0
-                # Clear the claim on every still-queued id so a future
-                # ingest call can re-queue them after cancellation.
-                for remaining in raw[idx:]:
-                    _in_flight_ids.discard(remaining.item_id)
-            log.info("ingest cancelled — stopping after current item")
             return
         matched, rule_type = _nf.should_filter(item, noise_rules)
         if matched:
             _save_filtered_item(item, rule_type)
-            with db.lock:
-                _scan_state["ingest_pending"] = max(0, _scan_state["ingest_pending"] - 1)
-                _in_flight_ids.discard(item.item_id)
-            continue
+            return
         try:
             result = analyze(item, priority="short")
             _save_analysis(result)
@@ -688,9 +701,19 @@ def process_ingest_items(raw: list[RawItem]) -> None:
             _spawn_situation_task(result.item_id)
         except Exception as e:
             log.error("ingest %s: %s", item.item_id, e)
-        with db.lock:
-            _scan_state["ingest_pending"] = max(0, _scan_state["ingest_pending"] - 1)
-            _in_flight_ids.discard(item.item_id)
+
+    max_workers = min(_ingest_concurrency(), max(1, len(raw)))
+    with ThreadPoolExecutor(
+        max_workers=max_workers, thread_name_prefix="ingest"
+    ) as ex:
+        futures = {ex.submit(_handle_item, item): item for item in raw}
+        for fut in as_completed(futures):
+            item = futures[fut]
+            with db.lock:
+                _scan_state["ingest_pending"] = max(
+                    0, _scan_state["ingest_pending"] - 1
+                )
+                _in_flight_ids.discard(item.item_id)
 
 
 # ── Auto-scan scheduler ────────────────────────────────────────────────────────

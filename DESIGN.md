@@ -556,9 +556,11 @@ Parsival runs several concurrent threads against a shared SQLite database and a 
 
 > merLLM is the single source of truth for GPU concurrency. parsival never gates LLM traffic on its own. If we ever need backpressure from merLLM, the right place is merLLM returning 429s (or its tracked queue blocking) — not a parsival-side pre-throttle.
 
+**Ingest fan-out (parsival#75).** `process_ingest_items` used to iterate its input list sequentially, so even with the semaphore removed merLLM's scheduler only ever saw one outstanding parsival job at a time and routed every call to the same GPU slot. A batch is now fanned out over a bounded `ThreadPoolExecutor` (default 4 workers, override via `INGEST_CONCURRENCY`) so multiple items are in flight concurrently and merLLM's round-robin can land them on different GPUs. `run_scan` and `run_reanalyze` remain single-threaded for now — they are not the reported bottleneck and `run_reanalyze` already hands off to merLLM's batch API.
+
 `db.lock` (a `threading.RLock()`) serialises all SQLite write operations. SQLite's WAL mode already allows concurrent reads to proceed while a write is in progress, so reads do not need to acquire this lock. Only operations that call `INSERT`, `UPDATE`, `DELETE`, or `UPSERT` acquire `db.lock`. Callers that need atomicity across multiple write operations — for example, upsert an item then insert a todo — acquire the lock themselves and call the `db.*` helpers within a single `with db.lock:` block. The lock is re-entrant so a thread that already holds it can call any helper without self-deadlocking.
 
-All long-running background jobs (`run_scan`, `run_reanalyze`, `process_ingest_items`) check `scan_state["cancelled"]` before processing each item and exit cleanly after the current item finishes. This means a cancel request is always honoured within one item's worth of latency (typically a few seconds) rather than requiring a process kill.
+All long-running background jobs (`run_scan`, `run_reanalyze`, `process_ingest_items`) check `scan_state["cancelled"]` before starting work on each item and exit cleanly. `run_scan` / `run_reanalyze` stop after the currently-processing item; `process_ingest_items` fans items out into a thread pool, so on cancel any items already dispatched to merLLM run to completion while items still queued in the pool short-circuit immediately. Either way, cancellation is honoured without requiring a process kill.
 
 ---
 
