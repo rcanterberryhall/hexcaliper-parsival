@@ -496,6 +496,95 @@ def test_save_analysis_allows_same_description_in_different_conversations():
     assert len(todos.all()) == 2
 
 
+# ── get_open_todos_for_conversation (parsival#79) ─────────────────────────────
+
+def _insert_item_row(item_id: str, conversation_id: str, timestamp: str):
+    import db as _db
+    _db.conn().execute(
+        "INSERT INTO items (item_id, conversation_id, timestamp) VALUES (?, ?, ?)",
+        (item_id, conversation_id, timestamp),
+    )
+
+
+def _insert_todo_for(item_id: str, description: str, *, done: bool = False,
+                     owner: str = "me", deadline: str | None = None):
+    todos.insert({
+        "item_id": item_id, "source": "outlook", "title": "T", "url": "",
+        "description": description, "deadline": deadline, "owner": owner,
+        "priority": "medium", "done": done,
+        "created_at": "2026-03-17T10:00:00+00:00",
+    })
+
+
+def test_get_open_todos_for_conversation_returns_only_matching_thread():
+    import db as _db
+    _insert_item_row("a1", "conv-A", "2026-04-01T10:00:00+00:00")
+    _insert_item_row("b1", "conv-B", "2026-04-01T10:00:00+00:00")
+    _insert_todo_for("a1", "Ship the part")
+    _insert_todo_for("b1", "Review quote")
+
+    out = _db.get_open_todos_for_conversation("conv-A")
+
+    descs = [t["description"] for t in out]
+    assert descs == ["Ship the part"]
+
+
+def test_get_open_todos_for_conversation_excludes_done_todos():
+    import db as _db
+    _insert_item_row("x1", "conv-X", "2026-04-01T10:00:00+00:00")
+    _insert_todo_for("x1", "Open task", done=False)
+    _insert_todo_for("x1", "Finished task", done=True)
+
+    out = _db.get_open_todos_for_conversation("conv-X")
+
+    descs = [t["description"] for t in out]
+    assert descs == ["Open task"]
+
+
+def test_get_open_todos_for_conversation_respects_before_timestamp():
+    """Only todos from items with a strictly earlier timestamp are returned —
+    prevents a message from self-suppressing its own todos on reanalyze."""
+    import db as _db
+    _insert_item_row("m1", "conv-T", "2026-04-01T09:00:00+00:00")
+    _insert_item_row("m2", "conv-T", "2026-04-01T10:00:00+00:00")
+    _insert_item_row("m3", "conv-T", "2026-04-01T11:00:00+00:00")
+    _insert_todo_for("m1", "Task from message 1")
+    _insert_todo_for("m2", "Task from message 2")
+    _insert_todo_for("m3", "Task from message 3")
+
+    out = _db.get_open_todos_for_conversation(
+        "conv-T", before_timestamp="2026-04-01T10:30:00+00:00"
+    )
+
+    descs = sorted(t["description"] for t in out)
+    assert descs == ["Task from message 1", "Task from message 2"]
+
+
+def test_get_open_todos_for_conversation_empty_id_returns_empty():
+    import db as _db
+    assert _db.get_open_todos_for_conversation("") == []
+    assert _db.get_open_todos_for_conversation(None) == []
+
+
+def test_get_open_todos_for_conversation_caps_at_default_limit():
+    """Long threads (50+ messages × one todo each) must not blow the prompt —
+    helper caps at 15 most recent by item timestamp."""
+    import db as _db
+    for i in range(25):
+        ts = f"2026-04-01T{i:02d}:00:00+00:00"
+        _insert_item_row(f"i{i}", "conv-long", ts)
+        _insert_todo_for(f"i{i}", f"Task {i}")
+
+    out = _db.get_open_todos_for_conversation("conv-long")
+
+    assert len(out) == 15
+    descs = {t["description"] for t in out}
+    # Most recent 15 messages are i10..i24 — i0..i9 should drop off.
+    assert "Task 24" in descs
+    assert "Task 10" in descs
+    assert "Task 9" not in descs
+
+
 def test_save_analysis_does_not_duplicate_intel():
     """Calling _save_analysis twice with the same information_item must produce
     exactly one intel row."""

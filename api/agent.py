@@ -63,7 +63,7 @@ User context:
 - Approval indicators: {approval_ctx} — keywords from items previously confirmed as approval events affecting {user_name}
 - FYI indicators: {fyi_ctx} — keywords from items previously confirmed as informational only for {user_name}
 - Noise/irrelevant topics: {noise_ctx} — if content is primarily about these with no direct relevance to {user_name}, set category="noise", priority="low", has_action=false
-{sender_hint}{replied_hint}{manual_tag_hint}{graph_hint}{embedding_hint}{recipient_scope_hint}
+{sender_hint}{replied_hint}{manual_tag_hint}{graph_hint}{embedding_hint}{recipient_scope_hint}{thread_todos_hint}
 Analyze this item and extract structured information.
 
 Source: {source}
@@ -880,7 +880,33 @@ def _validated_project_tags(tags) -> list[str]:
     return [t for t in tags if isinstance(t, str) and t in valid]
 
 
-def build_prompt(item: RawItem) -> str:
+def _render_thread_todos_hint(thread_todos: list[dict] | None) -> str:
+    """Render the prior-message todos prompt block for parsival#79.
+
+    Empty or None → empty string (no hint), preserving prompt shape for
+    first-in-thread messages and non-email sources.
+    """
+    if not thread_todos:
+        return ""
+    lines = []
+    for t in thread_todos:
+        desc = (t.get("description") or "").strip()
+        if not desc:
+            continue
+        owner = (t.get("owner") or "").strip() or "unassigned"
+        deadline = t.get("deadline") or "no deadline"
+        lines.append(f"  - {desc} (owner: {owner}, due: {deadline})")
+    if not lines:
+        return ""
+    body = "\n".join(lines)
+    return (
+        "\n- Already tracked in this email thread — do NOT re-emit these as "
+        "new action items, even with rewording; still emit any genuinely new "
+        "tasks introduced by this message.\n" + body
+    )
+
+
+def build_prompt(item: RawItem, *, thread_todos: list[dict] | None = None) -> str:
     """
     Build the LLM analysis prompt for an item without submitting it.
 
@@ -890,6 +916,9 @@ def build_prompt(item: RawItem) -> str:
 
     :param item: The raw item to build a prompt for.
     :type item: RawItem
+    :param thread_todos: Open todos already saved for strictly-earlier items
+        in the same ``conversation_id``, rendered as a "do not re-emit" hint
+        to suppress paraphrased duplicates across reply chains (parsival#79).
     :return: Fully formatted prompt string.
     :rtype: str
     """
@@ -974,6 +1003,7 @@ def build_prompt(item: RawItem) -> str:
     recipient_scope_hint = _recipient_scope_hint(
         scope_info, config.USER_NAME or "the user"
     )
+    thread_todos_hint = _render_thread_todos_hint(thread_todos)
 
     return PROMPT.format(
         source       = item.source,
@@ -999,6 +1029,7 @@ def build_prompt(item: RawItem) -> str:
         graph_hint      = graph_hint,
         embedding_hint  = embedding_hint,
         recipient_scope_hint = recipient_scope_hint,
+        thread_todos_hint = thread_todos_hint,
     )
 
 
@@ -1122,7 +1153,12 @@ def build_analysis_from_llm_json(
     )
 
 
-def analyze(item: RawItem, *, priority: str = "short") -> Analysis:
+def analyze(
+    item: RawItem,
+    *,
+    priority: str = "short",
+    thread_todos: list[dict] | None = None,
+) -> Analysis:
     """
     Send a single item to Ollama and parse the structured JSON response.
 
@@ -1236,6 +1272,7 @@ def analyze(item: RawItem, *, priority: str = "short") -> Analysis:
 
     scope_info          = compute_recipient_scope(config.USER_EMAIL or "", to_field, cc_field)
     recipient_scope_hint = _recipient_scope_hint(scope_info, _user_name)
+    thread_todos_hint    = _render_thread_todos_hint(thread_todos)
 
     text = llm.generate(
         PROMPT.format(
@@ -1262,6 +1299,7 @@ def analyze(item: RawItem, *, priority: str = "short") -> Analysis:
             graph_hint      = graph_hint,
             embedding_hint  = embedding_hint,
             recipient_scope_hint = recipient_scope_hint,
+            thread_todos_hint = thread_todos_hint,
         ),
         format="json", temperature=0.1, num_predict=768, timeout=90,
         priority=priority,

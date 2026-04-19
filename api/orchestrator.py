@@ -32,7 +32,7 @@ topology changes.
 import os
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -568,16 +568,27 @@ def run_reanalyze() -> None:
                 author    = rec.get("author", ""),
                 timestamp = rec.get("timestamp", _now_iso()),
                 metadata  = {
-                    "to":          rec.get("to_field", ""),
-                    "cc":          rec.get("cc_field", ""),
-                    "is_replied":  rec.get("is_replied", False),
-                    "replied_at":  rec.get("replied_at"),
-                    "project_tag": rec.get("project_tag"),
-                    "hierarchy":   rec.get("hierarchy"),
+                    "to":              rec.get("to_field", ""),
+                    "cc":              rec.get("cc_field", ""),
+                    "is_replied":      rec.get("is_replied", False),
+                    "replied_at":      rec.get("replied_at"),
+                    "project_tag":     rec.get("project_tag"),
+                    "hierarchy":       rec.get("hierarchy"),
+                    "conversation_id": rec.get("conversation_id"),
                 },
             )
             try:
-                prompt = build_prompt(item)
+                # parsival#79: thread_todos hint scoped to strictly-earlier
+                # items so this item does not self-suppress using its own
+                # prior-analysis todos.
+                conv_id = rec.get("conversation_id") or ""
+                thread_todos: list[dict] = []
+                if conv_id:
+                    with db.lock:
+                        thread_todos = db.get_open_todos_for_conversation(
+                            conv_id, before_timestamp=item.timestamp
+                        )
+                prompt = build_prompt(item, thread_todos=thread_todos)
                 job_id = _submit_batch_job(prompt)
                 if job_id:
                     with db.lock:
@@ -685,35 +696,77 @@ def process_ingest_items(raw: list[RawItem]) -> None:
     with db.lock:
         _scan_state["ingest_pending"] += len(raw)
 
+    # Group items by conversation_id so a reply chain analyzes oldest-first
+    # sequentially (parsival#79) — each reply then sees prior-message todos
+    # as a "do not re-emit" hint. Items without a conversation_id are
+    # treated as their own singleton group so different sources / standalone
+    # messages keep running in parallel, matching the prior behavior.
+    grouped: dict[str, list[RawItem]] = defaultdict(list)
+    standalones: list[list[RawItem]] = []
+    for item in raw:
+        conv_id = (item.metadata or {}).get("conversation_id") or ""
+        if conv_id:
+            grouped[conv_id].append(item)
+        else:
+            standalones.append([item])
+    for items in grouped.values():
+        items.sort(key=lambda it: it.timestamp)
+    groups: list[list[RawItem]] = list(grouped.values()) + standalones
+
+    def _mark_done(item: RawItem) -> None:
+        with db.lock:
+            _scan_state["ingest_pending"] = max(
+                0, _scan_state["ingest_pending"] - 1
+            )
+            _in_flight_ids.discard(item.item_id)
+
     def _handle_item(item: RawItem) -> None:
         # Cancel check at task start so items queued in the executor bail
         # out instead of hitting merLLM after the user asked to stop.
         if _scan_state["cancelled"]:
+            _mark_done(item)
             return
         matched, rule_type = _nf.should_filter(item, noise_rules)
         if matched:
             _save_filtered_item(item, rule_type)
+            _mark_done(item)
             return
         try:
-            result = analyze(item, priority="short")
+            conv_id = (item.metadata or {}).get("conversation_id") or ""
+            thread_todos: list[dict] = []
+            if conv_id:
+                with db.lock:
+                    thread_todos = db.get_open_todos_for_conversation(
+                        conv_id, before_timestamp=item.timestamp
+                    )
+            result = analyze(
+                item, priority="short", thread_todos=thread_todos
+            )
             _save_analysis(result)
             graph.index_item(result)
             _spawn_situation_task(result.item_id)
         except Exception as e:
             log.error("ingest %s: %s", item.item_id, e)
+        finally:
+            _mark_done(item)
 
-    max_workers = min(_ingest_concurrency(), max(1, len(raw)))
+    def _handle_group(items: list[RawItem]) -> None:
+        # Sequential within a conversation so get_open_todos_for_conversation
+        # sees each preceding item's persisted todos on the next iteration.
+        for item in items:
+            _handle_item(item)
+
+    if not groups:
+        return
+    max_workers = min(_ingest_concurrency(), max(1, len(groups)))
     with ThreadPoolExecutor(
         max_workers=max_workers, thread_name_prefix="ingest"
     ) as ex:
-        futures = {ex.submit(_handle_item, item): item for item in raw}
+        futures = [ex.submit(_handle_group, items) for items in groups]
         for fut in as_completed(futures):
-            item = futures[fut]
-            with db.lock:
-                _scan_state["ingest_pending"] = max(
-                    0, _scan_state["ingest_pending"] - 1
-                )
-                _in_flight_ids.discard(item.item_id)
+            # Exceptions are already caught per-item inside _handle_item;
+            # this loop exists so the context manager waits on every task.
+            pass
 
 
 # ── Auto-scan scheduler ────────────────────────────────────────────────────────

@@ -836,6 +836,44 @@ def todo_exists_in_conversation(conversation_id: str, description: str) -> bool:
     return any(_norm_desc(r[0]) == target for r in rows)
 
 
+def get_open_todos_for_conversation(
+    conversation_id: str | None,
+    before_timestamp: str | None = None,
+    limit: int = 15,
+) -> list[dict]:
+    """Return open todos saved for earlier items in this conversation.
+
+    Feeds the LLM a "do not re-emit these" hint when analyzing the next
+    message in a thread (parsival#79). Paraphrase-level dedup the exact /
+    normalized check in todo_exists_in_conversation cannot catch.
+
+    Scoped by ``items.conversation_id``; filtered to ``todos.done = 0``.
+    When ``before_timestamp`` is set, only todos from items with a strictly
+    earlier ``items.timestamp`` are returned — required on reanalyze so a
+    message does not self-suppress its own todos. Most recent ``limit``
+    items win (prompt-bloat guard on very long threads).
+    """
+    if not conversation_id:
+        return []
+    params: list = [conversation_id]
+    where_extra = ""
+    if before_timestamp:
+        where_extra = " AND i.timestamp < ?"
+        params.append(before_timestamp)
+    params.append(int(limit))
+    rows = conn().execute(
+        "SELECT t.description, t.owner, t.deadline "
+        "FROM todos t JOIN items i ON t.item_id = i.item_id "
+        "WHERE i.conversation_id = ? AND t.done = 0" + where_extra + " "
+        "ORDER BY i.timestamp DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [
+        {"description": r[0], "owner": r[1], "deadline": r[2]}
+        for r in rows
+    ]
+
+
 def insert_todo(data: dict) -> int:
     """Insert a todo row and return its auto-generated id."""
     c    = conn()
