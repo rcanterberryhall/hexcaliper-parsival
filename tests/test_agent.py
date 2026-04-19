@@ -65,6 +65,51 @@ def test_analyze_jira_fallback_creates_action_item():
     assert result.action_items[0].deadline == "2024-04-01"
 
 
+# ── build_prompt thread_todos hint (parsival#79) ───────────────────────────────
+
+def test_build_prompt_omits_thread_todos_hint_when_empty():
+    prompt_empty = agent.build_prompt(_raw(), thread_todos=[])
+    prompt_none  = agent.build_prompt(_raw(), thread_todos=None)
+    prompt_default = agent.build_prompt(_raw())
+
+    for p in (prompt_empty, prompt_none, prompt_default):
+        assert "Already tracked in this email thread" not in p
+
+
+def test_build_prompt_includes_thread_todos_hint_when_present():
+    todos_list = [
+        {"description": "Sign the RV9 auth letter", "owner": "me", "deadline": "2026-04-20"},
+        {"description": "Receive replacement transformer", "owner": "me", "deadline": None},
+    ]
+    prompt = agent.build_prompt(_raw(), thread_todos=todos_list)
+
+    assert "Already tracked in this email thread" in prompt
+    assert "do NOT re-emit" in prompt
+    assert "still emit any genuinely new tasks" in prompt
+    assert "Sign the RV9 auth letter" in prompt
+    assert "Receive replacement transformer" in prompt
+    assert "2026-04-20" in prompt
+
+
+def test_analyze_passes_thread_todos_hint_to_llm():
+    """Sync path (analyze) must render the thread_todos hint into the prompt,
+    not just build_prompt (which is the batch path)."""
+    captured = {}
+
+    def fake_generate(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return "{}"
+
+    todos_list = [{"description": "Book the training room",
+                   "owner": "me", "deadline": None}]
+
+    with patch("agent.llm.generate", side_effect=fake_generate):
+        agent.analyze(_raw(), thread_todos=todos_list)
+
+    assert "Already tracked in this email thread" in captured["prompt"]
+    assert "Book the training room" in captured["prompt"]
+
+
 def test_analyze_skips_action_items_without_description():
     payload = {
         "has_action": True,
