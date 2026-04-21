@@ -213,13 +213,6 @@ class TestComputeRecipientScope:
         assert r["user_in_to"] is False
 
 
-# ── Action item post-processing ───────────────────────────────────────────────
-
-def _ai(desc, owner="me"):
-    from models import ActionItem
-    return ActionItem(description=desc, deadline=None, owner=owner)
-
-
 # ── build_analysis_from_llm_json (shared helper) ──────────────────────────────
 
 class TestBuildAnalysisFromLlmJson:
