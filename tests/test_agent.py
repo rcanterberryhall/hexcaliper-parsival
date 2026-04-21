@@ -704,8 +704,20 @@ def test_build_prompt_uses_cleaned_body():
     prompt = build_prompt(item)
 
     # Body-derived fields that should be gone:
-    assert "-----Original Message-----" not in prompt
+    #   (Note: "-----Original Message-----" now appears in the PROMPT
+    #   action-item rules as a negative-example marker; check the
+    #   quoted-chain *content* instead — the From: header and body below it.)
+    assert "someone@example.com" not in prompt
     assert "safelinks.protection.outlook.com" not in prompt
     assert "Reid Hall was CC'd" not in prompt
     # The real current-message directive must still be there:
     assert "are we on track for Monday?" in prompt
+
+
+def test_prompt_contains_negative_owner_examples():
+    """The PROMPT template must explicitly call out the three owner='me'
+    traps we saw in real data (issue #83)."""
+    from agent import PROMPT
+    assert "quoted reply" in PROMPT.lower() or "reply chain" in PROMPT.lower()
+    assert "@mention" in PROMPT.lower() or "@-mention" in PROMPT.lower()
+    assert "third party" in PROMPT.lower() or "third-party" in PROMPT.lower()

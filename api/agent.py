@@ -158,6 +158,11 @@ Action item rules:
 - Being in CC means awareness, not ownership — never default owner="me" from CC alone.
 - Use the person's full name as it appears in the To/CC header (e.g. "John Johnson"), not a first-name guess, whenever possible.
 - If a directive has no identifiable owner (no name, no @mention, no direct address) and recipient scope is not "direct", OMIT the action_item rather than guessing.
+- Do NOT assign owner="me" on the basis of the user's name appearing in any of these contexts — they are NOT directives to {user_name}:
+  * A quoted reply chain or forwarded-message header below the current author's message (anything after "-----Original Message-----", "From: …", or "On <date>, <X> wrote:").
+  * An @mention of {user_name} as a third-party to coordinate with (e.g. "…to help coordinate with @{user_name}'s team", "@{user_name}'s crew will handle X").
+  * A tracking URL, disclaimer footer, or "Individualized for <email>" marker.
+  These mentions place {user_name} in the text but do not address them.
 - Past-tense reports of completed work ("we installed X", "the issue was resolved") are NOT action items — put them in information_items instead.
 - Jira issues: has_action=true unless status is Done/Closed; owner="me" (these are pre-assigned).
 - GitHub PR review requests: has_action=true, category=review, owner="me".
