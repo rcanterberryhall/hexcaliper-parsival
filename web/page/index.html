@@ -1403,23 +1403,9 @@ tr.attn-low  { opacity:0.65; }
         <label class="show-done" id="showDoneLbl"><input type="checkbox" id="showDone" onchange="loadTodos()"> Show completed</label>
         <label class="show-done"><input type="checkbox" id="showHidden" onchange="onShowHidden()"> Show hidden</label>
         <label class="show-done" id="showResolvedLbl" style="display:none"><input type="checkbox" id="showResolved" onchange="onShowResolved()"> Show resolved</label>
-        <button class="ia" id="addActionBtn" onclick="toggleAddAction()" title="Add manual action item" style="margin-left:auto;padding:3px 9px;font-size:11px">+ Add action</button>
+        <button class="ia" id="addActionBtn" onclick="createManualCard()" title="Create a new manual card" style="margin-left:auto;padding:3px 9px;font-size:11px">+ New card</button>
         <button class="ia" id="regenerateBriefingBtn" onclick="regenerateBriefing()" title="Re-generate briefing with current data" style="display:none;margin-left:auto;padding:3px 9px;font-size:11px">↺ Regenerate</button>
         <button class="ia" id="passdownBtn" onclick="openPassdownModal()" title="Generate a shift-handoff passdown email" style="padding:3px 9px;font-size:11px">📋 Passdown</button>
-      </div>
-      <div id="addActionForm" style="display:none;padding:10px 14px;border-bottom:1px solid var(--border2);background:var(--surface);gap:8px;flex-wrap:wrap;align-items:flex-end" class="frow">
-        <input id="newTodoDesc"     type="text"   placeholder="Description…"  style="flex:2;min-width:180px;padding:4px 8px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px" onkeydown="if(event.key==='Enter')submitNewTodo()">
-        <input id="newTodoDeadline" type="date"   placeholder="Deadline"       style="padding:4px 8px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px">
-        <select id="newTodoPri" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px">
-          <option value="high">high</option>
-          <option value="medium" selected>medium</option>
-          <option value="low">low</option>
-        </select>
-        <select id="newTodoProj" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px">
-          <option value="">— no project —</option>
-        </select>
-        <button class="detail-save" onclick="submitNewTodo()" style="padding:4px 12px">Add</button>
-        <button class="ia" onclick="toggleAddAction()" style="padding:3px 8px;font-size:11px">Cancel</button>
       </div>
       <div id="todo-view"><div class="loading-placeholder"><div class="spinner-lg"></div><div>Loading action items…</div></div></div>
       <div id="intel-view"><div class="loading-placeholder"><div class="spinner-lg"></div><div>Loading intel…</div></div></div>
@@ -2540,36 +2526,20 @@ async function toggleDone(id, done) {
   }
 }
 
-function toggleAddAction() {
-  const form = $('addActionForm');
-  const visible = form.style.display !== 'none';
-  form.style.display = visible ? 'none' : 'flex';
-  if (!visible) {
-    // Populate project dropdown from current project list
-    const sel = $('newTodoProj');
-    sel.innerHTML = '<option value="">— no project —</option>' +
-      allProjects.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
-    $('newTodoDesc').focus();
-  }
-}
-
-async function submitNewTodo() {
-  const desc = ($('newTodoDesc').value || '').trim();
-  if (!desc) { $('newTodoDesc').focus(); return; }
-  const body = {
-    description: desc,
-    priority:    $('newTodoPri').value,
-    deadline:    $('newTodoDeadline').value || undefined,
-    project_tag: $('newTodoProj').value    || undefined,
-  };
+async function createManualCard() {
   try {
-    await api('/todos', 'POST', body);
-    $('newTodoDesc').value = '';
-    $('newTodoDeadline').value = '';
-    $('addActionForm').style.display = 'none';
-    await loadTodos();
-    loadStats();
-  } catch(e) { $('statusMsg').textContent = 'Failed: ' + e.message; }
+    const resp = await api('/todos', 'POST', {
+      description: 'new card',
+      priority:    'medium',
+    });
+    // Refresh caches, then open the detail panel for the new item.
+    await Promise.all([loadTodos(), loadItems()]);
+    const newItemId = resp.item_id || `manual_${resp.doc_id}`;
+    openTodoDetail(newItemId);
+    if (typeof loadStats === 'function') loadStats();
+  } catch (e) {
+    $('statusMsg').textContent = 'Failed to create card: ' + e.message;
+  }
 }
 
 async function saveTodoEdit(docId) {
