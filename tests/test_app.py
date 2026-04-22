@@ -890,3 +890,60 @@ class TestManualTodoMigration:
                 "SELECT COUNT(*) FROM items WHERE item_id LIKE 'manual_%'"
             ).fetchone()[0]
         assert count == 0
+
+
+class TestManualTodoCreationSynthesizesItem:
+    """POST /todos with no item_id must create a placeholder items row
+    so the card opens in the detail panel like a generated card."""
+
+    def test_post_todos_creates_items_row(self, client):
+        resp = client.post("/todos", json={
+            "description": "prep for Friday meeting",
+            "priority":    "high",
+            "project_tag": None,
+        })
+        assert resp.status_code == 200
+        doc_id = resp.json()["doc_id"]
+
+        import db as _db
+        with _db.lock:
+            todo_row = _db.conn().execute(
+                "SELECT item_id FROM todos WHERE id = ?", (doc_id,)
+            ).fetchone()
+        assert todo_row["item_id"] == f"manual_{doc_id}"
+
+        with _db.lock:
+            item = _db.get_item(f"manual_{doc_id}")
+        assert item is not None
+        assert item["source"]     == "manual"
+        assert item["title"]      == "prep for Friday meeting"
+        assert item["priority"]   == "high"
+        assert item["has_action"] == 1
+        assert item["category"]   == "task"
+
+    def test_post_todos_with_item_id_does_not_synthesize(self, client):
+        import db as _db
+        with _db.lock:
+            _db.upsert_item({
+                "item_id": "real_a", "source": "outlook",
+                "title": "real email", "body_preview": "hi",
+            })
+        resp = client.post("/todos", json={
+            "description": "manual child of real email",
+            "priority":    "medium",
+            "item_id":     "real_a",
+        })
+        assert resp.status_code == 200
+        doc_id = resp.json()["doc_id"]
+        with _db.lock:
+            todo_row = _db.conn().execute(
+                "SELECT item_id FROM todos WHERE id = ?", (doc_id,)
+            ).fetchone()
+        # Must be the real item_id, not manual_<doc_id>.
+        assert todo_row["item_id"] == "real_a"
+        # No spurious manual_* row was created.
+        with _db.lock:
+            count = _db.conn().execute(
+                "SELECT COUNT(*) FROM items WHERE item_id LIKE 'manual_%'"
+            ).fetchone()[0]
+        assert count == 0

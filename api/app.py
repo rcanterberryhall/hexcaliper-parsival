@@ -1721,18 +1721,49 @@ def create_todo(body: dict):
         data["deadline"] = body["deadline"]
     if body.get("project_tag"):
         data["project_tag"] = body["project_tag"]
-    if body.get("item_id"):
-        data["item_id"] = body["item_id"]
+    linked_item_id = body.get("item_id")
+    if linked_item_id:
+        data["item_id"] = linked_item_id
         with db.lock:
-            item = db.get_item(body["item_id"])
+            item = db.get_item(linked_item_id)
         if item:
             data["source"]      = item.get("source", "manual")
             data["title"]       = item.get("title", "")
             data["url"]         = item.get("url", "")
             data["project_tag"] = data.get("project_tag") or item.get("project_tag")
+        with db.lock:
+            doc_id = db.insert_todo(data)
+        return {"ok": True, "doc_id": doc_id}
+
+    # Manual card with no linked item — synthesize a placeholder items row so
+    # the detail panel, PATCH /analyses, and reanalyze-preservation mechanism
+    # all work for it uniformly.
     with db.lock:
         doc_id = db.insert_todo(data)
-    return {"ok": True, "doc_id": doc_id}
+        new_item_id = f"manual_{doc_id}"
+        db.upsert_item({
+            "item_id":      new_item_id,
+            "source":       "manual",
+            "direction":    "received",
+            "title":        description[:200],
+            "author":       "",
+            "timestamp":    now,
+            "url":          "",
+            "has_action":   1,
+            "priority":     priority,
+            "category":     "task",
+            "summary":      "",
+            "action_items": "[]",
+            "hierarchy":    "general",
+            "project_tag":  data.get("project_tag"),
+            "goals":        "[]",
+            "key_dates":    "[]",
+            "information_items": "[]",
+            "body_preview": "",
+            "references":   "[]",
+        })
+        db.update_todo(doc_id, {"item_id": new_item_id})
+    return {"ok": True, "doc_id": doc_id, "item_id": new_item_id}
 
 
 @app.get("/todos/assigned_count")
