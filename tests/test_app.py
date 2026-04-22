@@ -809,3 +809,84 @@ def test_save_analysis_assigns_delegated_owner_to_assigned_tab():
     assert t["owner"] == "Anna Simonitis"
     assert t["status"] == "assigned", t
     assert t["assigned_to"] == "anna.simonitis@universalorlando.com"
+
+
+class TestManualTodoMigration:
+    """Migration backfills items rows for pre-existing manual todos
+    (is_manual=1, item_id IS NULL). The backfill sets item_id='manual_<todo_id>'
+    on both the todo and the synthesized items row so the UI's
+    openTodoDetail() → GET /analyses/{item_id} path works for them."""
+
+    def test_backfill_creates_items_row_for_orphan_manual_todo(self, client):
+        import db as _db
+        # Insert a legacy manual todo bypassing the new POST handler so we
+        # simulate the pre-migration schema state.
+        with _db.lock:
+            tid = _db.insert_todo({
+                "description": "legacy manual todo",
+                "priority":    "medium",
+                "is_manual":   1,
+                "done":        0,
+                "status":      "open",
+                "source":      "manual",
+                "title":       "",
+                "url":         "",
+                "owner":       "me",
+                "created_at":  "2026-04-20T00:00:00+00:00",
+                "item_id":     None,
+            })
+        # Invoke the backfill migration directly.
+        with _db.lock:
+            _db.backfill_manual_todo_items()
+        # Todo should now carry an item_id pointing at the synthesized row.
+        with _db.lock:
+            row = _db.conn().execute(
+                "SELECT item_id FROM todos WHERE id = ?", (tid,)
+            ).fetchone()
+        assert row["item_id"] == f"manual_{tid}"
+        with _db.lock:
+            item = _db.get_item(f"manual_{tid}")
+        assert item is not None
+        assert item["source"] == "manual"
+        assert item["title"]  == "legacy manual todo"
+        assert item["has_action"] == 1
+
+    def test_backfill_is_idempotent(self, client):
+        import db as _db
+        with _db.lock:
+            tid = _db.insert_todo({
+                "description": "another legacy", "priority": "low",
+                "is_manual": 1, "done": 0, "status": "open",
+                "source": "manual", "title": "", "url": "", "owner": "me",
+                "created_at": "2026-04-20T00:00:00+00:00", "item_id": None,
+            })
+        with _db.lock:
+            _db.backfill_manual_todo_items()
+            _db.backfill_manual_todo_items()  # second call must be a no-op
+        with _db.lock:
+            count = _db.conn().execute(
+                "SELECT COUNT(*) FROM items WHERE item_id = ?",
+                (f"manual_{tid}",),
+            ).fetchone()[0]
+        assert count == 1
+
+    def test_backfill_skips_non_manual_todos(self, client):
+        import db as _db
+        # A generated todo already has item_id set; migration should not touch it.
+        with _db.lock:
+            _db.upsert_item({
+                "item_id": "real_item_1", "source": "outlook",
+                "title": "real email", "body_preview": "hello",
+            })
+            _db.insert_todo({
+                "description": "generated", "priority": "medium",
+                "is_manual": 0, "done": 0, "status": "open",
+                "source": "outlook", "title": "real email", "url": "",
+                "owner": "me", "created_at": "2026-04-20T00:00:00+00:00",
+                "item_id": "real_item_1",
+            })
+            _db.backfill_manual_todo_items()
+            count = _db.conn().execute(
+                "SELECT COUNT(*) FROM items WHERE item_id LIKE 'manual_%'"
+            ).fetchone()[0]
+        assert count == 0
