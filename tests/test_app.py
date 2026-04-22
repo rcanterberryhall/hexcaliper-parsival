@@ -947,3 +947,98 @@ class TestManualTodoCreationSynthesizesItem:
                 "SELECT COUNT(*) FROM items WHERE item_id LIKE 'manual_%'"
             ).fetchone()[0]
         assert count == 0
+
+
+class TestPatchAnalysisRichFields:
+    """Issue #85: PATCH /analyses/{item_id} must accept the content-level
+    fields (summary, urgency_reason, body_preview, goals, key_dates,
+    hierarchy, title, user_summary) and record them in user_edited_fields
+    so reanalyze preserves them."""
+
+    def _seed(self):
+        import db as _db
+        with _db.lock:
+            _db.upsert_item({
+                "item_id":      "edit_me",
+                "source":       "manual",
+                "title":        "original title",
+                "summary":      "original summary",
+                "urgency":      "original urgency",
+                "body_preview": "original body",
+                "goals":        "[]",
+                "key_dates":    "[]",
+                "hierarchy":    "general",
+                "priority":     "medium",
+                "category":     "task",
+                "has_action":   1,
+            })
+
+    def test_patch_accepts_summary(self, client):
+        self._seed()
+        resp = client.patch("/analyses/edit_me", json={"summary": "new summary"})
+        assert resp.status_code == 200
+        import db as _db
+        with _db.lock:
+            row = _db.get_item("edit_me")
+        assert row["summary"] == "new summary"
+        import json as _json
+        assert "summary" in _json.loads(row["user_edited_fields"])
+
+    def test_patch_accepts_body_preview(self, client):
+        self._seed()
+        resp = client.patch("/analyses/edit_me",
+                            json={"body_preview": "free-form notes here"})
+        assert resp.status_code == 200
+        import db as _db
+        with _db.lock:
+            row = _db.get_item("edit_me")
+        assert row["body_preview"] == "free-form notes here"
+
+    def test_patch_accepts_goals_list(self, client):
+        self._seed()
+        resp = client.patch("/analyses/edit_me",
+                            json={"goals": ["draft proposal", "review metrics"]})
+        assert resp.status_code == 200
+        import db as _db, json as _json
+        with _db.lock:
+            row = _db.get_item("edit_me")
+        assert _json.loads(row["goals"]) == ["draft proposal", "review metrics"]
+        assert "goals" in _json.loads(row["user_edited_fields"])
+
+    def test_patch_accepts_key_dates_list(self, client):
+        self._seed()
+        payload = [
+            {"date": "2026-05-01", "description": "submit draft"},
+            {"date": "2026-05-15", "description": "review"},
+        ]
+        resp = client.patch("/analyses/edit_me", json={"key_dates": payload})
+        assert resp.status_code == 200
+        import db as _db, json as _json
+        with _db.lock:
+            row = _db.get_item("edit_me")
+        assert _json.loads(row["key_dates"]) == payload
+
+    def test_patch_accepts_title_urgency_hierarchy_user_summary(self, client):
+        self._seed()
+        resp = client.patch("/analyses/edit_me", json={
+            "title":          "new title",
+            "urgency_reason": "needs reply today",
+            "hierarchy":      "project",
+            "user_summary":   "my note",
+        })
+        assert resp.status_code == 200
+        import db as _db, json as _json
+        with _db.lock:
+            row = _db.get_item("edit_me")
+        assert row["title"]        == "new title"
+        assert row["urgency"]      == "needs reply today"
+        assert row["hierarchy"]    == "project"
+        assert row["user_summary"] == "my note"
+        edited = set(_json.loads(row["user_edited_fields"]))
+        assert {"title", "urgency", "hierarchy", "user_summary"} <= edited
+
+    def test_patch_rejects_unknown_fields(self, client):
+        """Body with only unknown keys still returns 400, behaviour unchanged."""
+        self._seed()
+        resp = client.patch("/analyses/edit_me", json={"bogus": "value"})
+        assert resp.status_code == 400

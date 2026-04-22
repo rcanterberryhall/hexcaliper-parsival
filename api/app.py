@@ -964,11 +964,37 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
         updates["project_tag"] = db.serialize_project_tags(val) if val else None
     if "is_passdown" in body and isinstance(body["is_passdown"], bool):
         updates["is_passdown"] = 1 if body["is_passdown"] else 0
+
+    # Issue #85: content-level rich fields. Writable on both manual and
+    # generated items; preserved across reanalyze via user_edited_fields.
+    if "title" in body and isinstance(body["title"], str):
+        updates["title"] = body["title"][:500]
+    if "summary" in body and isinstance(body["summary"], str):
+        updates["summary"] = body["summary"]
+    if "user_summary" in body and isinstance(body["user_summary"], str):
+        updates["user_summary"] = body["user_summary"]
+    # Accept either urgency_reason (wire name used by JS) or urgency (column name).
+    _urgency_in = body.get("urgency_reason", body.get("urgency"))
+    if isinstance(_urgency_in, str):
+        updates["urgency"] = _urgency_in
+    if "body_preview" in body and isinstance(body["body_preview"], str):
+        updates["body_preview"] = body["body_preview"]
+    if "hierarchy" in body and body["hierarchy"] in ("user", "project", "topic", "general"):
+        updates["hierarchy"] = body["hierarchy"]
+    if "goals" in body and isinstance(body["goals"], list):
+        updates["goals"] = json.dumps(body["goals"])
+    if "key_dates" in body and isinstance(body["key_dates"], list):
+        updates["key_dates"] = json.dumps(body["key_dates"])
+
     if not updates:
         raise HTTPException(status_code=400, detail="No valid fields to update.")
-    # Track which classification fields the user has manually edited so
-    # reanalysis preserves them instead of overwriting with LLM output.
-    _editable_fields = {"priority", "category", "project_tag", "is_passdown"}
+    # Track which fields the user has manually edited so reanalyze preserves them.
+    _editable_fields = {
+        "priority", "category", "project_tag", "is_passdown",
+        # Issue #85 additions:
+        "title", "summary", "user_summary", "urgency", "body_preview",
+        "hierarchy", "goals", "key_dates",
+    }
     with db.lock:
         old_record = db.get_item(item_id)
         if not old_record:
