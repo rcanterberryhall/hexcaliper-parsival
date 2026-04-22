@@ -736,14 +736,24 @@ tr.attn-low  { opacity:0.65; }
 .detail-list li { font-size: 11px; color: var(--muted); padding: 4px 0; border-bottom: 1px solid var(--border); line-height: 1.45; }
 .detail-list li:last-child { border-bottom: none; }
 .detail-todo-row {
-  display: flex; align-items: flex-start; gap: 8px;
+  display: flex; align-items: center; gap: 4px;
   padding: 5px 0; border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
 }
 .detail-todo-row:last-child { border-bottom: none; }
-.detail-todo-row .cb { margin-top: 2px; }
+.detail-todo-row .cb { margin-top: 0; flex-shrink: 0; }
 .detail-todo-text { font-size: 11px; color: var(--text); line-height: 1.4; flex: 1; }
 .detail-todo-text.done { text-decoration: line-through; color: var(--muted); }
 .detail-todo-dl { font-size: 10px; color: var(--red); white-space: nowrap; }
+.detail-todo-desc-input {
+  flex: 2; min-width: 120px; padding: 3px 7px; background: var(--bg);
+  border: 1px solid var(--border2); border-radius: var(--r);
+  color: var(--text); font-size: 11px;
+}
+.detail-todo-dl-input {
+  padding: 3px 7px; background: var(--bg); border: 1px solid var(--border2);
+  border-radius: var(--r); color: var(--text); font-size: 11px;
+}
 .detail-edit {
   padding: 10px 18px; border-top: 1px solid var(--border2);
   display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap;
@@ -4145,10 +4155,13 @@ function openDetail(item) {
       >${esc(item.body_preview || '')}</textarea>
     </div>`;
 
-  // Show live todos (with checkboxes) instead of static action_items
+  // Issue #85: editable linked-todo list. Every card (manual or generated)
+  // shows its Tasks section with inline add/edit/delete controls. The LLM's
+  // static action_items array is no longer rendered — the live todos table
+  // is the single source of truth.
   const linkedTodos = allTodos.filter(t => t.item_id === item.item_id);
-  const actions = linkedTodos.length ? `
-    <div class="detail-section" id="detailTodosSection">
+  const actions = `
+    <div class="detail-section" id="detailTodosSection" data-item-id="${esc(item.item_id)}">
       <div class="detail-label">Tasks</div>
       ${linkedTodos.map(t => {
         const st = t.status || (t.done ? 'done' : 'open');
@@ -4161,20 +4174,24 @@ function openDetail(item) {
           ? `<span style="color:var(--blue);font-size:10px;margin-left:4px">⇒ ${esc(t.assigned_to)}</span>` : '';
         const assignBtn = st !== 'done'
           ? `<button class="ia" onclick="showAssignPicker(${t.doc_id},'${esc(item.item_id)}',this)" title="Assign">⇒</button>` : '';
+        const dlVal = t.deadline || '';
         return `
-        <div class="detail-todo-row">
+        <div class="detail-todo-row" data-doc-id="${t.doc_id}">
           <button class="cb" ${cbStyle} onclick="${cbClick}">${cbContent}</button>
-          <div class="detail-todo-text${st === 'done' ? ' done' : ''}">${esc(t.description)}${assignedInfo}${t.deadline ? ` <span class="detail-todo-dl">⚑ ${fmtDate(t.deadline)}</span>` : ''}</div>
-          ${assignBtn ? `<div style="flex-shrink:0">${assignBtn}</div>` : ''}
+          <input type="text" class="detail-todo-desc-input"
+                 value="${esc(t.description)}"
+                 data-doc-id="${t.doc_id}"
+                 onblur="saveLinkedTodoField(this,'description')">
+          <input type="date" class="detail-todo-dl-input" value="${dlVal}"
+                 data-doc-id="${t.doc_id}"
+                 onblur="saveLinkedTodoField(this,'deadline')">
+          ${assignedInfo}
+          ${assignBtn}
+          <button class="ia" onclick="deleteLinkedTodo(${t.doc_id},'${esc(item.item_id)}')" title="Remove task">✕</button>
         </div>`;
       }).join('')}
-    </div>` : (item.action_items || []).length ? `
-    <div class="detail-section">
-      <div class="detail-label">Action Items</div>
-      <ul class="detail-list">${(item.action_items || []).map(a =>
-        `<li><strong>${esc(a.description)}</strong>${a.deadline ? ` <span style="color:var(--red)">⚑ ${esc(a.deadline)}</span>` : ''}${a.owner && a.owner !== 'me' ? ` → ${esc(a.owner)}` : ''}</li>`
-      ).join('')}</ul>
-    </div>` : '';
+      <button class="ia detail-add-btn" onclick="addLinkedTodo('${esc(item.item_id)}')">+ Add task</button>
+    </div>`;
 
   const goalsList = Array.isArray(item.goals) ? item.goals : [];
   const goals = `
@@ -4499,6 +4516,48 @@ async function saveKeyDateEdit(itemId, idx, field, value) {
   const list = [...(analysis.key_dates || [])];
   list[idx] = { ...list[idx], [field]: value };
   await _patchKeyDates(itemId, list);
+}
+
+// Issue #85: linked-todo CRUD inside the card detail panel.
+async function addLinkedTodo(itemId) {
+  try {
+    await api('/todos', 'POST', {
+      description: 'new task',
+      priority: 'medium',
+      item_id: itemId,
+    });
+    // Refetch todos into the cache and re-render the panel.
+    allTodos = await api('/todos');
+    const analysis = findAnalysis(itemId);
+    if (analysis) openDetail(analysis);
+    if (typeof loadStats === 'function') loadStats();
+  } catch (e) {
+    console.warn('addLinkedTodo:', e);
+  }
+}
+
+async function saveLinkedTodoField(el, fieldName) {
+  const docId = Number(el.dataset.docId);
+  const value = fieldName === 'deadline' ? (el.value || null) : el.value;
+  try {
+    await api(`/todos/${docId}`, 'PATCH', { [fieldName]: value });
+    const idx = allTodos.findIndex(t => t.doc_id === docId);
+    if (idx >= 0) allTodos[idx] = { ...allTodos[idx], [fieldName]: value };
+  } catch (e) {
+    console.warn('saveLinkedTodoField:', e);
+  }
+}
+
+async function deleteLinkedTodo(docId, itemId) {
+  try {
+    await api(`/todos/${docId}`, 'DELETE');
+    allTodos = allTodos.filter(t => t.doc_id !== docId);
+    const analysis = findAnalysis(itemId);
+    if (analysis) openDetail(analysis);
+    if (typeof loadStats === 'function') loadStats();
+  } catch (e) {
+    console.warn('deleteLinkedTodo:', e);
+  }
 }
 
 function closeDetail() {
