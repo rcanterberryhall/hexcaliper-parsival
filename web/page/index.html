@@ -4158,7 +4158,7 @@ function openDetail(item) {
   const goals = `
     <div class="detail-section" data-item-id="${esc(item.item_id)}">
       <div class="detail-label">Goals</div>
-      <ul class="detail-goals-list" id="detailGoalsList">
+      <ul class="detail-goals-list">
         ${goalsList.map((g, i) => `
           <li class="detail-goal-row" data-idx="${i}">
             <input type="text" class="detail-goal-input" value="${esc(g)}"
@@ -4427,6 +4427,7 @@ async function removeGoal(itemId, idx) {
   openDetail(analysis);
 }
 async function saveGoalEdit(itemId, idx, value) {
+  // No re-render: blur fires on every keystroke-leave; preserving focus matters.
   const analysis = findAnalysis(itemId);
   if (!analysis) return;
   const goals = [...(analysis.goals || [])];
