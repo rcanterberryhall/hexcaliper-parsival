@@ -1710,6 +1710,16 @@ tr.attn-low  { opacity:0.65; }
     </div>
 
     <div class="help-section">
+      <h3>Cards</h3>
+      <p>Todos open as <strong>cards</strong> in the right-hand detail panel. Manual and LLM-generated cards share the same editable surface — title, summary, body/notes, priority, category, project tag, goals, key dates, linked tasks, and "why this priority" are all editable inline.</p>
+      <dl class="help-kv">
+        <dt>+ New card</dt><dd>Creates a blank manual card and opens it in the detail panel. Manual cards are skipped by reanalysis.</dd>
+        <dt>Edit protection</dt><dd>Fields you edit on a generated card are recorded in <code>user_edited_fields</code> and preserved when the LLM reanalyses the underlying item.</dd>
+        <dt>Linked tasks</dt><dd>The Tasks list on a card is the authoritative set of todos tied to that card. Add, rename, or delete tasks from the card; changes appear in the main Todos list.</dd>
+      </dl>
+    </div>
+
+    <div class="help-section">
       <h3>Priority and category</h3>
       <table class="help-table">
         <tr><th>Priority</th><th>Meaning</th></tr>
