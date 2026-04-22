@@ -993,6 +993,8 @@ class TestPatchAnalysisRichFields:
         with _db.lock:
             row = _db.get_item("edit_me")
         assert row["body_preview"] == "free-form notes here"
+        import json as _json
+        assert "body_preview" in _json.loads(row["user_edited_fields"])
 
     def test_patch_accepts_goals_list(self, client):
         self._seed()
@@ -1017,6 +1019,7 @@ class TestPatchAnalysisRichFields:
         with _db.lock:
             row = _db.get_item("edit_me")
         assert _json.loads(row["key_dates"]) == payload
+        assert "key_dates" in _json.loads(row["user_edited_fields"])
 
     def test_patch_accepts_title_urgency_hierarchy_user_summary(self, client):
         self._seed()

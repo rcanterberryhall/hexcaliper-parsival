@@ -932,6 +932,9 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
     :param item_id: Stable ID of the analysis item to update.
     :param body: Partial update dict; accepted keys: ``priority``, ``category``,
                  ``project_tag``, ``is_passdown``.
+                 Content-level fields (issue #85): ``title``, ``summary``,
+                 ``user_summary``, ``urgency_reason``/``urgency``,
+                 ``body_preview``, ``hierarchy``, ``goals``, ``key_dates``.
     :return: ``{"ok": True}`` plus all fields that were actually updated.
     :raises HTTPException 400: If no valid fields are present in ``body``.
     :raises HTTPException 404: If no item with ``item_id`` exists.
@@ -974,6 +977,7 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
     if "user_summary" in body and isinstance(body["user_summary"], str):
         updates["user_summary"] = body["user_summary"]
     # Accept either urgency_reason (wire name used by JS) or urgency (column name).
+    # If both are supplied, urgency_reason takes precedence.
     _urgency_in = body.get("urgency_reason", body.get("urgency"))
     if isinstance(_urgency_in, str):
         updates["urgency"] = _urgency_in
