@@ -1714,7 +1714,7 @@ tr.attn-low  { opacity:0.65; }
       <h3>Cards</h3>
       <p>Todos open as <strong>cards</strong> in the right-hand detail panel. Manual and LLM-generated cards share the same editable surface — title, summary, body/notes, priority, category, project tag, goals, key dates, linked tasks, and "why this priority" are all editable inline.</p>
       <dl class="help-kv">
-        <dt>+ New card</dt><dd>Creates a blank manual card and opens it in the detail panel. Manual cards are skipped by reanalysis.</dd>
+        <dt>+ New card</dt><dd>Opens a dialog to set description, priority, and deadline, then creates a manual card and opens it in the detail panel. Manual cards are skipped by reanalysis.</dd>
         <dt>Edit protection</dt><dd>Fields you edit on a generated card are recorded in <code>user_edited_fields</code> and preserved when the LLM reanalyses the underlying item.</dd>
         <dt>Linked tasks</dt><dd>The Tasks list on a card is the authoritative set of todos tied to that card. Add, rename, or delete tasks from the card; changes appear in the main Todos list.</dd>
       </dl>
@@ -2537,19 +2537,60 @@ async function toggleDone(id, done) {
   }
 }
 
-async function createManualCard() {
+function createManualCard() {
+  $('laModalTitle').textContent = 'New manual card';
+  $('laModalBody').innerHTML = `
+    <div class="la-field">
+      <label>Description</label>
+      <input id="newCardDesc" type="text" placeholder="What needs doing?">
+    </div>
+    <div class="la-field-row">
+      <div class="la-field">
+        <label>Priority</label>
+        <select id="newCardPri">
+          <option value="high">high</option>
+          <option value="medium" selected>medium</option>
+          <option value="low">low</option>
+        </select>
+      </div>
+      <div class="la-field">
+        <label>Deadline (optional)</label>
+        <input id="newCardDeadline" type="date">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="detail-save" id="newCardSubmit" onclick="submitManualCard()" style="padding:5px 14px">Create</button>
+      <button class="ia" onclick="closeLaModal()" style="padding:4px 10px;margin-left:auto">Cancel</button>
+    </div>
+  `;
+  _laShowModal();
+  const desc = $('newCardDesc');
+  desc.focus();
+  desc.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); submitManualCard(); }
+  });
+}
+
+async function submitManualCard() {
+  const descInput = $('newCardDesc');
+  const description = (descInput?.value || '').trim();
+  if (!description) { descInput?.focus(); return; }
+  const priority = $('newCardPri').value;
+  const deadline = $('newCardDeadline').value || null;
+  const submitBtn = $('newCardSubmit');
+  if (submitBtn) submitBtn.disabled = true;
   try {
-    const resp = await api('/todos', 'POST', {
-      description: 'new card',
-      priority:    'medium',
-    });
+    const body = { description, priority };
+    if (deadline) body.deadline = deadline;
+    const resp = await api('/todos', 'POST', body);
+    closeLaModal();
     // Best-effort cache refresh; a failed reload must not mask the successful POST.
     await Promise.allSettled([loadTodos(), loadItems()]);
     const newItemId = resp.item_id || `manual_${resp.doc_id}`;
     await openTodoDetail(newItemId);
-    document.querySelector('.detail-title-input')?.select();
     if (typeof loadStats === 'function') loadStats();
   } catch (e) {
+    if (submitBtn) submitBtn.disabled = false;
     $('statusMsg').textContent = 'Failed to create card: ' + e.message;
   }
 }
