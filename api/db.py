@@ -968,6 +968,11 @@ def delete_todo_by_id(todo_id: int) -> None:
     conn().execute("DELETE FROM todos WHERE id = ?", (todo_id,))
 
 
+def delete_item_by_id(item_id: str) -> None:
+    """Remove a single items row by its item_id."""
+    conn().execute("DELETE FROM items WHERE item_id = ?", (item_id,))
+
+
 def get_all_todos() -> list[dict]:
     """Return all todo rows (including done), ordered by priority then created_at."""
     return _rows_to_list(
