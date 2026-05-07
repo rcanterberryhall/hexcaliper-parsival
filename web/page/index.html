@@ -2591,14 +2591,29 @@ async function deleteTodo(id) {
   if (idx < 0) return;
   const original = allTodos[idx];
   _removeTodoRow(id);
+  // Manual cards live in two caches — `allTodos` (Todos view) and the
+  // synthesized `manual_<doc_id>` row in `allAnalyses` (Items view).
+  // Drop the synthesized row in lockstep so the Items view doesn't keep
+  // showing a ghost card until the next refresh (parsival#92).
+  const synthId = `manual_${id}`;
+  const aIdx = allAnalyses.findIndex(a => a.item_id === synthId);
+  const originalAnalysis = aIdx >= 0 ? allAnalyses[aIdx] : null;
+  if (aIdx >= 0) {
+    allAnalyses.splice(aIdx, 1);
+    if (currentView === 'items') renderItems(allAnalyses);
+  }
   try {
     await api(`/todos/${id}`, 'DELETE');
     loadStats();
   } catch (e) {
     console.warn('deleteTodo:', e);
-    // Revert: reinsert the row into the local cache and re-render the list.
+    // Revert: reinsert into both caches and re-render the affected views.
     // Full re-render is fine here — this only runs on the error path.
     allTodos.splice(Math.min(idx, allTodos.length), 0, original);
+    if (originalAnalysis) {
+      allAnalyses.splice(Math.min(aIdx, allAnalyses.length), 0, originalAnalysis);
+      if (currentView === 'items') renderItems(allAnalyses);
+    }
     const visible = _filterTodos(allTodos);
     renderTodos(visible);
     updateCounts(visible);

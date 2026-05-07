@@ -212,6 +212,45 @@ def test_delete_todo(client):
     assert todos.get(doc_id=doc_id) is None
 
 
+def test_delete_manual_todo_drops_synthesized_item(client):
+    """parsival#92: deleting a manual todo must also remove its synthesized
+    `manual_<doc_id>` items row, otherwise the Items view keeps showing an
+    orphan card after refresh."""
+    import db as _db
+    resp = client.post("/todos", json={"description": "manual to delete", "priority": "low"})
+    assert resp.status_code == 200
+    doc_id     = resp.json()["doc_id"]
+    synth_id   = f"manual_{doc_id}"
+    with _db.lock:
+        assert _db.get_item(synth_id) is not None
+    r = client.delete(f"/todos/{doc_id}")
+    assert r.status_code == 204
+    with _db.lock:
+        assert _db.get_item(synth_id) is None
+
+
+def test_delete_real_todo_keeps_underlying_item(client):
+    """Deleting a todo linked to a real (non-manual) item must NOT delete the
+    underlying email/intel row — only manual_<doc_id> synthetics cascade."""
+    import db as _db
+    with _db.lock:
+        _db.upsert_item({
+            "item_id": "real_keep", "source": "outlook",
+            "title": "real email", "body_preview": "hi",
+        })
+    resp = client.post("/todos", json={
+        "description": "review email",
+        "priority":    "medium",
+        "item_id":     "real_keep",
+    })
+    assert resp.status_code == 200
+    doc_id = resp.json()["doc_id"]
+    r = client.delete(f"/todos/{doc_id}")
+    assert r.status_code == 204
+    with _db.lock:
+        assert _db.get_item("real_keep") is not None
+
+
 def test_post_todo_creates_manual_item(client):
     r = client.post("/todos", json={"description": "Manual task", "priority": "high"})
     assert r.status_code == 200

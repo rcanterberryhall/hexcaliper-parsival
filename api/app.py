@@ -1865,6 +1865,7 @@ def delete_todo(doc_id: int):
     """
     with db.lock:
         card_ids = db.get_cards_for_todo(doc_id)
+        todo = db.get_todo_by_id(doc_id)
         db.delete_todo_by_id(doc_id)
         for cid in card_ids:
             db.conn().execute(
@@ -1872,6 +1873,12 @@ def delete_todo(doc_id: int):
                 "WHERE card_id = ? AND link_type = 'todo' AND target_id = ?",
                 (cid, str(doc_id)),
             )
+        # Manual cards synthesize a `manual_<doc_id>` items row so the detail
+        # panel works for them (parsival#85). Drop that row when the todo goes
+        # away, otherwise the Items view keeps showing an orphan card until
+        # the row is purged some other way.
+        if todo and todo.get("item_id") == f"manual_{doc_id}":
+            db.delete_item_by_id(f"manual_{doc_id}")
     return Response(status_code=204)
 
 
