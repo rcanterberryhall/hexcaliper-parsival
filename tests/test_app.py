@@ -212,6 +212,45 @@ def test_delete_todo(client):
     assert todos.get(doc_id=doc_id) is None
 
 
+def test_delete_manual_todo_drops_synthesized_item(client):
+    """parsival#92: deleting a manual todo must also remove its synthesized
+    `manual_<doc_id>` items row, otherwise the Items view keeps showing an
+    orphan card after refresh."""
+    import db as _db
+    resp = client.post("/todos", json={"description": "manual to delete", "priority": "low"})
+    assert resp.status_code == 200
+    doc_id     = resp.json()["doc_id"]
+    synth_id   = f"manual_{doc_id}"
+    with _db.lock:
+        assert _db.get_item(synth_id) is not None
+    r = client.delete(f"/todos/{doc_id}")
+    assert r.status_code == 204
+    with _db.lock:
+        assert _db.get_item(synth_id) is None
+
+
+def test_delete_real_todo_keeps_underlying_item(client):
+    """Deleting a todo linked to a real (non-manual) item must NOT delete the
+    underlying email/intel row — only manual_<doc_id> synthetics cascade."""
+    import db as _db
+    with _db.lock:
+        _db.upsert_item({
+            "item_id": "real_keep", "source": "outlook",
+            "title": "real email", "body_preview": "hi",
+        })
+    resp = client.post("/todos", json={
+        "description": "review email",
+        "priority":    "medium",
+        "item_id":     "real_keep",
+    })
+    assert resp.status_code == 200
+    doc_id = resp.json()["doc_id"]
+    r = client.delete(f"/todos/{doc_id}")
+    assert r.status_code == 204
+    with _db.lock:
+        assert _db.get_item("real_keep") is not None
+
+
 def test_post_todo_creates_manual_item(client):
     r = client.post("/todos", json={"description": "Manual task", "priority": "high"})
     assert r.status_code == 200
@@ -496,6 +535,95 @@ def test_save_analysis_allows_same_description_in_different_conversations():
     assert len(todos.all()) == 2
 
 
+# ── get_open_todos_for_conversation (parsival#79) ─────────────────────────────
+
+def _insert_item_row(item_id: str, conversation_id: str, timestamp: str):
+    import db as _db
+    _db.conn().execute(
+        "INSERT INTO items (item_id, conversation_id, timestamp) VALUES (?, ?, ?)",
+        (item_id, conversation_id, timestamp),
+    )
+
+
+def _insert_todo_for(item_id: str, description: str, *, done: bool = False,
+                     owner: str = "me", deadline: str | None = None):
+    todos.insert({
+        "item_id": item_id, "source": "outlook", "title": "T", "url": "",
+        "description": description, "deadline": deadline, "owner": owner,
+        "priority": "medium", "done": done,
+        "created_at": "2026-03-17T10:00:00+00:00",
+    })
+
+
+def test_get_open_todos_for_conversation_returns_only_matching_thread():
+    import db as _db
+    _insert_item_row("a1", "conv-A", "2026-04-01T10:00:00+00:00")
+    _insert_item_row("b1", "conv-B", "2026-04-01T10:00:00+00:00")
+    _insert_todo_for("a1", "Ship the part")
+    _insert_todo_for("b1", "Review quote")
+
+    out = _db.get_open_todos_for_conversation("conv-A")
+
+    descs = [t["description"] for t in out]
+    assert descs == ["Ship the part"]
+
+
+def test_get_open_todos_for_conversation_excludes_done_todos():
+    import db as _db
+    _insert_item_row("x1", "conv-X", "2026-04-01T10:00:00+00:00")
+    _insert_todo_for("x1", "Open task", done=False)
+    _insert_todo_for("x1", "Finished task", done=True)
+
+    out = _db.get_open_todos_for_conversation("conv-X")
+
+    descs = [t["description"] for t in out]
+    assert descs == ["Open task"]
+
+
+def test_get_open_todos_for_conversation_respects_before_timestamp():
+    """Only todos from items with a strictly earlier timestamp are returned —
+    prevents a message from self-suppressing its own todos on reanalyze."""
+    import db as _db
+    _insert_item_row("m1", "conv-T", "2026-04-01T09:00:00+00:00")
+    _insert_item_row("m2", "conv-T", "2026-04-01T10:00:00+00:00")
+    _insert_item_row("m3", "conv-T", "2026-04-01T11:00:00+00:00")
+    _insert_todo_for("m1", "Task from message 1")
+    _insert_todo_for("m2", "Task from message 2")
+    _insert_todo_for("m3", "Task from message 3")
+
+    out = _db.get_open_todos_for_conversation(
+        "conv-T", before_timestamp="2026-04-01T10:30:00+00:00"
+    )
+
+    descs = sorted(t["description"] for t in out)
+    assert descs == ["Task from message 1", "Task from message 2"]
+
+
+def test_get_open_todos_for_conversation_empty_id_returns_empty():
+    import db as _db
+    assert _db.get_open_todos_for_conversation("") == []
+    assert _db.get_open_todos_for_conversation(None) == []
+
+
+def test_get_open_todos_for_conversation_caps_at_default_limit():
+    """Long threads (50+ messages × one todo each) must not blow the prompt —
+    helper caps at 15 most recent by item timestamp."""
+    import db as _db
+    for i in range(25):
+        ts = f"2026-04-01T{i:02d}:00:00+00:00"
+        _insert_item_row(f"i{i}", "conv-long", ts)
+        _insert_todo_for(f"i{i}", f"Task {i}")
+
+    out = _db.get_open_todos_for_conversation("conv-long")
+
+    assert len(out) == 15
+    descs = {t["description"] for t in out}
+    # Most recent 15 messages are i10..i24 — i0..i9 should drop off.
+    assert "Task 24" in descs
+    assert "Task 10" in descs
+    assert "Task 9" not in descs
+
+
 def test_save_analysis_does_not_duplicate_intel():
     """Calling _save_analysis twice with the same information_item must produce
     exactly one intel row."""
@@ -670,3 +798,289 @@ def test_get_briefing_returns_cached_content(client):
     assert len(body["sections"]) == 1
     assert body["sections"][0]["project"] == "Alpha"
     assert "generated_at" in body
+
+
+def test_save_analysis_assigns_delegated_owner_to_assigned_tab():
+    """Regression guard for issue #83's Assigned-tab symptom: when the LLM
+    produces a non-me owner, _save_analysis must set status='assigned' and
+    populate assigned_to so the todo shows up in the Assigned tab."""
+    import db as _db
+
+    a = Analysis(
+        item_id="test-rv17-83",
+        source="outlook",
+        title="RV17 and next up",
+        author="Chris Ward <Chris.Ward@UniversalOrlando.com>",
+        timestamp="2026-04-16T12:36:00",
+        url="",
+        category="task",
+        task_type=None,
+        has_action=True,
+        priority="medium",
+        action_items=[ActionItem(
+            description="Coordinate with Reid Hall's team to determine next RV",
+            deadline=None,
+            owner="Anna Simonitis",
+        )],
+        summary="Coordinate next RV after RV17",
+        urgency_reason=None,
+        hierarchy="project",
+        is_passdown=False,
+        project_tag=None,
+        direction="received",
+        conversation_id="conv-83",
+        conversation_topic=None,
+        goals=[],
+        key_dates=[],
+        body_preview="Hi Tech team, RV17 is almost complete...",
+        to_field="Anna Simonitis <Anna.Simonitis@universalorlando.com>; Reid Hall <reid.hall@prismsystems.com>",
+        cc_field="",
+        is_replied=False,
+        replied_at=None,
+        information_items=[],
+    )
+
+    _save_analysis(a)
+
+    rows = _db.get_todos_for_item("test-rv17-83")
+    assert len(rows) == 1, rows
+    t = rows[0]
+    assert t["owner"] == "Anna Simonitis"
+    assert t["status"] == "assigned", t
+    assert t["assigned_to"] == "anna.simonitis@universalorlando.com"
+
+
+class TestManualTodoMigration:
+    """Migration backfills items rows for pre-existing manual todos
+    (is_manual=1, item_id IS NULL). The backfill sets item_id='manual_<todo_id>'
+    on both the todo and the synthesized items row so the UI's
+    openTodoDetail() → GET /analyses/{item_id} path works for them."""
+
+    def test_backfill_creates_items_row_for_orphan_manual_todo(self, client):
+        import db as _db
+        # Insert a legacy manual todo bypassing the new POST handler so we
+        # simulate the pre-migration schema state.
+        with _db.lock:
+            tid = _db.insert_todo({
+                "description": "legacy manual todo",
+                "priority":    "medium",
+                "is_manual":   1,
+                "done":        0,
+                "status":      "open",
+                "source":      "manual",
+                "title":       "",
+                "url":         "",
+                "owner":       "me",
+                "created_at":  "2026-04-20T00:00:00+00:00",
+                "item_id":     None,
+            })
+        # Invoke the backfill migration directly.
+        with _db.lock:
+            _db.backfill_manual_todo_items()
+        # Todo should now carry an item_id pointing at the synthesized row.
+        with _db.lock:
+            row = _db.conn().execute(
+                "SELECT item_id FROM todos WHERE id = ?", (tid,)
+            ).fetchone()
+        assert row["item_id"] == f"manual_{tid}"
+        with _db.lock:
+            item = _db.get_item(f"manual_{tid}")
+        assert item is not None
+        assert item["source"] == "manual"
+        assert item["title"]  == "legacy manual todo"
+        assert item["has_action"] == 1
+
+    def test_backfill_is_idempotent(self, client):
+        import db as _db
+        with _db.lock:
+            tid = _db.insert_todo({
+                "description": "another legacy", "priority": "low",
+                "is_manual": 1, "done": 0, "status": "open",
+                "source": "manual", "title": "", "url": "", "owner": "me",
+                "created_at": "2026-04-20T00:00:00+00:00", "item_id": None,
+            })
+        with _db.lock:
+            _db.backfill_manual_todo_items()
+            _db.backfill_manual_todo_items()  # second call must be a no-op
+        with _db.lock:
+            count = _db.conn().execute(
+                "SELECT COUNT(*) FROM items WHERE item_id = ?",
+                (f"manual_{tid}",),
+            ).fetchone()[0]
+        assert count == 1
+
+    def test_backfill_skips_non_manual_todos(self, client):
+        import db as _db
+        # A generated todo already has item_id set; migration should not touch it.
+        with _db.lock:
+            _db.upsert_item({
+                "item_id": "real_item_1", "source": "outlook",
+                "title": "real email", "body_preview": "hello",
+            })
+            _db.insert_todo({
+                "description": "generated", "priority": "medium",
+                "is_manual": 0, "done": 0, "status": "open",
+                "source": "outlook", "title": "real email", "url": "",
+                "owner": "me", "created_at": "2026-04-20T00:00:00+00:00",
+                "item_id": "real_item_1",
+            })
+            _db.backfill_manual_todo_items()
+            count = _db.conn().execute(
+                "SELECT COUNT(*) FROM items WHERE item_id LIKE 'manual_%'"
+            ).fetchone()[0]
+        assert count == 0
+
+
+class TestManualTodoCreationSynthesizesItem:
+    """POST /todos with no item_id must create a placeholder items row
+    so the card opens in the detail panel like a generated card."""
+
+    def test_post_todos_creates_items_row(self, client):
+        resp = client.post("/todos", json={
+            "description": "prep for Friday meeting",
+            "priority":    "high",
+            "project_tag": None,
+        })
+        assert resp.status_code == 200
+        doc_id = resp.json()["doc_id"]
+
+        import db as _db
+        with _db.lock:
+            todo_row = _db.conn().execute(
+                "SELECT item_id FROM todos WHERE id = ?", (doc_id,)
+            ).fetchone()
+        assert todo_row["item_id"] == f"manual_{doc_id}"
+
+        with _db.lock:
+            item = _db.get_item(f"manual_{doc_id}")
+        assert item is not None
+        assert item["source"]     == "manual"
+        assert item["title"]      == "prep for Friday meeting"
+        assert item["priority"]   == "high"
+        assert item["has_action"] == 1
+        assert item["category"]   == "task"
+
+    def test_post_todos_with_item_id_does_not_synthesize(self, client):
+        import db as _db
+        with _db.lock:
+            _db.upsert_item({
+                "item_id": "real_a", "source": "outlook",
+                "title": "real email", "body_preview": "hi",
+            })
+        resp = client.post("/todos", json={
+            "description": "manual child of real email",
+            "priority":    "medium",
+            "item_id":     "real_a",
+        })
+        assert resp.status_code == 200
+        doc_id = resp.json()["doc_id"]
+        with _db.lock:
+            todo_row = _db.conn().execute(
+                "SELECT item_id FROM todos WHERE id = ?", (doc_id,)
+            ).fetchone()
+        # Must be the real item_id, not manual_<doc_id>.
+        assert todo_row["item_id"] == "real_a"
+        # No spurious manual_* row was created.
+        with _db.lock:
+            count = _db.conn().execute(
+                "SELECT COUNT(*) FROM items WHERE item_id LIKE 'manual_%'"
+            ).fetchone()[0]
+        assert count == 0
+
+
+class TestPatchAnalysisRichFields:
+    """Issue #85: PATCH /analyses/{item_id} must accept the content-level
+    fields (summary, urgency_reason, body_preview, goals, key_dates,
+    hierarchy, title, user_summary) and record them in user_edited_fields
+    so reanalyze preserves them."""
+
+    def _seed(self):
+        import db as _db
+        with _db.lock:
+            _db.upsert_item({
+                "item_id":      "edit_me",
+                "source":       "manual",
+                "title":        "original title",
+                "summary":      "original summary",
+                "urgency":      "original urgency",
+                "body_preview": "original body",
+                "goals":        "[]",
+                "key_dates":    "[]",
+                "hierarchy":    "general",
+                "priority":     "medium",
+                "category":     "task",
+                "has_action":   1,
+            })
+
+    def test_patch_accepts_summary(self, client):
+        self._seed()
+        resp = client.patch("/analyses/edit_me", json={"summary": "new summary"})
+        assert resp.status_code == 200
+        import db as _db
+        with _db.lock:
+            row = _db.get_item("edit_me")
+        assert row["summary"] == "new summary"
+        import json as _json
+        assert "summary" in _json.loads(row["user_edited_fields"])
+
+    def test_patch_accepts_body_preview(self, client):
+        self._seed()
+        resp = client.patch("/analyses/edit_me",
+                            json={"body_preview": "free-form notes here"})
+        assert resp.status_code == 200
+        import db as _db
+        with _db.lock:
+            row = _db.get_item("edit_me")
+        assert row["body_preview"] == "free-form notes here"
+        import json as _json
+        assert "body_preview" in _json.loads(row["user_edited_fields"])
+
+    def test_patch_accepts_goals_list(self, client):
+        self._seed()
+        resp = client.patch("/analyses/edit_me",
+                            json={"goals": ["draft proposal", "review metrics"]})
+        assert resp.status_code == 200
+        import db as _db, json as _json
+        with _db.lock:
+            row = _db.get_item("edit_me")
+        assert _json.loads(row["goals"]) == ["draft proposal", "review metrics"]
+        assert "goals" in _json.loads(row["user_edited_fields"])
+
+    def test_patch_accepts_key_dates_list(self, client):
+        self._seed()
+        payload = [
+            {"date": "2026-05-01", "description": "submit draft"},
+            {"date": "2026-05-15", "description": "review"},
+        ]
+        resp = client.patch("/analyses/edit_me", json={"key_dates": payload})
+        assert resp.status_code == 200
+        import db as _db, json as _json
+        with _db.lock:
+            row = _db.get_item("edit_me")
+        assert _json.loads(row["key_dates"]) == payload
+        assert "key_dates" in _json.loads(row["user_edited_fields"])
+
+    def test_patch_accepts_title_urgency_hierarchy_user_summary(self, client):
+        self._seed()
+        resp = client.patch("/analyses/edit_me", json={
+            "title":          "new title",
+            "urgency_reason": "needs reply today",
+            "hierarchy":      "project",
+            "user_summary":   "my note",
+        })
+        assert resp.status_code == 200
+        import db as _db, json as _json
+        with _db.lock:
+            row = _db.get_item("edit_me")
+        assert row["title"]        == "new title"
+        assert row["urgency"]      == "needs reply today"
+        assert row["hierarchy"]    == "project"
+        assert row["user_summary"] == "my note"
+        edited = set(_json.loads(row["user_edited_fields"]))
+        assert {"title", "urgency", "hierarchy", "user_summary"} <= edited
+
+    def test_patch_rejects_unknown_fields(self, client):
+        """Body with only unknown keys still returns 400, behaviour unchanged."""
+        self._seed()
+        resp = client.patch("/analyses/edit_me", json={"bogus": "value"})
+        assert resp.status_code == 400

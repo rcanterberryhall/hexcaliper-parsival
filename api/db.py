@@ -128,6 +128,51 @@ def conn() -> sqlite3.Connection:
     return _conn
 
 
+def backfill_manual_todo_items() -> int:
+    """Create placeholder items rows for manual todos that predate the
+    synthesized-item model (is_manual=1, item_id IS NULL).
+
+    Each orphan todo gets item_id='manual_<todo_id>' on both the todo and
+    a synthesized items row whose title/body seed from the todo description
+    so the detail panel has something to render.
+
+    Idempotent: runs only against todos still missing item_id.
+
+    Returns the number of rows backfilled.
+    """
+    c = conn()
+    orphans = c.execute(
+        "SELECT id, description, priority, project_tag, created_at "
+        "FROM todos WHERE is_manual = 1 AND (item_id IS NULL OR item_id = '')"
+    ).fetchall()
+    for row in orphans:
+        new_iid = f"manual_{row['id']}"
+        desc    = row["description"] or ""
+        upsert_item({
+            "item_id":      new_iid,
+            "source":       "manual",
+            "direction":    "received",
+            "title":        desc[:200],
+            "author":       "",
+            "timestamp":    row["created_at"] or _now_iso(),
+            "url":          "",
+            "has_action":   1,
+            "priority":     row["priority"] or "medium",
+            "category":     "task",
+            "summary":      "",
+            "action_items": "[]",
+            "hierarchy":    "general",
+            "project_tag":  row["project_tag"],
+            "goals":        "[]",
+            "key_dates":    "[]",
+            "information_items": "[]",
+            "body_preview": "",
+            "references":   "[]",
+        })
+        c.execute("UPDATE todos SET item_id = ? WHERE id = ?", (new_iid, row["id"]))
+    return len(orphans)
+
+
 def _migrate_schema(c: sqlite3.Connection) -> None:
     """Apply incremental schema migrations that cannot use CREATE IF NOT EXISTS."""
     cols = {row[1] for row in c.execute("PRAGMA table_info(items)").fetchall()}
@@ -257,6 +302,12 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
             updated_at                TEXT NOT NULL
         )
     """)
+
+    # Backfill synthesized items rows for legacy manual todos (issue #85).
+    # Running inside _migrate_schema ensures every live DB catches up exactly
+    # once at next startup; subsequent runs are no-ops because orphans have
+    # already been linked.
+    backfill_manual_todo_items()
 
 
 def _create_schema(c: sqlite3.Connection) -> None:
@@ -849,6 +900,44 @@ def todo_exists_in_conversation(conversation_id: str, description: str) -> bool:
     return any(_norm_desc(r[0]) == target for r in rows)
 
 
+def get_open_todos_for_conversation(
+    conversation_id: str | None,
+    before_timestamp: str | None = None,
+    limit: int = 15,
+) -> list[dict]:
+    """Return open todos saved for earlier items in this conversation.
+
+    Feeds the LLM a "do not re-emit these" hint when analyzing the next
+    message in a thread (parsival#79). Paraphrase-level dedup the exact /
+    normalized check in todo_exists_in_conversation cannot catch.
+
+    Scoped by ``items.conversation_id``; filtered to ``todos.done = 0``.
+    When ``before_timestamp`` is set, only todos from items with a strictly
+    earlier ``items.timestamp`` are returned — required on reanalyze so a
+    message does not self-suppress its own todos. Most recent ``limit``
+    items win (prompt-bloat guard on very long threads).
+    """
+    if not conversation_id:
+        return []
+    params: list = [conversation_id]
+    where_extra = ""
+    if before_timestamp:
+        where_extra = " AND i.timestamp < ?"
+        params.append(before_timestamp)
+    params.append(int(limit))
+    rows = conn().execute(
+        "SELECT t.description, t.owner, t.deadline "
+        "FROM todos t JOIN items i ON t.item_id = i.item_id "
+        "WHERE i.conversation_id = ? AND t.done = 0" + where_extra + " "
+        "ORDER BY i.timestamp DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [
+        {"description": r[0], "owner": r[1], "deadline": r[2]}
+        for r in rows
+    ]
+
+
 def insert_todo(data: dict) -> int:
     """Insert a todo row and return its auto-generated id."""
     c    = conn()
@@ -890,6 +979,11 @@ def delete_todos_for_item(item_id: str) -> None:
 def delete_todo_by_id(todo_id: int) -> None:
     """Remove a single todo by its integer id."""
     conn().execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+
+
+def delete_item_by_id(item_id: str) -> None:
+    """Remove a single items row by its item_id."""
+    conn().execute("DELETE FROM items WHERE item_id = ?", (item_id,))
 
 
 def get_all_todos() -> list[dict]:

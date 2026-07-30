@@ -167,26 +167,28 @@ def test_run_scan_sets_running_false_after_completion():
 
 def _insert_minimal(item_id, source="jira", priority=None, category=None,
                     is_passdown=False,
-                    timestamp="2026-03-17T10:00:00+00:00"):
+                    timestamp="2026-03-17T10:00:00+00:00",
+                    conversation_id=None):
     """Insert a bare-minimum analysis record for reanalysis tests."""
     analyses.insert({
-        "item_id":     item_id,
-        "source":      source,
-        "title":       f"Item {item_id}",
-        "author":      "alice",
-        "timestamp":   timestamp,
-        "url":         "",
-        "body_preview": f"body of {item_id}",
-        "priority":    priority,
-        "category":    category,
-        "has_action":  False,
-        "is_passdown": is_passdown,
-        "project_tag": None,
-        "hierarchy":   "general",
-        "to_field":    "",
-        "cc_field":    "",
-        "is_replied":  False,
-        "replied_at":  None,
+        "item_id":         item_id,
+        "source":          source,
+        "title":           f"Item {item_id}",
+        "author":          "alice",
+        "timestamp":       timestamp,
+        "url":             "",
+        "body_preview":    f"body of {item_id}",
+        "priority":        priority,
+        "category":        category,
+        "has_action":      False,
+        "is_passdown":     is_passdown,
+        "project_tag":     None,
+        "hierarchy":       "general",
+        "to_field":        "",
+        "cc_field":        "",
+        "is_replied":      False,
+        "replied_at":      None,
+        "conversation_id": conversation_id,
     })
 
 
@@ -490,7 +492,7 @@ def test_run_reanalyze_sorts_passdowns_first():
 
     fake_ids = iter(["p1", "n2", "n1"])
 
-    def fake_build_prompt(item):
+    def fake_build_prompt(item, **_kwargs):
         # We rely on build_prompt being called in the same iteration order as
         # the submit loop, so recording the item here gives us submit order.
         submit_order.append(item.item_id)
@@ -583,6 +585,168 @@ def test_process_ingest_items_releases_remaining_claims_on_cancel():
         scan_state["cancelled"] = False
 
 
+# ── Thread-aware analysis (parsival#79) ───────────────────────────────────────
+
+def _raw_conv(item_id, conversation_id, timestamp,
+              body="body text", source="outlook"):
+    return RawItem(
+        source=source, item_id=item_id, title=f"Item {item_id}",
+        body=body, url="", author="alice@example.com", timestamp=timestamp,
+        metadata={"conversation_id": conversation_id},
+    )
+
+
+def _analysis_with_action(item_id, conversation_id, description,
+                          timestamp="2026-04-01T10:00:00+00:00"):
+    a = Analysis(
+        item_id=item_id, source="outlook", title=f"Item {item_id}",
+        author="alice", timestamp=timestamp, url="",
+        has_action=True, priority="medium", category="task",
+        action_items=[ActionItem(description=description, deadline=None, owner="me")],
+        summary="S", urgency_reason=None,
+    )
+    a.conversation_id = conversation_id
+    return a
+
+
+def test_process_ingest_items_sorts_and_passes_thread_todos_within_conversation():
+    """Within a conversation_id, items are processed oldest-first and each
+    analyze() call receives thread_todos built from earlier messages'
+    persisted todos (parsival#79)."""
+    orchestrator.claim_ingest_items(["m1", "m2", "m3"])
+
+    calls = []
+
+    def fake_analyze(item, **kwargs):
+        calls.append({
+            "item_id": item.item_id,
+            "thread_todos": list(kwargs.get("thread_todos") or []),
+        })
+        return _analysis_with_action(
+            item.item_id, "conv-A",
+            f"Task from {item.item_id}", timestamp=item.timestamp,
+        )
+
+    # Input order is intentionally shuffled — orchestrator must sort.
+    items = [
+        _raw_conv("m3", "conv-A", "2026-04-01T12:00:00+00:00"),
+        _raw_conv("m1", "conv-A", "2026-04-01T10:00:00+00:00"),
+        _raw_conv("m2", "conv-A", "2026-04-01T11:00:00+00:00"),
+    ]
+
+    with patch("orchestrator.analyze", side_effect=fake_analyze), \
+         patch("orchestrator.graph.index_item"), \
+         patch("orchestrator._spawn_situation_task"):
+        orchestrator.process_ingest_items(items)
+
+    assert [c["item_id"] for c in calls] == ["m1", "m2", "m3"]
+    assert calls[0]["thread_todos"] == []
+    call2_descs = {t["description"] for t in calls[1]["thread_todos"]}
+    assert "Task from m1" in call2_descs
+    call3_descs = {t["description"] for t in calls[2]["thread_todos"]}
+    assert {"Task from m1", "Task from m2"}.issubset(call3_descs)
+
+
+def test_process_ingest_items_isolates_thread_todos_between_conversations():
+    """Conversation A's todos must not leak into conversation B's prompt."""
+    orchestrator.claim_ingest_items(["a1", "b1"])
+
+    calls = []
+
+    def fake_analyze(item, **kwargs):
+        calls.append({
+            "item_id": item.item_id,
+            "thread_todos": list(kwargs.get("thread_todos") or []),
+        })
+        conv = item.metadata.get("conversation_id", "")
+        return _analysis_with_action(
+            item.item_id, conv, f"Task from {item.item_id}",
+            timestamp=item.timestamp,
+        )
+
+    with patch("orchestrator.analyze", side_effect=fake_analyze), \
+         patch("orchestrator.graph.index_item"), \
+         patch("orchestrator._spawn_situation_task"):
+        orchestrator.process_ingest_items([
+            _raw_conv("a1", "conv-A", "2026-04-01T10:00:00+00:00"),
+            _raw_conv("b1", "conv-B", "2026-04-01T10:00:00+00:00"),
+        ])
+
+    for c in calls:
+        assert c["thread_todos"] == [], (
+            f"{c['item_id']} saw thread_todos from another conversation"
+        )
+
+
+def test_run_reanalyze_fetches_thread_todos_for_conversation_items():
+    """Bulk reanalyze must rehydrate prior-message thread_todos for items
+    that belong to a conversation, scoped to before the item's timestamp
+    so an item does not self-suppress on its own todos (parsival#79)."""
+    _insert_minimal(
+        "msg-1", source="outlook",
+        timestamp="2026-04-01T09:00:00+00:00",
+        conversation_id="conv-X",
+    )
+    _insert_minimal(
+        "msg-2", source="outlook",
+        timestamp="2026-04-01T11:00:00+00:00",
+        conversation_id="conv-X",
+    )
+    todos.insert({
+        "item_id": "msg-1", "source": "outlook", "title": "T", "url": "",
+        "description": "Review spec", "deadline": None, "owner": "me",
+        "priority": "medium", "done": False,
+        "created_at": "2026-04-01T09:05:00+00:00",
+    })
+
+    captured = []
+
+    def fake_build_prompt(item, **kwargs):
+        captured.append({
+            "item_id": item.item_id,
+            "thread_todos": list(kwargs.get("thread_todos") or []),
+        })
+        return f"prompt for {item.item_id}"
+
+    with patch("orchestrator._merllm_batch_available", return_value=True), \
+         patch("orchestrator._submit_batch_job", return_value="job-x"), \
+         patch("orchestrator.build_prompt", side_effect=fake_build_prompt), \
+         patch("orchestrator._ensure_batch_poll_thread"), \
+         patch("orchestrator._generate_briefing_bg"):
+        _run_reanalyze()
+
+    by_id = {c["item_id"]: c for c in captured}
+    assert by_id["msg-1"]["thread_todos"] == []
+    descs_msg2 = [t["description"] for t in by_id["msg-2"]["thread_todos"]]
+    assert "Review spec" in descs_msg2
+
+
+def test_process_ingest_items_empty_thread_todos_for_standalone_items():
+    """Items without a conversation_id (Slack DMs, GitHub, Jira, etc.) must
+    always receive empty thread_todos — they have no thread to look up."""
+    orchestrator.claim_ingest_items(["s1"])
+
+    captured = {}
+
+    def fake_analyze(item, **kwargs):
+        captured["thread_todos"] = kwargs.get("thread_todos")
+        return _analysis("s1")
+
+    slack_item = RawItem(
+        source="slack", item_id="s1", title="DM",
+        body="hi", url="", author="alice",
+        timestamp="2026-04-01T10:00:00+00:00", metadata={},
+    )
+
+    with patch("orchestrator.analyze", side_effect=fake_analyze), \
+         patch("orchestrator._save_analysis"), \
+         patch("orchestrator.graph.index_item"), \
+         patch("orchestrator._spawn_situation_task"):
+        orchestrator.process_ingest_items([slack_item])
+
+    assert captured["thread_todos"] == []
+
+
 def test_run_reanalyze_aborts_when_merllm_unavailable():
     """squire#47: if merLLM is unreachable, reanalyze must refuse to run rather
     than silently falling back to the non-durable /api/generate path."""
@@ -600,3 +764,85 @@ def test_run_reanalyze_aborts_when_merllm_unavailable():
     for iid in ("a1", "a2"):
         rec = analyses.get(Q.item_id == iid)
         assert not rec.get("batch_job_id")
+
+
+def test_apply_batch_result_preserves_delegated_owner():
+    """Regression guard for issue #83 on the BATCH path: when the LLM
+    response assigns owner to another person, the stored todo must have
+    status='assigned' and assigned_to resolved from the To header.  Both
+    paths (sync analyze() + batch _apply_batch_result) funnel through
+    build_analysis_from_llm_json, which no longer runs postprocess_action_items."""
+    # Seed the item row _raw_item_from_record will hydrate
+    db.upsert_item({
+        "item_id":          "batch-rv17-83",
+        "source":           "outlook",
+        "direction":        "received",
+        "title":            "RE: 4/15/2026",
+        "author":           "Alex Washington <alex@dubscontrols.com>",
+        "timestamp":        "2026-04-17T08:42:35",
+        "url":              "",
+        "body_preview":     "Logan, did we get started on CV/LiDAR testing?",
+        "to_field":         "Logan Souza <Logan.Souza@universalorlando.com>; Reid Hall <reid.hall@prismsystems.com>",
+        "cc_field":         "",
+        "hierarchy":        "general",
+        "conversation_id":  "conv-2",
+    })
+
+    _apply_fake_batch_result("batch-rv17-83", {
+        "category":    "task",
+        "priority":    "medium",
+        "has_action":  True,
+        "summary":     "Follow up on CV/LiDAR testing",
+        "hierarchy":   "project",
+        "action_items": [
+            {"description": "Follow up on whether CV/LiDAR testing started",
+             "deadline": None, "owner": "Logan Souza"}
+        ],
+        "information_items": [],
+        "goals": [], "key_dates": [],
+    })
+
+    rows = db.get_todos_for_item("batch-rv17-83")
+    assert len(rows) == 1, rows
+    t = rows[0]
+    assert t["owner"] == "Logan Souza"
+    assert t["status"] == "assigned", t
+    assert t["assigned_to"] == "logan.souza@universalorlando.com"
+
+
+def test_run_reanalyze_skips_manual_items(client, monkeypatch):
+    """Manual cards have no source message; they must be excluded from the
+    reanalyze batch-submit loop or merLLM wastes a slot on empty input."""
+    import db as _db
+    import orchestrator as _orc
+
+    # Seed a real item plus a synthesized manual item.
+    with _db.lock:
+        _db.upsert_item({
+            "item_id": "real_t3", "source": "outlook",
+            "title": "real email", "body_preview": "hi",
+            "timestamp": "2026-04-20T00:00:00+00:00",
+        })
+        _db.upsert_item({
+            "item_id": "manual_t3", "source": "manual",
+            "title": "my manual card", "body_preview": "",
+            "timestamp": "2026-04-20T00:00:00+00:00",
+        })
+
+    submitted: list[str] = []
+
+    def fake_submit_batch_job(prompt: str) -> str:
+        return "fake-job-id"
+
+    def fake_set_batch_job_id(item_id: str, job_id: str) -> None:
+        submitted.append(item_id)
+
+    monkeypatch.setattr(_orc, "_merllm_batch_available", lambda: True)
+    monkeypatch.setattr(_orc, "_ensure_batch_poll_thread", lambda: None)
+    monkeypatch.setattr(_orc, "_submit_batch_job", fake_submit_batch_job)
+    monkeypatch.setattr(_db, "set_batch_job_id", fake_set_batch_job_id)
+
+    _orc.run_reanalyze()
+
+    assert "real_t3"   in submitted
+    assert "manual_t3" not in submitted
