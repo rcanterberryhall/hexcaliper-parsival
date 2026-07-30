@@ -34,6 +34,12 @@ Then run normally (or via Task Scheduler) to ingest emails:
 
     python outlook_sidecar.py
 
+The normal run tracks a high-water mark (the timestamp through which email has
+been ingested) in ``%LOCALAPPDATA%\\hexcaliper-parsival\\sidecar_state.json``.
+Each run backfills everything since that mark instead of a fixed window, so the
+schedule is gap-proof across arbitrarily long absences (host off / logged out)
+rather than losing anything older than the lookback window.
+
 Usage::
 
     pip install requests pywin32 keyring
@@ -45,10 +51,13 @@ Usage::
 
 Schedule with Windows Task Scheduler to run every 30–60 minutes.
 """
+import os
 import re
 import sys
+import json
 import time
 import requests
+from pathlib import Path
 from datetime import datetime, timedelta
 
 PAGE_API_URL        = "https://parsival.hexcaliper.com/page/api"
@@ -63,6 +72,53 @@ TEST_MAX_EMAILS     = 5
 _KEYRING_SERVICE = "hexcaliper-squire"
 _KEY_CLIENT_ID   = "cf_client_id"
 _KEY_CLIENT_SECRET = "cf_client_secret"
+
+# High-water-mark state.  The scheduled run persists the timestamp through which
+# email has been ingested, so after any offline gap (machine off / logged out)
+# the next run backfills *everything* since that mark rather than a fixed window.
+# Stored under LOCALAPPDATA so it survives git operations and log cleanup.
+_STATE_DIR   = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "hexcaliper-parsival"
+_STATE_FILE  = _STATE_DIR / "sidecar_state.json"
+_HWM_OVERLAP_HOURS = 1      # re-scan a little before the mark; /ingest dedupes by item_id
+_HWM_MAX_EMAILS    = 5000   # generous per-folder cap for long-gap backfills
+
+
+def _load_high_water_mark() -> "datetime | None":
+    """
+    Return the persisted high-water mark, or ``None`` if it is unset or unreadable.
+
+    A missing/corrupt state file is treated as "no mark" so the caller falls back
+    to the default first-run window rather than crashing.
+
+    :return: The datetime through which email has been ingested, or ``None``.
+    :rtype: datetime | None
+    """
+    try:
+        # utf-8-sig tolerates a BOM if some other tool wrote the file.
+        data = json.loads(_STATE_FILE.read_text(encoding="utf-8-sig"))
+        return datetime.fromisoformat(data["last_ingested_through"])
+    except Exception:
+        return None
+
+
+def _save_high_water_mark(ts: "datetime") -> None:
+    """
+    Persist the high-water mark.
+
+    Best-effort: a write failure only means the next run uses a wider lookback,
+    so it is logged as a warning rather than raised.
+
+    :param ts: The datetime through which email is now confirmed ingested.
+    :type ts: datetime
+    """
+    try:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _STATE_FILE.write_text(
+            json.dumps({"last_ingested_through": ts.isoformat()}, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"WARNING: could not persist high-water mark: {e}", flush=True)
 
 
 def _load_credentials() -> tuple[str, str]:
@@ -306,6 +362,15 @@ def fetch(lookback_hours: int = LOOKBACK_HOURS, max_emails: int = MAX_EMAILS) ->
 
 _POST_BATCH = 50   # items per /ingest request — keeps payloads well under nginx limits
 
+# Resilience knobs for post().  Transient failures (5xx, timeouts) are retried;
+# a batch that still fails is bisected to isolate a single "poison" item, which
+# is skipped so one malformed email cannot stall the whole run.  If more than
+# _MAX_SKIPPED_ITEMS are dropped the failure looks systemic, so the run aborts
+# without advancing the high-water mark and retries everything next time.
+_POST_RETRIES      = 3    # attempts per group before bisecting / skipping
+_POST_BACKOFF_SEC  = 2    # base backoff between retries (scaled by attempt number)
+_MAX_SKIPPED_ITEMS = 10   # abort the run if more than this many items are dropped
+
 
 def _exit_on_http_error(exc: "requests.HTTPError") -> None:
     """
@@ -329,6 +394,84 @@ def _exit_on_http_error(exc: "requests.HTTPError") -> None:
     sys.exit(f"ERROR: HTTP {status or '??'} from API — {exc}")
 
 
+def _ingest_with_retry(items: list[dict], headers: dict, dropped: list[dict]) -> tuple[int, int]:
+    """
+    POST one group of items to ``/ingest``, retrying transient failures and
+    bisecting to isolate a poison item.
+
+    Retries up to ``_POST_RETRIES`` times on 5xx / timeouts (deterministic 4xx,
+    except 429, are not retried).  If a multi-item group still fails it is split
+    in half and each half retried independently; a lone item that keeps failing
+    is appended to ``dropped`` and skipped, so one bad email cannot stall the run.
+
+    Connection loss and 401/403 auth rejection are treated as systemic and abort
+    the process (via ``sys.exit``) so the high-water mark is not advanced and the
+    whole run is retried next time.  The same abort fires once more than
+    ``_MAX_SKIPPED_ITEMS`` have been dropped, since that looks systemic rather
+    than a handful of malformed emails.
+
+    :param items: The group of email dicts to POST.
+    :param headers: CF Access auth headers.
+    :param dropped: Accumulator list; poison items are appended here.
+    :return: ``(received, skipped)`` counts reported by the API for this group.
+    :rtype: tuple[int, int]
+    """
+    last_exc = None
+    for attempt in range(1, _POST_RETRIES + 1):
+        try:
+            r = requests.post(
+                f"{PAGE_API_URL}/ingest",
+                json={"items": items},
+                headers=headers,
+                timeout=30,
+            )
+            r.raise_for_status()
+            result = r.json()
+            return result.get("received", 0), result.get("skipped", 0)
+        except requests.ConnectionError:
+            # Endpoint unreachable — systemic; abort so the mark isn't advanced.
+            sys.exit(f"ERROR: Could not reach API at {PAGE_API_URL} — is the appliance reachable?")
+        except requests.HTTPError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status in (401, 403):
+                _exit_on_http_error(e)          # bad creds — systemic, abort
+            last_exc = e
+            # Deterministic client errors (except 429) won't change on retry.
+            if status is not None and 400 <= status < 500 and status != 429:
+                break
+        except requests.Timeout as e:
+            last_exc = e
+        except Exception as e:
+            last_exc = e
+
+        if attempt < _POST_RETRIES:
+            time.sleep(_POST_BACKOFF_SEC * attempt)
+            print(f"    retry {attempt}/{_POST_RETRIES - 1} after error: {last_exc}", flush=True)
+
+    # Retries exhausted.  Bisect a multi-item group to isolate the offender.
+    if len(items) > 1:
+        mid = len(items) // 2
+        recv_a, skip_a = _ingest_with_retry(items[:mid], headers, dropped)
+        recv_b, skip_b = _ingest_with_retry(items[mid:], headers, dropped)
+        return recv_a + recv_b, skip_a + skip_b
+
+    # A single item that still fails is a poison item — record and skip it.
+    bad = items[0]
+    dropped.append(bad)
+    print(
+        f"    SKIP uningestable item {bad.get('item_id', '?')} "
+        f"({(bad.get('title', '') or '')[:60]!r}): {last_exc}",
+        flush=True,
+    )
+    if len(dropped) > _MAX_SKIPPED_ITEMS:
+        sys.exit(
+            f"ERROR: aborting — more than {_MAX_SKIPPED_ITEMS} items failed to ingest, "
+            "which looks systemic rather than a few bad emails. State not advanced; "
+            "will retry next run."
+        )
+    return 0, 0
+
+
 def post(items: list[dict], client_id: str, client_secret: str) -> None:
     """
     POST fetched email items to the Squire ``/ingest`` endpoint in batches.
@@ -338,13 +481,20 @@ def post(items: list[dict], client_id: str, client_secret: str) -> None:
     and POSTed sequentially; the API deduplicates by ``item_id`` so retries
     are safe.
 
+    Each batch is posted via :func:`_ingest_with_retry`, which retries transient
+    failures and bisects to isolate and skip a single poison item rather than
+    aborting the whole run.  Genuinely systemic failures (unreachable endpoint,
+    bad credentials, or more than ``_MAX_SKIPPED_ITEMS`` drops) still abort so
+    the high-water mark is not advanced and the run is retried next time.
+
     :param items: List of email dicts as returned by ``fetch()``.
     :type items: list[dict]
     :param client_id: CF Access service token Client ID.
     :type client_id: str
     :param client_secret: CF Access service token Client Secret.
     :type client_secret: str
-    :raises SystemExit: If the API is unreachable or returns an error.
+    :raises SystemExit: On systemic failure (unreachable API, auth rejection, or
+                        too many uningestable items).
     """
     if not items:
         print("No emails found in lookback window.")
@@ -355,29 +505,23 @@ def post(items: list[dict], client_id: str, client_secret: str) -> None:
         "CF-Access-Client-Secret": client_secret,
     }
     total_received = total_skipped = 0
+    dropped: list[dict] = []
     batches = [items[i:i + _POST_BATCH] for i in range(0, len(items), _POST_BATCH)]
     for idx, batch in enumerate(batches, 1):
-        try:
-            r = requests.post(
-                f"{PAGE_API_URL}/ingest",
-                json={"items": batch},
-                headers=headers,
-                timeout=30,
-            )
-            r.raise_for_status()
-            result = r.json()
-            total_received += result.get("received", 0)
-            total_skipped  += result.get("skipped",  0)
-            print(f"  Batch {idx}/{len(batches)}: accepted {result.get('received','?')}, "
-                  f"skipped {result.get('skipped','?')}", flush=True)
-        except requests.ConnectionError:
-            sys.exit(f"ERROR: Could not reach API at {PAGE_API_URL} — is the appliance reachable?")
-        except requests.HTTPError as e:
-            _exit_on_http_error(e)
-        except Exception as e:
-            sys.exit(f"ERROR: {e}")
+        recv, skip = _ingest_with_retry(batch, headers, dropped)
+        total_received += recv
+        total_skipped  += skip
+        print(f"  Batch {idx}/{len(batches)}: accepted {recv}, skipped {skip}", flush=True)
 
-    print(f"Done — {len(items)} sent, {total_received} accepted, {total_skipped} skipped.")
+    if dropped:
+        ids = ", ".join(d.get("item_id", "?") for d in dropped)
+        print(f"WARNING: {len(dropped)} item(s) could not be ingested and were skipped: {ids}", flush=True)
+
+    print(
+        f"Done — {len(items)} sent, {total_received} accepted, {total_skipped} skipped"
+        + (f", {len(dropped)} dropped." if dropped else "."),
+        flush=True,
+    )
 
 
 def _test() -> None:
@@ -427,6 +571,7 @@ def _seed_and_infer() -> None:
     """
     cf_id, cf_secret = _load_credentials()
 
+    seed_start = datetime.now()
     print(
         f"SEED+INFER MODE — fetching Outlook emails "
         f"(last {SEED_LOOKBACK_HOURS}h / {SEED_LOOKBACK_HOURS // 24} days, "
@@ -436,6 +581,10 @@ def _seed_and_infer() -> None:
     emails = fetch(lookback_hours=SEED_LOOKBACK_HOURS, max_emails=SEED_MAX_EMAILS)
     print(f"Found {len(emails)} emails", flush=True)
     post(emails, cf_id, cf_secret)
+    # Seeding ingests everything up to now — establish the high-water mark so the
+    # first scheduled run continues seamlessly from here.
+    _save_high_water_mark(seed_start)
+    print(f"High-water mark set to {seed_start.isoformat()}", flush=True)
 
     headers = {
         "CF-Access-Client-Id":     cf_id,
@@ -490,6 +639,68 @@ def _seed_and_infer() -> None:
         print(f"Seed state machine ended in state '{state}'.", flush=True)
 
 
+def _run_scheduled() -> None:
+    """
+    Normal scheduled run with high-water-mark tracking.
+
+    Computes the lookback window from the persisted high-water mark (the point
+    through which email has already been ingested) rather than a fixed window,
+    then advances the mark after a successful post.  This makes the scheduled
+    run gap-proof for arbitrarily long absences: after the host has been off or
+    logged out for hours or weeks, the next run backfills every email since the
+    mark.  On the very first run — before any mark exists — it falls back to the
+    default ``LOOKBACK_HOURS`` window.
+
+    The mark advances to the newest email actually seen (not wall-clock ``now``),
+    so mail that Outlook has not finished syncing past that point is picked up on
+    a later run instead of being skipped.  When no new mail is found, the mark
+    advances to the run start, since the window is confirmed empty through then.
+
+    Coverage is bounded by ``_HWM_MAX_EMAILS`` per folder; if that cap is hit the
+    oldest mail in a very large backfill may be truncated, so a warning points
+    the operator at ``--seed``.
+    """
+    cf_id, cf_secret = _load_credentials()
+
+    run_start = datetime.now()
+    hwm       = _load_high_water_mark()
+    if hwm is None:
+        lookback_hours = LOOKBACK_HOURS
+        print(f"No prior state — first run, fetching last {lookback_hours}h...", flush=True)
+    else:
+        # Re-scan a small overlap before the mark; /ingest dedupes by item_id.
+        span = (run_start - hwm) + timedelta(hours=_HWM_OVERLAP_HOURS)
+        lookback_hours = max(1, int(span.total_seconds() // 3600) + 1)
+        print(
+            f"Last ingested through {hwm.isoformat()} — backfilling {lookback_hours}h...",
+            flush=True,
+        )
+
+    emails = fetch(lookback_hours=lookback_hours, max_emails=_HWM_MAX_EMAILS)
+    print(f"Found {len(emails)} emails", flush=True)
+
+    if len(emails) >= _HWM_MAX_EMAILS:
+        print(
+            "WARNING: hit the fetch cap — the oldest emails in this backfill may "
+            "not have been retrieved. Run 'python outlook_sidecar.py --seed' to "
+            "backfill fully.",
+            flush=True,
+        )
+
+    post(emails, cf_id, cf_secret)   # sys.exits on failure, so reaching here == success
+
+    # Advance the mark only after a successful post.  Use the newest email seen
+    # (never moving backward); if nothing new, the window is clean through run_start.
+    if emails:
+        new_mark = max(datetime.fromisoformat(e["timestamp"]) for e in emails)
+    else:
+        new_mark = run_start
+    if hwm is not None:
+        new_mark = max(new_mark, hwm)
+    _save_high_water_mark(new_mark)
+    print(f"High-water mark advanced to {new_mark.isoformat()}", flush=True)
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--setup":
         _setup()
@@ -499,13 +710,14 @@ if __name__ == "__main__":
         _seed_and_infer()
     elif len(sys.argv) > 1 and sys.argv[1] == "--seed":
         cf_id, cf_secret = _load_credentials()
+        seed_start = datetime.now()
         print(f"SEED MODE — fetching Outlook emails (last {SEED_LOOKBACK_HOURS}h / {SEED_LOOKBACK_HOURS//24} days, cap {SEED_MAX_EMAILS})...", flush=True)
         emails = fetch(lookback_hours=SEED_LOOKBACK_HOURS, max_emails=SEED_MAX_EMAILS)
         print(f"Found {len(emails)} emails", flush=True)
         post(emails, cf_id, cf_secret)
+        # Seeding ingests everything up to now — establish the high-water mark so
+        # the first scheduled run continues seamlessly from here.
+        _save_high_water_mark(seed_start)
+        print(f"High-water mark set to {seed_start.isoformat()}", flush=True)
     else:
-        cf_id, cf_secret = _load_credentials()
-        print(f"Fetching Outlook emails (last {LOOKBACK_HOURS}h)...", flush=True)
-        emails = fetch()
-        print(f"Found {len(emails)} emails", flush=True)
-        post(emails, cf_id, cf_secret)
+        _run_scheduled()
