@@ -141,10 +141,14 @@ _ft          = _get("FOCUS_TOPICS", "")
 FOCUS_TOPICS: list[str] = [t.strip() for t in _ft.split(",") if t.strip()] if _ft else []
 
 import json as _json
+
+# Annotated once, before the try: repeating the annotation in both branches is a
+# redefinition rather than two assignments to the same declared name.
+PROJECTS: list[dict]
 try:
-    PROJECTS: list[dict] = _json.loads(_get("PROJECTS", "[]"))
+    PROJECTS = _json.loads(_get("PROJECTS", "[]"))
 except Exception:
-    PROJECTS: list[dict] = []
+    PROJECTS = []
 
 NOISE_KEYWORDS:        list[str]  = []
 TASK_KEYWORDS:         list[str]  = []

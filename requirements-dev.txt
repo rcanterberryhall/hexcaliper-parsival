@@ -2,3 +2,9 @@ pytest==9.0.2
 pytest-timeout==2.4.0
 pytest-cov==7.1.0
 httpx==0.28.1
+
+# Formatter/linter and type checker, pinned to exact versions (CODE-003): an
+# unpinned formatter drifts between a developer's machine and CI and buries real
+# changes in reformat noise. Configuration lives in pyproject.toml.
+ruff==0.15.14
+mypy==2.1.0

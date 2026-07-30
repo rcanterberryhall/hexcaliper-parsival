@@ -17,6 +17,7 @@ run_reanalyze_fn, and maybe_form_situation_fn are injected via init().
 """
 import json
 import threading
+from typing import Any, Callable, Optional
 
 import requests as http_requests
 
@@ -25,11 +26,15 @@ import db
 import llm
 
 # ── Module-level references, set by init() ────────────────────────────────────
+#
+# These start as None and are injected by init() at startup rather than imported,
+# which keeps seeder from importing app.py and creating a cycle.  The Optional
+# annotations tell the type checker the same thing: None until init() runs.
 
 _scan_state:          dict = {}
-_run_scan                   = None
-_run_reanalyze              = None
-_maybe_form_situation       = None
+_run_scan:             Optional[Callable[..., Any]] = None
+_run_reanalyze:        Optional[Callable[..., Any]] = None
+_maybe_form_situation: Optional[Callable[..., Any]] = None
 
 _seed_job: dict = {"status": "idle"}
 
@@ -557,6 +562,8 @@ def apply(body: dict, background_tasks) -> dict:
                 _scan_state["situations_pending"] += len(item_ids)
             for iid in item_ids:
                 try:
+                    if _maybe_form_situation is None:
+                        raise RuntimeError("seeder.init() has not been called")
                     _maybe_form_situation(iid)
                 except Exception as e:
                     print(f"[seed] situation sweep {iid}: {e}")
