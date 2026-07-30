@@ -1,5 +1,4 @@
-"""
-connector_slack.py — Slack data connector.
+"""connector_slack.py — Slack data connector.
 
 Fetches @mentions, direct messages, and active channel threads for all
 connected workspaces using per-user OAuth tokens.  Falls back to a legacy
@@ -21,11 +20,12 @@ Each call to ``fetch()`` returns a deduplicated list of ``RawItem`` objects
 covering the lookback window defined in ``config.LOOKBACK_HOURS``.
 """
 import logging
-import requests
-from datetime import datetime, timedelta, timezone
-from models import RawItem
+from datetime import UTC, datetime, timedelta
+
 import config
 import db
+import requests
+from models import RawItem
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +34,7 @@ BASE = "https://slack.com/api"
 
 
 def _get(token: str, endpoint: str, params: dict = None) -> dict:
-    """
-    Make an authenticated GET request to the Slack Web API.
+    """Make an authenticated GET request to the Slack Web API.
 
     :param token: A Slack user or bot OAuth token (``xoxp-`` or ``xoxb-``).
     :type token: str
@@ -62,8 +61,7 @@ def _get(token: str, endpoint: str, params: dict = None) -> dict:
 
 
 def _username(token: str, uid: str, cache: dict) -> str:
-    """
-    Resolve a Slack user ID to a human-readable display name.
+    """Resolve a Slack user ID to a human-readable display name.
 
     Results are stored in ``cache`` to avoid redundant API calls within a
     single fetch pass.
@@ -88,8 +86,7 @@ def _username(token: str, uid: str, cache: dict) -> str:
 
 
 def _user_identifiers() -> list[str]:
-    """
-    Build a list of text patterns that identify the configured user in message bodies.
+    """Build a list of text patterns that identify the configured user in message bodies.
 
     Covers: Slack @uid (added separately), full name, full email, and the
     @username prefix form extracted from the email (e.g. "@john.smith" from
@@ -108,8 +105,7 @@ def _user_identifiers() -> list[str]:
 
 
 def _relevance(text: str, my_uid: str) -> tuple[bool, str, str | None]:
-    """
-    Determine whether a message is relevant to the configured user context.
+    """Determine whether a message is relevant to the configured user context.
 
     Checks in priority order:
     1. Slack @uid mention or text-form name/email → user
@@ -149,8 +145,7 @@ def _relevance(text: str, my_uid: str) -> tuple[bool, str, str | None]:
 
 
 def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
-    """
-    Fetch @mentions, DMs, and active channel threads for one user token.
+    """Fetch @mentions, DMs, and active channel threads for one user token.
 
     Three passes are made against the Slack API:
 
@@ -182,7 +177,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
         log.error("auth.test failed: %s", e)
         return []
 
-    log.info("%s: my_uid=%s, cutoff=%s", team, my_uid, datetime.fromtimestamp(cutoff_ts, tz=timezone.utc).isoformat())
+    log.info("%s: my_uid=%s, cutoff=%s", team, my_uid, datetime.fromtimestamp(cutoff_ts, tz=UTC).isoformat())
 
     # ── 1. @mentions via search API ──────────────────────────────────────────
     # Mentions use a per-message item_id (stable across scans) so todo dedup
@@ -229,7 +224,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                     body      = m.get("text", "")[:3000],
                     url       = m.get("permalink", f"https://slack.com/app_redirect?channel={ch.get('id','')}"),
                     author    = _username(token, m.get("user", "?"), cache),
-                    timestamp = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                    timestamp = datetime.fromtimestamp(ts, tz=UTC).isoformat(),
                     metadata  = {"channel": ch.get("name", ""), "workspace": team, "type": "mention"},
                 ))
                 new_ts_for_channel.append(m["ts"])
@@ -290,7 +285,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 body      = "\n".join(lines)[:3000],
                 url       = f"https://slack.com/app_redirect?channel={ch_id}",
                 author    = _username(token, new_msgs[0].get("user", "?"), cache),
-                timestamp = datetime.fromtimestamp(first_ts, tz=timezone.utc).isoformat(),
+                timestamp = datetime.fromtimestamp(first_ts, tz=UTC).isoformat(),
                 metadata  = {"workspace": team, "type": "dm"},
             ))
             db.slack_mark_messages_seen(team, ch_id, [m["ts"] for m in new_msgs])
@@ -378,7 +373,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 body      = "\n".join(lines)[:3000],
                 url       = f"https://slack.com/app_redirect?channel={ch_id}",
                 author    = f"#{ch_name}",
-                timestamp = datetime.fromtimestamp(first_ts, tz=timezone.utc).isoformat(),
+                timestamp = datetime.fromtimestamp(first_ts, tz=UTC).isoformat(),
                 metadata  = {
                     "channel":     ch_name,
                     "workspace":   team,
@@ -396,8 +391,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
 
 
 def fetch() -> list[RawItem]:
-    """
-    Fetch Slack items across all configured workspaces.
+    """Fetch Slack items across all configured workspaces.
 
     Prefers per-user OAuth tokens stored in ``config.SLACK_USER_TOKENS``.
     Falls back to the legacy bot token path if no user tokens are present.
@@ -407,7 +401,7 @@ def fetch() -> list[RawItem]:
     :rtype: list[RawItem]
     """
     cutoff_ts = (
-        datetime.now(timezone.utc) - timedelta(hours=config.LOOKBACK_HOURS)
+        datetime.now(UTC) - timedelta(hours=config.LOOKBACK_HOURS)
     ).timestamp()
 
     # ── User token path (one per connected workspace) ─────────────────────────
@@ -490,7 +484,7 @@ def fetch() -> list[RawItem]:
                     body      = body[:3000],
                     url       = f"https://slack.com/app_redirect?channel={ch_id}&message_ts={msg['ts']}",
                     author    = _username(token, msg.get("user", "unknown"), cache),
-                    timestamp = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                    timestamp = datetime.fromtimestamp(ts, tz=UTC).isoformat(),
                     metadata  = {"channel": ch_name, "is_dm": is_im},
                 ))
             if candidates:

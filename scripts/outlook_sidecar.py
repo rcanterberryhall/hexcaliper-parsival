@@ -51,14 +51,15 @@ Usage::
 
 Schedule with Windows Task Scheduler to run every 30–60 minutes.
 """
+import json
 import os
 import re
 import sys
-import json
 import time
-import requests
-from pathlib import Path
 from datetime import datetime, timedelta
+from pathlib import Path
+
+import requests
 
 PAGE_API_URL        = "https://parsival.hexcaliper.com/page/api"
 LOOKBACK_HOURS      = 48

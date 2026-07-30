@@ -1,5 +1,4 @@
-"""
-connector_jira.py — Jira Cloud data connector.
+"""connector_jira.py — Jira Cloud data connector.
 
 Queries the Jira REST API v3 using a JQL expression to retrieve issues
 assigned to the current user.  Issue bodies are extracted from Atlassian
@@ -10,18 +9,18 @@ Requires ``config.JIRA_EMAIL``, ``config.JIRA_TOKEN``, and
 ``config.JIRA_DOMAIN`` to be set.
 """
 import logging
-import requests
-from requests.auth import HTTPBasicAuth
-from datetime import datetime, timedelta, timezone
-from models import RawItem
+from datetime import UTC, datetime, timedelta
+
 import config
+import requests
+from models import RawItem
+from requests.auth import HTTPBasicAuth
 
 log = logging.getLogger(__name__)
 
 
 def _auth() -> HTTPBasicAuth:
-    """
-    Build HTTP Basic Auth credentials for the Jira REST API.
+    """Build HTTP Basic Auth credentials for the Jira REST API.
 
     :return: HTTPBasicAuth instance using the configured email and API token.
     :rtype: requests.auth.HTTPBasicAuth
@@ -30,8 +29,7 @@ def _auth() -> HTTPBasicAuth:
 
 
 def _base() -> str:
-    """
-    Build the Jira REST API v3 base URL for the configured domain.
+    """Build the Jira REST API v3 base URL for the configured domain.
 
     :return: Base URL string, e.g. ``"https://yourcompany.atlassian.net/rest/api/3"``.
     :rtype: str
@@ -40,8 +38,7 @@ def _base() -> str:
 
 
 def _text(adf) -> str:
-    """
-    Recursively extract plain text from an Atlassian Document Format node.
+    """Recursively extract plain text from an Atlassian Document Format node.
 
     ADF is a nested JSON structure used by Jira for rich-text fields.  This
     function walks the tree and concatenates all text leaf nodes.
@@ -60,8 +57,7 @@ def _text(adf) -> str:
 
 
 def fetch() -> list[RawItem]:
-    """
-    Fetch Jira issues matching the configured JQL query.
+    """Fetch Jira issues matching the configured JQL query.
 
     Skips gracefully if credentials or domain are absent or still set to
     placeholder values.  All returned issues are included regardless of the
@@ -79,7 +75,7 @@ def fetch() -> list[RawItem]:
         return []
 
     items: list[RawItem] = []
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=config.LOOKBACK_HOURS)
+    cutoff = datetime.now(UTC) - timedelta(hours=config.LOOKBACK_HOURS)
 
     try:
         r = requests.get(

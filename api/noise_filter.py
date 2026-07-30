@@ -1,5 +1,4 @@
-"""
-noise_filter.py — Pre-scan noise filter evaluation.
+"""noise_filter.py — Pre-scan noise filter evaluation.
 
 Filters are evaluated against each RawItem before the LLM pipeline runs.
 Matching items are stored with category='filtered' and skipped by the analyser.
@@ -35,7 +34,7 @@ VALID_RULE_TYPES = frozenset({
 })
 
 
-def _matches(rule: dict, item: "RawItem") -> bool:
+def _matches(rule: dict, item: RawItem) -> bool:
     rtype = rule.get("type", "")
     value = rule.get("value", "")
     if not value:
@@ -57,9 +56,8 @@ def _matches(rule: dict, item: "RawItem") -> bool:
     return False
 
 
-def should_filter(item: "RawItem", rules: list[dict]) -> tuple[bool, str | None]:
-    """
-    Return ``(True, matched_rule_type)`` if any rule matches *item*,
+def should_filter(item: RawItem, rules: list[dict]) -> tuple[bool, str | None]:
+    """Return ``(True, matched_rule_type)`` if any rule matches *item*,
     else ``(False, None)``.
     """
     for rule in rules:
@@ -69,8 +67,7 @@ def should_filter(item: "RawItem", rules: list[dict]) -> tuple[bool, str | None]
 
 
 def validate_rule(rule: dict) -> str | None:
-    """
-    Validate a single filter rule.  Returns an error string or None if valid.
+    """Validate a single filter rule.  Returns an error string or None if valid.
     """
     if rule.get("type") not in VALID_RULE_TYPES:
         return f"Unknown filter type '{rule.get('type')}'. Valid: {sorted(VALID_RULE_TYPES)}"

@@ -7,10 +7,10 @@ keyring) are mocked so the suite runs on any OS.
 """
 import sys
 import types
-import pytest
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
+import pytest
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

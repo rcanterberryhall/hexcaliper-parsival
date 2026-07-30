@@ -12,7 +12,6 @@ import agent
 import contacts
 import db
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _seed_item(client, item_id, author, to_field="", cc_field=""):

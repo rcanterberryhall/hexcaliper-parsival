@@ -5,9 +5,9 @@ Tests for lifecycle_status enum, follow_up_date, notes, situation_events,
 and the new transition + events endpoints.
 """
 import uuid
-import pytest
-from tinydb import Query
+
 from app import situations_tbl
+from tinydb import Query
 
 Q = Query()
 

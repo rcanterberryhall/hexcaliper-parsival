@@ -23,8 +23,9 @@ os.environ["DB_PATH"] = DEST_PATH
 sys.path.insert(0, os.path.join(_REPO_ROOT, "api"))
 
 import config  # noqa: E402
+
 config.DB_PATH = DEST_PATH
-import db      # noqa: E402
+import db  # noqa: E402
 
 
 def migrate(source_path: str = SOURCE_PATH, dest_path: str = DEST_PATH) -> None:
@@ -43,7 +44,7 @@ def migrate(source_path: str = SOURCE_PATH, dest_path: str = DEST_PATH) -> None:
     if settings_table:
         row = list(settings_table.values())[0]
         db.save_settings(row)
-        print(f"  settings: migrated 1 row")
+        print("  settings: migrated 1 row")
 
     # ── analyses → items ───────────────────────────────────────────────────────
     analyses = list(tdb.get("analyses", {}).values())

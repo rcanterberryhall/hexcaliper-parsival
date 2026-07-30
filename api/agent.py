@@ -1,5 +1,4 @@
-"""
-agent.py — LLM-powered analysis pipeline.
+"""agent.py — LLM-powered analysis pipeline.
 
 Sends each ``RawItem`` to an Ollama-compatible endpoint and parses the
 structured JSON response into an ``Analysis`` object.  The prompt includes
@@ -40,11 +39,11 @@ Key helpers:
 import json
 import logging
 import re
-import requests
-from models import RawItem, Analysis, ActionItem
+
 import config
 import db
 import llm
+from models import ActionItem, Analysis, RawItem
 
 log = logging.getLogger(__name__)
 
@@ -179,8 +178,7 @@ Information item rules:
 
 
 def _projects_ctx() -> str:
-    """
-    Build a readable summary of all configured projects for the LLM prompt.
+    """Build a readable summary of all configured projects for the LLM prompt.
 
     For each project the output line includes:
     - ``name`` — always included.
@@ -226,8 +224,7 @@ def _projects_ctx() -> str:
 
 
 def _topics_ctx() -> str:
-    """
-    Build a comma-separated summary of watch topics for the LLM prompt.
+    """Build a comma-separated summary of watch topics for the LLM prompt.
 
     :return: Comma-separated ``config.FOCUS_TOPICS``, or ``"none configured"``.
     :rtype: str
@@ -236,8 +233,7 @@ def _topics_ctx() -> str:
 
 
 def _noise_ctx() -> str:
-    """
-    Build a comma-separated summary of noise keywords for the LLM prompt.
+    """Build a comma-separated summary of noise keywords for the LLM prompt.
 
     Capped at 30 keywords to keep the prompt size reasonable.
 
@@ -248,8 +244,7 @@ def _noise_ctx() -> str:
 
 
 def _assignment_corrections_ctx() -> str:
-    """
-    Build a readable summary of past assignment corrections for the LLM prompt.
+    """Build a readable summary of past assignment corrections for the LLM prompt.
 
     Each correction records what the LLM originally inferred as the owner and
     what the user corrected it to.  Injected as few-shot examples so the model
@@ -273,8 +268,7 @@ def _assignment_corrections_ctx() -> str:
 
 
 def _priority_overrides_ctx() -> str:
-    """
-    Build a readable summary of user priority overrides for the LLM prompt.
+    """Build a readable summary of user priority overrides for the LLM prompt.
 
     Each override records an item whose LLM-assigned priority the user manually
     changed, along with a one-click reason.  Grouped by reason so the model can
@@ -310,8 +304,7 @@ def _priority_overrides_ctx() -> str:
 
 
 def _task_ctx() -> str:
-    """
-    Build a comma-separated summary of learned task keywords for the LLM prompt.
+    """Build a comma-separated summary of learned task keywords for the LLM prompt.
 
     :return: Comma-separated task keywords, or ``"none"`` if the list is empty.
     :rtype: str
@@ -320,8 +313,7 @@ def _task_ctx() -> str:
 
 
 def _approval_ctx() -> str:
-    """
-    Build a comma-separated summary of learned approval keywords for the LLM prompt.
+    """Build a comma-separated summary of learned approval keywords for the LLM prompt.
 
     :return: Comma-separated approval keywords, or ``"none"`` if the list is empty.
     :rtype: str
@@ -330,8 +322,7 @@ def _approval_ctx() -> str:
 
 
 def _fyi_ctx() -> str:
-    """
-    Build a comma-separated summary of learned FYI keywords for the LLM prompt.
+    """Build a comma-separated summary of learned FYI keywords for the LLM prompt.
 
     :return: Comma-separated FYI keywords, or ``"none"`` if the list is empty.
     :rtype: str
@@ -362,8 +353,7 @@ def generate_project_briefing(
     situations:   list[str],
     action_items: list[str],
 ) -> str:
-    """
-    Ask the LLM to write a 2-3 sentence status paragraph for a project.
+    """Ask the LLM to write a 2-3 sentence status paragraph for a project.
 
     :param project_name: Name of the project (or ``"General"`` for untagged).
     :param intel_facts:  Recent intel fact strings for this project.
@@ -406,8 +396,7 @@ Content:
 
 
 def extract_keywords(project_name: str, title: str, body: str) -> list[str]:
-    """
-    Ask the LLM to extract keywords from an item for project context learning.
+    """Ask the LLM to extract keywords from an item for project context learning.
 
     :param project_name: Name of the project being trained.
     :param title: Item title.
@@ -461,8 +450,7 @@ _QUARANTINE_SENDER_RE = _re.compile(r'Sender:\s+([\w.+\-]+@[\w.\-]+\.[a-z]{2,})'
 
 
 def extract_emails(text: str) -> list[str]:
-    """
-    Extract unique, lowercase email addresses from a free-form string.
+    """Extract unique, lowercase email addresses from a free-form string.
 
     Covers RFC-style headers such as ``"Name <addr@host.com>"`` as well as
     bare addresses and semicolon/comma-separated lists.
@@ -491,8 +479,7 @@ _DL_DOMAIN_RE = _re.compile(r"@(?:lists|groups|mailman)\.", _re.IGNORECASE)
 
 
 def _is_distribution_list(email: str) -> bool:
-    """
-    Heuristically decide whether an email address is a distribution list
+    """Heuristically decide whether an email address is a distribution list
     or group alias rather than a personal mailbox.
 
     :param email: Lowercased email address.
@@ -506,8 +493,7 @@ def _is_distribution_list(email: str) -> bool:
 
 
 def compute_recipient_scope(user_email: str, to_field: str, cc_field: str) -> dict:
-    """
-    Classify how broadly an email is addressed, from the user's perspective.
+    """Classify how broadly an email is addressed, from the user's perspective.
 
     Returns a dict with:
       - ``scope``: one of ``"direct"``, ``"small"``, ``"group"``, ``"broadcast"``
@@ -571,8 +557,7 @@ def compute_recipient_scope(user_email: str, to_field: str, cc_field: str) -> di
 
 
 def _recipient_scope_hint(scope_info: dict, user_name: str) -> str:
-    """
-    Build a prompt hint paragraph describing recipient scope for the LLM.
+    """Build a prompt hint paragraph describing recipient scope for the LLM.
 
     Returns an empty string when there are no visible recipients (Jira,
     GitHub, Slack DMs) so the prompt stays clean for non-email sources.
@@ -623,8 +608,7 @@ def _recipient_scope_hint(scope_info: dict, user_name: str) -> str:
 
 
 def resolve_owner_email(owner: str, *header_fields: str) -> str | None:
-    """
-    Try to resolve a person's name to an email address.
+    """Try to resolve a person's name to an email address.
 
     First scans the supplied To/CC header fields for ``"Display Name <email>"``
     pairs whose display name contains ``owner`` as a case-insensitive
@@ -665,8 +649,7 @@ def resolve_owner_email(owner: str, *header_fields: str) -> str | None:
 
 
 def _match_sender(item: RawItem) -> str | None:
-    """
-    Deterministically match an item to a project via learned sender/group addresses.
+    """Deterministically match an item to a project via learned sender/group addresses.
 
     Collects all email addresses from ``item.author``, ``item.metadata["to"]``,
     and ``item.metadata["cc"]``, strips the configured user's own address, then
@@ -701,8 +684,7 @@ def _match_sender(item: RawItem) -> str | None:
 
 
 def _detect_passdown(title: str, body: str) -> bool:
-    """
-    Deterministically detect shift handoff emails via ``_PASSDOWN_PATTERNS``.
+    """Deterministically detect shift handoff emails via ``_PASSDOWN_PATTERNS``.
 
     Checks the item's title (subject line) and the first 300 characters of
     the body.  A match forces ``is_passdown=True`` in the final ``Analysis``
@@ -734,8 +716,7 @@ def _detect_passdown(title: str, body: str) -> bool:
 
 
 def _detect_quarantine_noise(item: "RawItem") -> bool:
-    """
-    Deterministically force noise for Microsoft 365 quarantine digest emails
+    """Deterministically force noise for Microsoft 365 quarantine digest emails
     whose quarantined sender is not associated with any configured project.
 
     Returns ``True`` (→ force noise) when:
@@ -779,8 +760,7 @@ _CAUTION_PATTERN = re.compile(
 
 
 def _strip_caution(body: str) -> str:
-    """
-    Remove the standard external-sender CAUTION banner from an email body.
+    """Remove the standard external-sender CAUTION banner from an email body.
 
     Many mail systems prepend a boilerplate warning such as::
 
@@ -801,8 +781,7 @@ def _strip_caution(body: str) -> str:
 
 
 def _validated_project_tags(tags) -> list[str]:
-    """
-    Validate LLM-returned project tags against the configured project list.
+    """Validate LLM-returned project tags against the configured project list.
 
     Accepts a single string, a list of strings, or None.  Returns a list of
     validated project names (only those that exist in ``config.PROJECTS``).
@@ -870,8 +849,7 @@ _SAFELINKS_RE = re.compile(
 
 
 def _strip_quoted_reply_tail(body: str) -> str:
-    """
-    Truncate ``body`` at the first quoted-reply marker line.
+    """Truncate ``body`` at the first quoted-reply marker line.
 
     Reuses :data:`signatures._QUOTE_MARKERS` so the set of markers stays in
     one place.  Conservative: only hard boundaries (``-----Original
@@ -898,8 +876,7 @@ _SAFELINKS_TRAIL_RE = re.compile(r"[.,!?:;]+$")
 
 
 def _strip_safelinks(body: str) -> str:
-    """
-    Drop Outlook SafeLinks tracking URLs from ``body``.
+    """Drop Outlook SafeLinks tracking URLs from ``body``.
 
     These URLs carry the user's email in the ``&data=`` parameter and trip
     naive "is the user named in this email" checks.  Matching stops at
@@ -919,8 +896,7 @@ def _strip_safelinks(body: str) -> str:
 
 
 def _clean_body_for_llm(body: str) -> str:
-    """
-    Produce the cleaned body fed to the LLM for analysis.
+    """Produce the cleaned body fed to the LLM for analysis.
 
     Composition: strip SafeLinks first (so URL fragments in the reply chain
     cannot survive the chain cut as mid-line remnants), then strip the
@@ -930,8 +906,7 @@ def _clean_body_for_llm(body: str) -> str:
 
 
 def build_prompt(item: RawItem, *, thread_todos: list[dict] | None = None) -> str:
-    """
-    Build the LLM analysis prompt for an item without submitting it.
+    """Build the LLM analysis prompt for an item without submitting it.
 
     Returns the fully formatted prompt string that ``analyze`` would send to
     Ollama.  Used by the batch submission path in ``orchestrator.py`` to
@@ -1062,8 +1037,7 @@ def build_analysis_from_llm_json(
     *,
     scope_info: dict,
 ) -> Analysis:
-    """
-    Parse an LLM JSON response and build a fully populated ``Analysis``.
+    """Parse an LLM JSON response and build a fully populated ``Analysis``.
 
     Shared by :func:`analyze` (sync path) and the batch poll path in
     :mod:`orchestrator` so the two cannot drift.  Applies every deterministic
@@ -1177,8 +1151,7 @@ def analyze(
     priority: str = "short",
     thread_todos: list[dict] | None = None,
 ) -> Analysis:
-    """
-    Send a single item to Ollama and parse the structured JSON response.
+    """Send a single item to Ollama and parse the structured JSON response.
 
     The prompt is built with full user context (name, email, projects, topics,
     noise keywords) and includes the ``to``/``cc`` fields from item metadata so
@@ -1327,8 +1300,7 @@ def analyze(
 
 
 def analyze_batch(items: list[RawItem], progress_cb=None) -> list[Analysis]:
-    """
-    Analyse a list of items sequentially, with optional progress reporting.
+    """Analyse a list of items sequentially, with optional progress reporting.
 
     Failed items are logged and skipped rather than aborting the batch, so a
     single Ollama timeout does not prevent the remaining items from being

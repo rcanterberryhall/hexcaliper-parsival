@@ -1,5 +1,6 @@
 """tests/test_correlator.py — Tests for cross-source correlation logic."""
-import pytest
+from datetime import UTC
+
 from correlator import extract_references, score_situation
 
 
@@ -58,9 +59,9 @@ def test_score_situation_higher_for_high_priority():
 
 
 def test_score_situation_recency_decay():
-    from datetime import datetime, timezone, timedelta
-    recent = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-    old    = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+    from datetime import datetime, timedelta
+    recent = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    old    = (datetime.now(UTC) - timedelta(hours=72)).isoformat()
     items_recent = [{"source": "jira",  "priority": "medium", "hierarchy": "project", "timestamp": recent},
                     {"source": "slack", "priority": "medium", "hierarchy": "project", "timestamp": recent}]
     items_old    = [{"source": "jira",  "priority": "medium", "hierarchy": "project", "timestamp": old},

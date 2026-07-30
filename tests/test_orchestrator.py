@@ -4,18 +4,18 @@ Validates that items flow through the pipeline and land in the database
 correctly. The existing scan tests in test_app.py only check HTTP status
 codes and conflict detection; these tests assert on what gets persisted.
 """
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import db
 import orchestrator
 from app import (
+    Q,
     analyses,
-    todos,
     scan_logs,
     scan_state,
-    Q,
+    todos,
 )
-from models import RawItem, Analysis, ActionItem
+from models import ActionItem, Analysis, RawItem
 
 _run_scan     = orchestrator.run_scan
 _run_reanalyze = orchestrator.run_reanalyze

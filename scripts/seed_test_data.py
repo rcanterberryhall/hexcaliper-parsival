@@ -16,14 +16,15 @@ from a context that can reach the API without CF Access (local or tunnelled).
 """
 import sys
 import uuid
+from datetime import UTC, datetime, timedelta
+
 import requests
-from datetime import datetime, timedelta, timezone
 
 PAGE_API_URL = "https://parsival.hexcaliper.com/page/api"
 
 
 def _ts(days_ago: float, hour: int = 8) -> str:
-    dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    dt = datetime.now(UTC) - timedelta(days=days_ago)
     return dt.replace(hour=hour, minute=0, second=0, microsecond=0).isoformat()
 
 

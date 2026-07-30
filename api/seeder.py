@@ -1,5 +1,4 @@
-"""
-seeder.py — Seed state machine for bootstrapping project config.
+"""seeder.py — Seed state machine for bootstrapping project config.
 
 Implements the multi-stage seed workflow that bootstraps project and topic
 configuration from an existing corpus using a map-reduce LLM pass:
@@ -17,9 +16,8 @@ run_reanalyze_fn, and maybe_form_situation_fn are injected via init().
 """
 import json
 import threading
-from typing import Any, Callable, Optional
-
-import requests as http_requests
+from collections.abc import Callable
+from typing import Any
 
 import config
 import db
@@ -32,16 +30,15 @@ import llm
 # annotations tell the type checker the same thing: None until init() runs.
 
 _scan_state:          dict = {}
-_run_scan:             Optional[Callable[..., Any]] = None
-_run_reanalyze:        Optional[Callable[..., Any]] = None
-_maybe_form_situation: Optional[Callable[..., Any]] = None
+_run_scan:             Callable[..., Any] | None = None
+_run_reanalyze:        Callable[..., Any] | None = None
+_maybe_form_situation: Callable[..., Any] | None = None
 
 _seed_job: dict = {"status": "idle"}
 
 
 def init(scan_state: dict, run_scan_fn, run_reanalyze_fn, maybe_form_situation_fn) -> None:
-    """
-    Inject shared state and callables from app.py.
+    """Inject shared state and callables from app.py.
 
     Must be called once at startup before any seed endpoints are invoked.
     """
@@ -135,8 +132,7 @@ Respond ONLY with valid JSON — no markdown, no explanation:
 # ── Background job ─────────────────────────────────────────────────────────────
 
 def _run_seed_job(context: str) -> None:
-    """
-    Background thread for POST /seed.  Implements the full bootstrap state machine:
+    """Background thread for POST /seed.  Implements the full bootstrap state machine:
 
     waiting_for_ingest → analyzing → review (thread exits; user applies)
 
@@ -346,8 +342,7 @@ def _run_seed_job(context: str) -> None:
 # ── Public interface ───────────────────────────────────────────────────────────
 
 def start(context: str) -> dict:
-    """
-    Start the seed state machine.  Always succeeds immediately.
+    """Start the seed state machine.  Always succeeds immediately.
     Returns the current _seed_job state.
     """
     global _seed_job
@@ -383,8 +378,7 @@ def cancel() -> None:
 
 
 def apply(body: dict, background_tasks) -> dict:
-    """
-    Apply the seed editor's confirmed projects and topics to settings.
+    """Apply the seed editor's confirmed projects and topics to settings.
 
     Steps:
     1. Merges new projects into config.PROJECTS (skipping duplicates).
@@ -505,8 +499,7 @@ def apply(body: dict, background_tasks) -> dict:
                     db.update_item(item_id, {"project_tag": tag_val})
 
     def _seed_embed_and_correlate() -> None:
-        """
-        Background task run after apply() to warm the embedding and
+        """Background task run after apply() to warm the embedding and
         situation layers from the existing corpus.
 
         Waits for reanalysis to complete first so embeddings and
@@ -607,8 +600,7 @@ def apply(body: dict, background_tasks) -> dict:
 
 
 def run_scan(scan_state: dict) -> dict:
-    """
-    Transition the seed state machine to scanning and start a full connector scan.
+    """Transition the seed state machine to scanning and start a full connector scan.
 
     :param scan_state: The shared scan_state dict from app.py.
     :return: ``{"ok": True}``
@@ -635,8 +627,7 @@ def run_scan(scan_state: dict) -> dict:
 
 
 def skip_scan() -> dict:
-    """
-    Transition the seed state machine from scan_prompt to done without scanning.
+    """Transition the seed state machine from scan_prompt to done without scanning.
 
     :return: ``{"ok": True}``
     """

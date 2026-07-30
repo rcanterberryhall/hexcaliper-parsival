@@ -1,5 +1,4 @@
-"""
-llm.py — Unified LLM provider abstraction.
+"""llm.py — Unified LLM provider abstraction.
 
 Routes analysis prompts to the configured provider:
 
@@ -18,9 +17,8 @@ import json
 import logging
 import re
 
-import requests
-
 import config
+import requests
 
 log = logging.getLogger(__name__)
 
@@ -98,8 +96,7 @@ def generate(
     timeout: int = 90,
     priority: str = "short",
 ) -> str:
-    """
-    Send a prompt to the configured LLM provider and return the response text.
+    """Send a prompt to the configured LLM provider and return the response text.
 
     :param prompt: The full prompt string.
     :param format: Response format hint ("json" or None). Used by Ollama;

@@ -1,5 +1,4 @@
-"""
-embedder.py — Sentence-embedding based project classifier.
+"""embedder.py — Sentence-embedding based project classifier.
 
 Loads all-MiniLM-L6-v2 once at module import and provides helpers for
 storing per-project item vectors, computing subdivision centroids, and
@@ -11,7 +10,7 @@ If ``sentence-transformers`` is not installed, ``_AVAILABLE`` is ``False``
 and all functions fail silently, leaving the keyword system as sole fallback.
 """
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 try:
     import numpy as np
@@ -134,7 +133,7 @@ def update_project(
             "hierarchy": hierarchy,
             "source":    source,
             "priority":  priority,
-            "tagged_at": datetime.now(timezone.utc).isoformat(),
+            "tagged_at": datetime.now(UTC).isoformat(),
         }
         rec = db.get_embedding(project_name)
         if rec:
@@ -203,8 +202,7 @@ def remove_item(item_id: str, project_name: str) -> None:
 
 
 def get_item_vector(item_id: str):
-    """
-    Retrieve the stored embedding vector for a specific item_id across all projects.
+    """Retrieve the stored embedding vector for a specific item_id across all projects.
     Returns None if the item has not been embedded.
 
     Note: callers processing many item_ids in a batch should prefer
@@ -221,8 +219,7 @@ def get_item_vector(item_id: str):
 
 
 def get_all_item_vectors() -> dict:
-    """
-    Return a dict mapping ``item_id`` → stored embedding vector for every
+    """Return a dict mapping ``item_id`` → stored embedding vector for every
     item across every project, built in a single pass over the embeddings
     table. If an item is stored under multiple projects the first match wins
     (vectors are invariant per item, so this is safe).

@@ -1,5 +1,4 @@
-"""
-signatures.py — Email-signature parser for the contacts table (squire#31).
+"""signatures.py — Email-signature parser for the contacts table (squire#31).
 
 The contacts table is auto-populated from email *headers* by ``contacts.py``.
 This module is the second pass: it walks the bottom of an email body, isolates
@@ -38,8 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 import db
 from agent import extract_emails
@@ -273,7 +271,7 @@ def extract_signature_block(body: str) -> str:
     # If neither anchor is present we fall back to "the whole tail" — which
     # is fine for short messages that *are* basically a signature, and the
     # downstream parser is conservative about what it writes.
-    anchor: Optional[int] = None
+    anchor: int | None = None
     for idx, line in enumerate(tail):
         if any(p.match(line) for p in _SIG_DELIMITERS):
             anchor = idx
@@ -289,7 +287,7 @@ def extract_signature_block(body: str) -> str:
     return "\n".join(tail).strip()
 
 
-def parse_signature(block: str, sender_domain: Optional[str] = None) -> SignatureFields:
+def parse_signature(block: str, sender_domain: str | None = None) -> SignatureFields:
     """Heuristic field extraction from a signature block.
 
     The strategy is intentionally cheap: regex for the high-signal field
@@ -604,7 +602,7 @@ _FREEMAIL_DOMAINS = {
 }
 
 
-def _employer_from_domain(domain: str) -> Optional[str]:
+def _employer_from_domain(domain: str) -> str | None:
     """Best-effort 'turn acme.com into Acme' fallback for the employer field.
 
     Returns None for free-mail providers (gmail.com etc) where the domain

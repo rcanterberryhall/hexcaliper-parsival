@@ -1,5 +1,4 @@
-"""
-connector_github.py — GitHub data connector.
+"""connector_github.py — GitHub data connector.
 
 Pulls three categories of actionable items for the configured user:
 
@@ -11,10 +10,11 @@ All items are filtered to the lookback window defined in
 ``config.LOOKBACK_HOURS`` and deduplicated by GitHub object ID.
 """
 import logging
-import requests
-from datetime import datetime, timedelta, timezone
-from models import RawItem
+from datetime import UTC, datetime, timedelta
+
 import config
+import requests
+from models import RawItem
 
 log = logging.getLogger(__name__)
 
@@ -23,8 +23,7 @@ BASE = "https://api.github.com"
 
 
 def _h() -> dict:
-    """
-    Build authenticated request headers for the GitHub API.
+    """Build authenticated request headers for the GitHub API.
 
     :return: Dict containing Authorization, Accept, and API version headers.
     :rtype: dict
@@ -37,8 +36,7 @@ def _h() -> dict:
 
 
 def _get(path: str, params: dict = None) -> dict | list:
-    """
-    Make an authenticated GET request to the GitHub REST API.
+    """Make an authenticated GET request to the GitHub REST API.
 
     :param path: API path relative to ``BASE``, e.g. ``"/notifications"``.
     :type path: str
@@ -54,8 +52,7 @@ def _get(path: str, params: dict = None) -> dict | list:
 
 
 def _get_paginated(path: str, params: dict = None, max_items: int = 500) -> list:
-    """
-    Fetch all pages from a GitHub list endpoint, following ``Link: rel="next"`` headers.
+    """Fetch all pages from a GitHub list endpoint, following ``Link: rel="next"`` headers.
 
     :param path: API path relative to ``BASE``.
     :type path: str
@@ -95,8 +92,7 @@ def _get_paginated(path: str, params: dict = None, max_items: int = 500) -> list
 
 
 def _ts(iso: str) -> str:
-    """
-    Normalise a GitHub ISO 8601 timestamp to a Python-parseable format.
+    """Normalise a GitHub ISO 8601 timestamp to a Python-parseable format.
 
     GitHub uses ``Z`` as the UTC suffix; Python's ``fromisoformat`` requires
     ``+00:00`` prior to 3.11.
@@ -110,8 +106,7 @@ def _ts(iso: str) -> str:
 
 
 def fetch() -> list[RawItem]:
-    """
-    Fetch actionable GitHub items for the configured user.
+    """Fetch actionable GitHub items for the configured user.
 
     Skips gracefully if ``config.GITHUB_PAT`` is absent or still set to the
     placeholder value.
@@ -124,7 +119,7 @@ def fetch() -> list[RawItem]:
         log.info("not configured — skipping")
         return []
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=config.LOOKBACK_HOURS)
+    cutoff = datetime.now(UTC) - timedelta(hours=config.LOOKBACK_HOURS)
     items: list[RawItem] = []
     seen:  set[str]      = set()
 

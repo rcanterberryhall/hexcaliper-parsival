@@ -27,11 +27,10 @@ guarantee covers all three (run_scan / run_reanalyze / process_ingest_items),
 because none of them now wrap the call site.
 """
 import threading
-import time
 from unittest.mock import patch
 
 import orchestrator
-from models import RawItem, Analysis
+from models import Analysis, RawItem
 
 
 def _raw(item_id):

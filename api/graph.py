@@ -1,5 +1,4 @@
-"""
-graph.py — Knowledge graph layer for Squire.
+"""graph.py — Knowledge graph layer for Squire.
 
 Builds and queries a lightweight directed graph of items, people, projects,
 and conversations stored in the nodes/edges tables via db.py.
@@ -36,8 +35,7 @@ recency_decay(t) = exp(−age_days / HALF_LIFE_DAYS)
 """
 
 import math
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 import db
 from agent import extract_emails
@@ -57,25 +55,24 @@ EDGE_WEIGHTS = {
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-def _parse_ts(ts: str) -> Optional[datetime]:
+def _parse_ts(ts: str) -> datetime | None:
     """Parse an ISO timestamp, returning None on failure."""
     if not ts:
         return None
     try:
         dt = datetime.fromisoformat(ts)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except Exception:
         return None
 
 
 def _recency_decay(timestamp: str) -> float:
-    """
-    Return a recency weight in (0, 1] based on item age.
+    """Return a recency weight in (0, 1] based on item age.
 
     Uses exponential decay with HALF_LIFE_DAYS so that an item from the same
     day scores ≈1.0 and an item 14 days old scores ≈0.5.
@@ -110,8 +107,7 @@ def _item_id_node(item_id: str) -> str:
 # ── Indexing ───────────────────────────────────────────────────────────────────
 
 def index_item(analysis) -> None:
-    """
-    Ingest a saved Analysis object into the knowledge graph.
+    """Ingest a saved Analysis object into the knowledge graph.
 
     Creates or updates nodes for the item, its author, project, and
     conversation, then upserts directed edges connecting them.  Safe to
@@ -196,8 +192,7 @@ def index_item(analysis) -> None:
 
 
 def index_item_situation(item_id: str, situation_id: str) -> None:
-    """
-    Add a situation edge for an item that has been grouped after initial indexing.
+    """Add a situation edge for an item that has been grouped after initial indexing.
 
     :param item_id: The item's ID.
     :param situation_id: The situation's ID.
@@ -218,8 +213,7 @@ def _candidates_via_edge_type(
     base_weight: float,
     exclude_item_id: str,
 ) -> list[dict]:
-    """
-    Find item nodes connected to hub_node via a given edge type, returning
+    """Find item nodes connected to hub_node via a given edge type, returning
     scored candidates.  Edges are traversed in both directions.
     """
     candidates = []
@@ -243,8 +237,7 @@ def _candidates_via_edge_type(
 
 
 def get_context(item, max_n: int = 5) -> list[dict]:
-    """
-    Retrieve the most relevant prior items from the graph for a given item.
+    """Retrieve the most relevant prior items from the graph for a given item.
 
     Looks up the item's conversation, author, and project nodes, collects
     all connected items, scores each by ``base_weight × recency_decay``, and
@@ -314,8 +307,7 @@ def get_context(item, max_n: int = 5) -> list[dict]:
 # ── Prompt formatting ──────────────────────────────────────────────────────────
 
 def format_context(context_items: list[dict]) -> str:
-    """
-    Render a list of context items as a human-readable prompt section.
+    """Render a list of context items as a human-readable prompt section.
 
     Groups items by ``context_edge`` so the LLM can see which relationship
     each item arrived through.

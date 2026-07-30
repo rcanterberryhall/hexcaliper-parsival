@@ -1,4 +1,4 @@
-from models import RawItem, ActionItem, Analysis
+from models import ActionItem, Analysis, RawItem
 
 
 def test_raw_item_defaults():

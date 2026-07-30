@@ -1,5 +1,4 @@
-"""
-connector_outlook.py — Outlook connector stub.
+"""connector_outlook.py — Outlook connector stub.
 
 Inside Docker this module is intentionally a no-op — ``win32com`` is not
 available on Linux.  Emails are fed into the API via the host sidecar
@@ -11,14 +10,14 @@ scripts in ``/scripts``:
 Both sidecars POST directly to the ``/ingest`` endpoint.
 """
 import logging
+
 from models import RawItem
 
 log = logging.getLogger(__name__)
 
 
 def fetch() -> list[RawItem]:
-    """
-    Return an empty list — Outlook ingestion is handled by the host sidecar.
+    """Return an empty list — Outlook ingestion is handled by the host sidecar.
 
     :return: Empty list.
     :rtype: list[RawItem]

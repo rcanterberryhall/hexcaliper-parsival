@@ -31,10 +31,11 @@ import hashlib
 import mailbox
 import re
 import sys
-import requests
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+
+import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PAGE_API_URL   = "http://localhost:8082/page/api"
@@ -153,7 +154,7 @@ def parse_date(msg) -> datetime | None:
         return None
     try:
         dt = parsedate_to_datetime(date_str)
-        return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
     except Exception:
         return None
 
@@ -222,11 +223,11 @@ def load_messages(account_dir: Path, cutoff: datetime) -> list:
 def fetch() -> list[dict]:
     profile     = Path(THUNDERBIRD_PROFILE) if THUNDERBIRD_PROFILE else find_profile()
     account_dir = find_account_dir(profile)
-    cutoff      = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
+    cutoff      = datetime.now(UTC) - timedelta(hours=LOOKBACK_HOURS)
     raw_msgs    = load_messages(account_dir, cutoff)
 
     raw_msgs.sort(
-        key=lambda m: parse_date(m) or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda m: parse_date(m) or datetime.min.replace(tzinfo=UTC),
         reverse=True,
     )
     raw_msgs = raw_msgs[:MAX_EMAILS]
@@ -238,7 +239,7 @@ def fetch() -> list[dict]:
         to_field = decode_header_val(msg.get("To", ""))
         cc_field = decode_header_val(msg.get("CC", ""))
         body     = extract_body(msg)
-        dt       = parse_date(msg) or datetime.now(timezone.utc)
+        dt       = parse_date(msg) or datetime.now(UTC)
         msg_id   = msg.get("Message-ID", "").strip("<>")
         item_id  = msg_id if msg_id else hashlib.sha1(
             f"{sender}{subject}{dt.isoformat()}".encode()

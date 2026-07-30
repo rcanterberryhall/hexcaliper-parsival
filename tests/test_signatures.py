@@ -8,9 +8,7 @@ and the apply rules (provenance stamping, manual-edit lockout, name fill-only-
 when-empty, idempotent re-parse).
 """
 import db
-import contacts
 import signatures
-
 
 # ── Fixtures: realistic-ish signature corpus ─────────────────────────────────
 

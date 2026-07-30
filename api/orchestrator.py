@@ -1,5 +1,4 @@
-"""
-orchestrator.py — Scan, reanalyze, and ingest orchestration for Squire.
+"""orchestrator.py — Scan, reanalyze, and ingest orchestration for Squire.
 
 Owns the three background pipeline functions that drive item analysis:
 
@@ -29,29 +28,29 @@ returning 429s (or its tracked queue blocking) — not a parsival-side
 pre-throttle that has to be kept in sync by hand every time the GPU
 topology changes.
 """
+import logging
 import os
 import threading
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-import logging
 import requests as http_requests
 
 log = logging.getLogger(__name__)
 
-from agent import analyze, build_prompt
-from models import RawItem
-import connector_slack
+import config
 import connector_github
 import connector_jira
 import connector_outlook
+import connector_slack
 import connector_teams
-import config
 import db
 import graph
 import noise_filter as _nf
+from agent import analyze, build_prompt
+from models import RawItem
 
 _TIMING_WINDOW = 10  # rolling average over last N items
 
@@ -91,8 +90,7 @@ def _ingest_concurrency() -> int:
 
 def init(scan_state: dict, save_analysis_fn, spawn_situation_fn,
          generate_briefing_fn=None) -> None:
-    """
-    Inject shared state and callables from app.py.
+    """Inject shared state and callables from app.py.
 
     Must be called once at startup before any scan or ingest endpoints
     are invoked.
@@ -105,7 +103,7 @@ def init(scan_state: dict, save_analysis_fn, spawn_situation_fn,
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── Noise filter helpers ───────────────────────────────────────────────────────
@@ -118,8 +116,7 @@ def _get_noise_rules() -> list[dict]:
 
 
 def _save_filtered_item(item: RawItem, matched_rule: str) -> None:
-    """
-    Persist a filtered item to the items table as category='filtered'.
+    """Persist a filtered item to the items table as category='filtered'.
     No LLM analysis is run; the item is auditable but invisible in the normal UI.
     """
     with db.lock:
@@ -200,8 +197,7 @@ def _submit_batch_job(prompt: str) -> str | None:
 
 
 def _raw_item_from_record(rec: dict) -> RawItem:
-    """
-    Reconstruct a minimal ``RawItem`` from a stored DB record.
+    """Reconstruct a minimal ``RawItem`` from a stored DB record.
 
     Used by the batch poll path so it can feed the same
     :func:`agent.build_analysis_from_llm_json` helper that the sync path uses.
@@ -232,8 +228,7 @@ def _raw_item_from_record(rec: dict) -> RawItem:
 
 
 def _apply_batch_result(rec: dict, response_text: str) -> None:
-    """
-    Apply a completed batch LLM result to a stored item.
+    """Apply a completed batch LLM result to a stored item.
 
     Parses the LLM JSON via :func:`agent.build_analysis_from_llm_json`,
     re-saves the analysis, indexes it into the graph, spawns the situation
@@ -260,8 +255,7 @@ def _apply_batch_result(rec: dict, response_text: str) -> None:
 
 
 def _poll_batch_once() -> None:
-    """
-    One iteration of the batch poll loop.  Extracted from
+    """One iteration of the batch poll loop.  Extracted from
     :func:`_poll_batch_jobs` so tests can drive it directly without spawning
     a thread.
 
@@ -327,8 +321,7 @@ def _poll_batch_once() -> None:
 
 
 def _poll_batch_jobs() -> None:
-    """
-    Background thread: every 60 s call :func:`_poll_batch_once` to poll
+    """Background thread: every 60 s call :func:`_poll_batch_once` to poll
     merLLM for completed batch jobs and apply their results.
     """
     while True:
@@ -353,8 +346,7 @@ def _ensure_batch_poll_thread() -> None:
 # ── Pipeline functions ─────────────────────────────────────────────────────────
 
 def _generate_briefing_bg() -> None:
-    """
-    Call the injected briefing generator in a background thread.
+    """Call the injected briefing generator in a background thread.
 
     No-ops silently if ``generate_briefing_fn`` was not provided to ``init()``.
     """
@@ -370,8 +362,7 @@ def _generate_briefing_bg() -> None:
 
 
 def run_scan(sources: list[str]) -> None:
-    """
-    Fetch items from one or more connectors and run LLM analysis on each.
+    """Fetch items from one or more connectors and run LLM analysis on each.
 
     Iterates ``sources`` in order, calling the matching connector's ``fetch()``
     method.  Each item is then passed to ``agent.analyze``; concurrency
@@ -492,8 +483,7 @@ def run_scan(sources: list[str]) -> None:
 
 
 def run_reanalyze() -> None:
-    """
-    Re-run LLM analysis on all stored items using the current config.
+    """Re-run LLM analysis on all stored items using the current config.
 
     Reconstructs a ``RawItem`` from each stored analysis record (using
     ``body_preview``, ``to_field``, ``cc_field``, and existing ``project_tag``
@@ -645,8 +635,7 @@ def run_reanalyze() -> None:
 
 
 def claim_ingest_items(item_ids: list[str]) -> set[str]:
-    """
-    Atomically mark ``item_ids`` as in-flight and return the subset that is
+    """Atomically mark ``item_ids`` as in-flight and return the subset that is
     genuinely new (not already in the DB and not currently being processed).
 
     Used by ``POST /ingest`` to deduplicate against both persisted items
@@ -679,8 +668,7 @@ def release_ingest_item(item_id: str) -> None:
 
 
 def process_ingest_items(raw: list[RawItem]) -> None:
-    """
-    Analyse a pre-filtered list of new raw items from the ingest endpoint.
+    """Analyse a pre-filtered list of new raw items from the ingest endpoint.
 
     Called as a FastAPI background task.  Respects ``scan_state["cancelled"]``
     and tracks in-flight count via ``scan_state["ingest_pending"]``.
@@ -777,6 +765,7 @@ def process_ingest_items(raw: list[RawItem]) -> None:
 # on its own interval, skipping if a scan is already in progress.
 
 import logging as _logging
+
 _sched_log = _logging.getLogger("parsival.scheduler")
 
 # {source: {"interval_min": int, "next_run": float|None, "last_run": float|None, "timer": Timer|None}}
@@ -816,8 +805,7 @@ def _fire_auto_scan(source: str) -> None:
 
 
 def scheduler_update(schedule_dict: dict) -> None:
-    """
-    Apply a new scan schedule.
+    """Apply a new scan schedule.
 
     ``schedule_dict`` maps source names to interval minutes (0 = disabled).
     Existing timers are cancelled; new ones are armed for non-zero intervals.
@@ -864,7 +852,7 @@ def get_schedule_status() -> dict:
             last_run = entry.get("last_run")
             result[source] = {
                 "interval_min": entry["interval_min"],
-                "next_run":     datetime.fromtimestamp(next_run, tz=timezone.utc).isoformat() if next_run else None,
-                "last_run":     datetime.fromtimestamp(last_run, tz=timezone.utc).isoformat() if last_run else None,
+                "next_run":     datetime.fromtimestamp(next_run, tz=UTC).isoformat() if next_run else None,
+                "last_run":     datetime.fromtimestamp(last_run, tz=UTC).isoformat() if last_run else None,
             }
         return result

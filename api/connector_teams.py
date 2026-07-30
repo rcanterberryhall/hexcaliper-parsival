@@ -1,5 +1,4 @@
-"""
-connector_teams.py — Microsoft Teams data connector.
+"""connector_teams.py — Microsoft Teams data connector.
 
 Fetches @mentions, direct messages, and joined-team channel activity for all
 connected accounts using per-user OAuth tokens obtained via the Microsoft Graph
@@ -18,10 +17,11 @@ Each call to ``fetch()`` returns a deduplicated list of ``RawItem`` objects
 covering the lookback window defined in ``config.LOOKBACK_HOURS``.
 """
 import logging
-import requests
-from datetime import datetime, timedelta, timezone
-from models import RawItem
+from datetime import UTC, datetime, timedelta
+
 import config
+import requests
+from models import RawItem
 
 log = logging.getLogger(__name__)
 
@@ -32,8 +32,7 @@ TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 # ── Token management ──────────────────────────────────────────────────────────
 
 def _refresh_token(ws: dict) -> str | None:
-    """
-    Exchange a refresh token for a fresh access token.
+    """Exchange a refresh token for a fresh access token.
 
     Updates the ``ws`` dict in-place with the new ``access_token`` and
     ``refresh_token`` (Microsoft rotates refresh tokens).
@@ -67,8 +66,7 @@ def _refresh_token(ws: dict) -> str | None:
 
 
 def _get(token: str, path: str, params: dict = None) -> dict:
-    """
-    Make an authenticated GET request to the Microsoft Graph API.
+    """Make an authenticated GET request to the Microsoft Graph API.
 
     :param token: A valid Graph API access token.
     :param path: Graph endpoint path, e.g. ``"/me/chats"``.
@@ -121,8 +119,7 @@ def _user_identifiers() -> list[str]:
 
 
 def _relevance(text: str) -> tuple[bool, str, str | None]:
-    """
-    Determine whether a Teams message is relevant to the configured user context.
+    """Determine whether a Teams message is relevant to the configured user context.
 
     :return: ``(relevant, hierarchy, project_tag)``
     """
@@ -176,8 +173,7 @@ def _body_text(msg: dict) -> str:
 
 
 def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
-    """
-    Fetch @mentions, DMs, and joined-team channel activity for one user token.
+    """Fetch @mentions, DMs, and joined-team channel activity for one user token.
 
     Three passes:
     1. ``/me/messages`` — @mention activity items across all teams.
@@ -217,7 +213,7 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
             log.error("/me failed after refresh: %s", e2)
             return []
 
-    cutoff_iso = datetime.fromtimestamp(cutoff_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cutoff_iso = datetime.fromtimestamp(cutoff_ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     log.info("%s: my_id=%s, cutoff=%s", tenant, my_id, cutoff_iso)
 
     # ── 1. @mentions via activity feed ────────────────────────────────────────
@@ -245,7 +241,7 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
                 body      = text[:3000],
                 url       = (msg.get("webUrl") or ""),
                 author    = sender,
-                timestamp = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                timestamp = datetime.fromtimestamp(ts, tz=UTC).isoformat(),
                 metadata  = {"tenant": tenant, "type": "mention"},
             ))
     except Exception as e:
@@ -307,7 +303,7 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
                 body      = "\n".join(lines)[:3000],
                 url       = chat.get("webUrl") or f"https://teams.microsoft.com/l/chat/{chat_id}/",
                 author    = other_names[0] if other_names else my_name,
-                timestamp = datetime.fromtimestamp(latest_ts, tz=timezone.utc).isoformat(),
+                timestamp = datetime.fromtimestamp(latest_ts, tz=UTC).isoformat(),
                 metadata  = {"tenant": tenant, "type": "dm" if chat_type == "oneOnOne" else "group_chat"},
             ))
     except Exception as e:
@@ -398,9 +394,9 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
                     item_id   = mid,
                     title     = f"[#{ch_name}] {team_name} ({tenant}): recent activity",
                     body      = "\n".join(lines)[:3000],
-                    url       = ch.get("webUrl") or f"https://teams.microsoft.com",
+                    url       = ch.get("webUrl") or "https://teams.microsoft.com",
                     author    = f"#{ch_name}",
-                    timestamp = datetime.fromtimestamp(latest_ts, tz=timezone.utc).isoformat(),
+                    timestamp = datetime.fromtimestamp(latest_ts, tz=UTC).isoformat(),
                     metadata  = {
                         "channel":     ch_name,
                         "team":        team_name,
@@ -420,8 +416,7 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def fetch() -> list[RawItem]:
-    """
-    Fetch Teams items across all connected accounts.
+    """Fetch Teams items across all connected accounts.
 
     :return: Combined list of raw items from all accounts, deduplicated
              within each account by item ID.
@@ -432,7 +427,7 @@ def fetch() -> list[RawItem]:
         return []
 
     cutoff_ts = (
-        datetime.now(timezone.utc) - timedelta(hours=config.LOOKBACK_HOURS)
+        datetime.now(UTC) - timedelta(hours=config.LOOKBACK_HOURS)
     ).timestamp()
 
     all_items: list[RawItem] = []

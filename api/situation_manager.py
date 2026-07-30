@@ -1,5 +1,4 @@
-"""
-situation_manager.py — Situation formation, scoring, and response helpers.
+"""situation_manager.py — Situation formation, scoring, and response helpers.
 
 Owns all situation-lifecycle logic extracted from app.py:
   _maybe_form_situation()    — correlate an item and form or merge situations
@@ -18,7 +17,7 @@ import json
 import logging
 import threading
 import uuid as _uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import config
 import correlator as _correlator
@@ -32,8 +31,7 @@ _scan_state: dict = {}
 
 
 def init(scan_state: dict) -> None:
-    """
-    Inject shared scan state from app.py and start the score-decay daemon.
+    """Inject shared scan state from app.py and start the score-decay daemon.
 
     Must be called once at startup before any route handlers execute.
     """
@@ -44,14 +42,13 @@ def init(scan_state: dict) -> None:
 
 def now_iso() -> str:
     """Return the current UTC time as an ISO 8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── Priority helper ────────────────────────────────────────────────────────────
 
 def _pri_rank(p: str) -> int:
-    """
-    Convert a priority string to a numeric rank for comparison.
+    """Convert a priority string to a numeric rank for comparison.
 
     :param p: Priority string — ``"high"``, ``"medium"``, or ``"low"``.
     :type p: str
@@ -80,8 +77,7 @@ def _completed_todos_for_items(item_ids: list) -> list[dict]:
 # ── Score decay ────────────────────────────────────────────────────────────────
 
 def _rescore_situation(sit_id: str) -> None:
-    """
-    Recompute only the urgency score for a single situation without re-running LLM synthesis.
+    """Recompute only the urgency score for a single situation without re-running LLM synthesis.
 
     Cheaper than ``_update_situation_record`` — used by the 30-minute decay
     loop (``_score_decay_loop``) and when a newly saved item correlates with
@@ -109,8 +105,7 @@ def _rescore_situation(sit_id: str) -> None:
 
 
 def _rescore_all_situations() -> None:
-    """
-    Recompute urgency scores for all non-dismissed situations.
+    """Recompute urgency scores for all non-dismissed situations.
 
     Iterates every situation that is not marked ``dismissed`` and calls
     ``_rescore_situation`` on each.  Exceptions for individual situations are
@@ -142,8 +137,7 @@ def _score_decay_loop():
 # ── Situation record management ────────────────────────────────────────────────
 
 def _update_situation_record(sit_id: str, item_ids: list) -> None:
-    """
-    Reload cluster records and recompute score and LLM synthesis for an existing situation.
+    """Reload cluster records and recompute score and LLM synthesis for an existing situation.
 
     Fetches all analysis records for ``item_ids``, re-runs
     ``correlator.synthesize_situation`` (full LLM pass) and
@@ -212,8 +206,7 @@ def _update_situation_record(sit_id: str, item_ids: list) -> None:
 
 
 def _sync_situation_tags_for_item(item_id: str) -> None:
-    """
-    Recompute ``project_tag`` on every situation that contains ``item_id``.
+    """Recompute ``project_tag`` on every situation that contains ``item_id``.
 
     Collects the union of all member project tags (multi-tag aware).
 
@@ -238,8 +231,7 @@ def _sync_situation_tags_for_item(item_id: str) -> None:
 
 
 def _sync_situation_tags_all() -> None:
-    """
-    Recompute ``project_tag`` on every situation.
+    """Recompute ``project_tag`` on every situation.
 
     Called after a bulk project-tag change (e.g. project deletion in
     ``save_settings``).  Multi-tag aware — collects union of member tags.
@@ -264,8 +256,7 @@ def _sync_situation_tags_all() -> None:
 # ── Formation ──────────────────────────────────────────────────────────────────
 
 def _maybe_form_situation(item_id: str) -> None:
-    """
-    Attempt to correlate a newly saved item with existing analyses and form
+    """Attempt to correlate a newly saved item with existing analyses and form
     or update a ``Situation`` record.
 
     Algorithm:
@@ -411,8 +402,7 @@ def _maybe_form_situation(item_id: str) -> None:
 
 
 def _spawn_situation_task(item_id: str) -> None:
-    """
-    Spawn ``_maybe_form_situation`` in a daemon thread and track it in ``scan_state``.
+    """Spawn ``_maybe_form_situation`` in a daemon thread and track it in ``scan_state``.
 
     Increments ``_scan_state["situations_pending"]`` before starting the thread
     and decrements it in a ``finally`` block so the counter stays accurate even
@@ -437,8 +427,7 @@ def _spawn_situation_task(item_id: str) -> None:
 # ── Split / merge ────────────────────────────────────────────────────────────
 
 def _rescore_lightweight(sit_id: str, item_ids: list) -> None:
-    """
-    Recompute ``score``, ``priority``, ``sources``, ``last_updated``, and
+    """Recompute ``score``, ``priority``, ``sources``, ``last_updated``, and
     ``project_tag`` for a situation without invoking the LLM.
 
     Used after split/merge so the caller sees a consistent record without
@@ -475,8 +464,7 @@ def split_situation(
     item_ids_to_split: list[str],
     new_title: str | None = None,
 ) -> str:
-    """
-    Move a subset of items out of ``sit_id`` into a brand-new situation.
+    """Move a subset of items out of ``sit_id`` into a brand-new situation.
 
     Both situations are rescored lightweight (no LLM).  The caller gets back
     the new situation's UUID so the UI can focus it.
@@ -536,8 +524,7 @@ def split_situation(
 
 
 def merge_situations(target_id: str, source_id: str) -> None:
-    """
-    Merge ``source_id`` into ``target_id``.
+    """Merge ``source_id`` into ``target_id``.
 
     All source items are relinked to the target, the target is rescored
     lightweight, and the source is dismissed with reason ``merged_into:<id>``
@@ -593,15 +580,14 @@ def _days_since(ts: str | None) -> float | None:
         s = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+            dt = dt.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - dt).total_seconds() / 86400.0
     except Exception:
         return None
 
 
 def _compute_stale_flag(sit: dict) -> str | None:
-    """
-    Return a stale-decay label for ``sit`` or None if it's fresh.
+    """Return a stale-decay label for ``sit`` or None if it's fresh.
 
     Labels:
       * ``"stale_waiting"``       — in ``waiting`` ≥ STALE_WAITING_DAYS with no
@@ -629,8 +615,7 @@ def _compute_stale_flag(sit: dict) -> str | None:
 # ── Response builder ───────────────────────────────────────────────────────────
 
 def _situation_response(sit: dict) -> dict:
-    """
-    Build the API response dict for a situation.
+    """Build the API response dict for a situation.
 
     Fetches a lightweight summary (``item_id``, ``source``, ``title``,
     ``priority``, ``timestamp``) for each contributing analysis and includes
@@ -661,13 +646,13 @@ def _situation_response(sit: dict) -> dict:
         (t["item_id"], t["description"])
         for t in all_todos if t.get("done")
     }
-    from datetime import datetime, timezone
+    from datetime import datetime
     follow_up_date   = sit.get("follow_up_date")
     follow_up_overdue = False
     if follow_up_date:
         try:
             fud = datetime.fromisoformat(follow_up_date.rstrip("Z"))
-            follow_up_overdue = fud < datetime.now(timezone.utc).replace(tzinfo=None)
+            follow_up_overdue = fud < datetime.now(UTC).replace(tzinfo=None)
         except Exception:
             pass
 

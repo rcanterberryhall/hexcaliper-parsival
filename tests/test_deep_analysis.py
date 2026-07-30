@@ -2,9 +2,7 @@
 import uuid
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from app import situations_tbl, analyses, intel_tbl
+from app import analyses, intel_tbl, situations_tbl
 
 
 def _sit(sit_id=None, item_ids=None, project_tag=None):

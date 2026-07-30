@@ -1,5 +1,4 @@
-"""
-db.py — SQLite database layer for Squire.
+"""db.py — SQLite database layer for Squire.
 
 Replaces TinyDB with SQLite.  All document and graph data lives in a single
 SQLite file at ``config.DB_PATH``.  WAL mode allows concurrent reads while
@@ -41,8 +40,7 @@ import os
 import re
 import sqlite3
 import threading
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
 
 import config
 
@@ -100,11 +98,11 @@ def item_has_any_project(item: dict) -> bool:
 # ── Module-level state ─────────────────────────────────────────────────────────
 
 lock = threading.RLock()         # re-entrant: callers may nest without self-deadlock
-_conn: Optional[sqlite3.Connection] = None
+_conn: sqlite3.Connection | None = None
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── Connection & schema ────────────────────────────────────────────────────────
@@ -698,7 +696,7 @@ def _rows_to_list(rows) -> list[dict]:
 
 # ── Item (analysis) operations ────────────────────────────────────────────────
 
-def get_item(item_id: str) -> Optional[dict]:
+def get_item(item_id: str) -> dict | None:
     """Fetch a single item by item_id."""
     c = conn()
     row = c.execute("SELECT * FROM items WHERE item_id = ?", (item_id,)).fetchone()
@@ -742,8 +740,7 @@ def get_items_by_situation(situation_id: str) -> list[dict]:
 
 
 def upsert_item(data: dict) -> None:
-    """
-    Insert or replace an item record.
+    """Insert or replace an item record.
 
     All JSON columns (action_items, goals, key_dates, information_items,
     references) are serialised if they arrive as Python objects.
@@ -812,7 +809,7 @@ def get_items_with_pending_batch() -> list[dict]:
     )
 
 
-def set_batch_job_id(item_id: str, batch_job_id: Optional[str]) -> None:
+def set_batch_job_id(item_id: str, batch_job_id: str | None) -> None:
     """Set or clear the batch_job_id on an item row."""
     conn().execute(
         "UPDATE items SET batch_job_id = ? WHERE item_id = ?",
@@ -824,9 +821,9 @@ def set_batch_job_id(item_id: str, batch_job_id: Optional[str]) -> None:
 
 def get_todos(
     done: bool = False,
-    source: Optional[str] = None,
-    priority: Optional[str] = None,
-    project_tag: Optional[str] = None,
+    source: str | None = None,
+    priority: str | None = None,
+    project_tag: str | None = None,
 ) -> list[dict]:
     """Return todo rows with optional filters, sorted by priority then created_at."""
     c    = conn()
@@ -983,7 +980,7 @@ def get_all_todos() -> list[dict]:
     )
 
 
-def get_todo_by_id(todo_id: int) -> Optional[dict]:
+def get_todo_by_id(todo_id: int) -> dict | None:
     """Fetch a single todo by its integer id."""
     row = conn().execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
     return _row_to_dict(row)
@@ -1108,7 +1105,7 @@ def _parse_situation(d: dict) -> dict:
     return d
 
 
-def get_situation(situation_id: str) -> Optional[dict]:
+def get_situation(situation_id: str) -> dict | None:
     """Fetch a single situation by situation_id, with JSON list columns parsed."""
     row = conn().execute(
         "SELECT * FROM situations WHERE situation_id = ?", (situation_id,)
@@ -1164,8 +1161,7 @@ def get_situations_containing_item(item_id: str) -> list[dict]:
 
 
 def get_active_situations(lifecycle_statuses: list[str] | None = None) -> list[dict]:
-    """
-    Return situations filtered by lifecycle_status.
+    """Return situations filtered by lifecycle_status.
 
     If ``lifecycle_statuses`` is None, defaults to active statuses:
     ``new``, ``investigating``, ``waiting``.
@@ -1183,8 +1179,8 @@ def get_active_situations(lifecycle_statuses: list[str] | None = None) -> list[d
 def insert_situation_event(situation_id: str, from_status: str | None,
                            to_status: str, note: str | None = None) -> None:
     """Log a lifecycle status transition event."""
-    from datetime import datetime, timezone
-    ts = datetime.now(timezone.utc).isoformat()
+    from datetime import datetime
+    ts = datetime.now(UTC).isoformat()
     conn().execute(
         "INSERT INTO situation_events (situation_id, from_status, to_status, timestamp, note) "
         "VALUES (?, ?, ?, ?, ?)",
@@ -1231,7 +1227,7 @@ def count_user_actions() -> int:
 
 # ── Model state (attention centroids) ─────────────────────────────────────────
 
-def get_model_state(key: str) -> Optional[dict]:
+def get_model_state(key: str) -> dict | None:
     """Return a deserialized model state value, or None."""
     row = conn().execute("SELECT value FROM model_state WHERE key=?", (key,)).fetchone()
     if not row:
@@ -1333,7 +1329,7 @@ def get_all_scan_logs() -> list[dict]:
 
 # ── Embedding operations ───────────────────────────────────────────────────────
 
-def get_embedding(project: str) -> Optional[dict]:
+def get_embedding(project: str) -> dict | None:
     """Return the embedding record for a project."""
     row = conn().execute(
         "SELECT * FROM embeddings WHERE project = ?", (project,)
@@ -1410,8 +1406,7 @@ def upsert_edge(
     weight: float = 1.0,
     properties: dict = None,
 ) -> None:
-    """
-    Insert or update a graph edge.  Weight is updated to the new value if the
+    """Insert or update a graph edge.  Weight is updated to the new value if the
     edge already exists (e.g. accumulated co-occurrence count).
     """
     c = conn()
@@ -1424,7 +1419,7 @@ def upsert_edge(
     )
 
 
-def get_edges_from(node_id: str, edge_type: Optional[str] = None) -> list[dict]:
+def get_edges_from(node_id: str, edge_type: str | None = None) -> list[dict]:
     """Return all edges where src_id matches."""
     c    = conn()
     if edge_type:
@@ -1439,7 +1434,7 @@ def get_edges_from(node_id: str, edge_type: Optional[str] = None) -> list[dict]:
     return _rows_to_list(rows)
 
 
-def get_edges_to(node_id: str, edge_type: Optional[str] = None) -> list[dict]:
+def get_edges_to(node_id: str, edge_type: str | None = None) -> list[dict]:
     """Return all edges where dst_id matches."""
     c    = conn()
     if edge_type:
@@ -1454,7 +1449,7 @@ def get_edges_to(node_id: str, edge_type: Optional[str] = None) -> list[dict]:
     return _rows_to_list(rows)
 
 
-def get_node(node_id: str) -> Optional[dict]:
+def get_node(node_id: str) -> dict | None:
     """Fetch a single node by id."""
     row = conn().execute("SELECT * FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
     return _row_to_dict(row)
@@ -1473,7 +1468,7 @@ def get_nodes_by_type(node_type: str) -> list[dict]:
 # contact_emails join table — every helper that returns a contact dict
 # attaches an "emails" key with the full list, primary first.
 
-def _attach_emails(contact: Optional[dict]) -> Optional[dict]:
+def _attach_emails(contact: dict | None) -> dict | None:
     """Attach the joined emails list to a contact dict (in place).
 
     Also decodes the JSON-typed columns (``manually_edited_fields``,
@@ -1508,7 +1503,7 @@ def _attach_emails(contact: Optional[dict]) -> Optional[dict]:
     return contact
 
 
-def get_contact(contact_id: int) -> Optional[dict]:
+def get_contact(contact_id: int) -> dict | None:
     """Fetch a single contact by id, with emails attached."""
     row = conn().execute(
         "SELECT * FROM contacts WHERE contact_id = ?", (contact_id,)
@@ -1516,7 +1511,7 @@ def get_contact(contact_id: int) -> Optional[dict]:
     return _attach_emails(_row_to_dict(row))
 
 
-def get_contact_by_email(email: str) -> Optional[dict]:
+def get_contact_by_email(email: str) -> dict | None:
     """Look up a contact by any of its email addresses (case-insensitive)."""
     if not email:
         return None
@@ -1542,7 +1537,7 @@ def find_contacts_by_name(name: str) -> list[dict]:
     return [_attach_emails(dict(r)) for r in rows]
 
 
-def list_contacts(query: Optional[str] = None, limit: int = 500) -> list[dict]:
+def list_contacts(query: str | None = None, limit: int = 500) -> list[dict]:
     """Return contacts ordered by most-recently-seen, optionally filtered.
 
     `query` matches against name, employer, title, or any associated email
@@ -1690,7 +1685,8 @@ def delete_contact(contact_id: int) -> None:
 
 def add_contact_email(contact_id: int, email: str, is_primary: bool = False) -> bool:
     """Attach an email to a contact.  Returns False if the email is already
-    attached to another contact (caller can decide whether to merge)."""
+    attached to another contact (caller can decide whether to merge).
+    """
     if not email:
         return False
     c = conn()
@@ -1725,8 +1721,8 @@ def remove_contact_email(contact_id: int, email: str) -> None:
 def upsert_contact_from_header(
     display_name: str,
     email: str,
-    item_id: Optional[str] = None,
-    item_timestamp: Optional[str] = None,
+    item_id: str | None = None,
+    item_timestamp: str | None = None,
 ) -> int:
     """Idempotently record a contact seen in an email header.
 
@@ -1827,14 +1823,14 @@ def _card_with_relations(row: dict) -> dict:
     return row
 
 
-def get_lookahead_card(card_id: str) -> Optional[dict]:
+def get_lookahead_card(card_id: str) -> dict | None:
     row = conn().execute("SELECT * FROM lookahead_cards WHERE id = ?", (card_id,)).fetchone()
     return _card_with_relations(_row_to_dict(row)) if row else None
 
 
-def list_lookahead_cards(project: Optional[str] = None,
-                         start_date: Optional[str] = None,
-                         end_date: Optional[str] = None) -> list[dict]:
+def list_lookahead_cards(project: str | None = None,
+                         start_date: str | None = None,
+                         end_date: str | None = None) -> list[dict]:
     """List cards, optionally filtered by project and an overlapping date window."""
     sql  = "SELECT * FROM lookahead_cards"
     args: list = []
@@ -1920,7 +1916,7 @@ def set_card_links(card_id: str, links: list[dict]) -> None:
         )
 
 
-def get_card_todo_id(card_id: str) -> Optional[int]:
+def get_card_todo_id(card_id: str) -> int | None:
     """Return the integer todo id linked to this card, or None."""
     row = conn().execute(
         "SELECT target_id FROM lookahead_card_links "
@@ -2000,7 +1996,7 @@ def set_card_resource_status(card_id: str, resource_id: int, status: str) -> Non
 
 # ── Resources (global catalog) ────────────────────────────────────────────────
 
-def list_resources(type_filter: Optional[str] = None) -> list[dict]:
+def list_resources(type_filter: str | None = None) -> list[dict]:
     sql = "SELECT * FROM lookahead_resources"
     args: list = []
     if type_filter:
@@ -2010,7 +2006,7 @@ def list_resources(type_filter: Optional[str] = None) -> list[dict]:
     return _rows_to_list(conn().execute(sql, args).fetchall())
 
 
-def get_resource(resource_id: int) -> Optional[dict]:
+def get_resource(resource_id: int) -> dict | None:
     row = conn().execute("SELECT * FROM lookahead_resources WHERE id = ?",
                          (int(resource_id),)).fetchone()
     return _row_to_dict(row)
@@ -2026,7 +2022,7 @@ def create_resource(name: str, type_: str, notes: str = "") -> dict:
     return get_resource(cur.lastrowid)
 
 
-def update_resource(resource_id: int, updates: dict) -> Optional[dict]:
+def update_resource(resource_id: int, updates: dict) -> dict | None:
     allowed = {k: v for k, v in updates.items() if k in ("name", "type", "notes")}
     if not allowed:
         return get_resource(resource_id)
@@ -2046,7 +2042,7 @@ def delete_resource(resource_id: int) -> None:
 
 # ── Project shift schedules ───────────────────────────────────────────────────
 
-def list_project_shifts(project_tag: Optional[str] = None) -> list[dict]:
+def list_project_shifts(project_tag: str | None = None) -> list[dict]:
     sql  = "SELECT * FROM project_shifts"
     args: list = []
     if project_tag:
@@ -2130,14 +2126,14 @@ def _template_with_tasks(row: dict) -> dict:
     return row
 
 
-def get_template(template_id: str) -> Optional[dict]:
+def get_template(template_id: str) -> dict | None:
     row = conn().execute(
         "SELECT * FROM lookahead_templates WHERE id = ?", (template_id,)
     ).fetchone()
     return _template_with_tasks(_row_to_dict(row)) if row else None
 
 
-def list_templates(owner: Optional[str] = None) -> list[dict]:
+def list_templates(owner: str | None = None) -> list[dict]:
     sql = "SELECT * FROM lookahead_templates"
     args: list = []
     if owner:
@@ -2226,7 +2222,7 @@ def create_template(data: dict) -> dict:
     return get_template(tid)
 
 
-def update_template(template_id: str, updates: dict) -> Optional[dict]:
+def update_template(template_id: str, updates: dict) -> dict | None:
     """Apply partial update. Bumps ``version`` unconditionally."""
     current = get_template(template_id)
     if not current:
@@ -2332,7 +2328,7 @@ def _duration_to_end(start_date: str, start_shift: int, duration_shifts: int,
 
 
 def instantiate_template(template_id: str, start_date: str,
-                         project_tag: str, owner: str = "") -> Optional[dict]:
+                         project_tag: str, owner: str = "") -> dict | None:
     """Materialise a template instance.  Returns ``{instance, cards}``."""
     import uuid as _uuid
     tpl = get_template(template_id)
@@ -2417,7 +2413,7 @@ def _annotate_instance_outdated(inst: dict) -> dict:
     return inst
 
 
-def get_instance(instance_id: str) -> Optional[dict]:
+def get_instance(instance_id: str) -> dict | None:
     row = conn().execute(
         "SELECT * FROM lookahead_template_instances WHERE id = ?", (instance_id,)
     ).fetchone()
@@ -2429,8 +2425,8 @@ def get_instance(instance_id: str) -> Optional[dict]:
     return _annotate_instance_outdated(inst)
 
 
-def list_instances(project: Optional[str] = None,
-                   status: Optional[str] = None) -> list[dict]:
+def list_instances(project: str | None = None,
+                   status: str | None = None) -> list[dict]:
     sql = "SELECT * FROM lookahead_template_instances"
     args: list = []
     where: list[str] = []
@@ -2456,7 +2452,7 @@ def list_lookahead_cards_for_instance(instance_id: str) -> list[dict]:
     return [_card_with_relations(r) for r in rows]
 
 
-def reschedule_instance(instance_id: str, new_start_date: str) -> Optional[dict]:
+def reschedule_instance(instance_id: str, new_start_date: str) -> dict | None:
     """Shift all cards attached to the instance by (new_start_date - old_start_date).
 
     Uses the instance's ``duration_unit`` via its template to honour
@@ -2525,7 +2521,7 @@ def reschedule_instance(instance_id: str, new_start_date: str) -> Optional[dict]
     return get_instance(instance_id)
 
 
-def upgrade_instance(instance_id: str) -> Optional[dict]:
+def upgrade_instance(instance_id: str) -> dict | None:
     """Re-apply the current template version to an existing instance.
 
     Per parsival#60: the user opted in to this upgrade.  Existing cards keep
@@ -2638,7 +2634,7 @@ def upgrade_instance(instance_id: str) -> Optional[dict]:
     return get_instance(instance_id)
 
 
-def set_instance_status(instance_id: str, status: str) -> Optional[dict]:
+def set_instance_status(instance_id: str, status: str) -> dict | None:
     if status not in _INSTANCE_STATUSES:
         raise ValueError(f"invalid instance status: {status}")
     conn().execute(
@@ -2659,7 +2655,7 @@ def delete_instance(instance_id: str) -> None:
     )
 
 
-def detach_card(card_id: str) -> Optional[dict]:
+def detach_card(card_id: str) -> dict | None:
     """Remove the card from its template instance without deleting it."""
     conn().execute(
         "UPDATE lookahead_cards SET template_instance_id = NULL, "
@@ -2711,7 +2707,7 @@ def list_card_suggestions(card_id: str,
 
 
 def add_card_suggestion(card_id: str, link_type: str, target_id: str,
-                        reason: str = "") -> Optional[dict]:
+                        reason: str = "") -> dict | None:
     """Insert a new pending suggestion.  Deduped on (card, type, target)."""
     if link_type not in _LINK_TYPES:
         return None
@@ -2738,7 +2734,7 @@ def add_card_suggestion(card_id: str, link_type: str, target_id: str,
     return _row_to_dict(row)
 
 
-def decide_card_suggestion(suggestion_id: int, decision: str) -> Optional[dict]:
+def decide_card_suggestion(suggestion_id: int, decision: str) -> dict | None:
     """Accept or reject a suggestion.  Accepted ones also become card_links."""
     if decision not in ("accepted", "rejected"):
         raise ValueError(f"invalid decision: {decision}")
@@ -2770,8 +2766,7 @@ def decide_card_suggestion(suggestion_id: int, decision: str) -> Optional[dict]:
 
 def slack_unseen_message_ts(team: str, channel_id: str,
                             ts_list: list[str]) -> set[str]:
-    """
-    Return the subset of ``ts_list`` that has not yet been recorded as seen
+    """Return the subset of ``ts_list`` that has not yet been recorded as seen
     for the given ``(team, channel_id)``.
 
     Used by ``connector_slack._fetch_for_token`` to keep only newly-surfaced
@@ -2799,8 +2794,7 @@ def slack_unseen_message_ts(team: str, channel_id: str,
 
 def slack_mark_messages_seen(team: str, channel_id: str,
                              ts_list: list[str]) -> None:
-    """
-    Record ``(team, channel_id, ts)`` tuples as already surfaced.
+    """Record ``(team, channel_id, ts)`` tuples as already surfaced.
 
     Called by the Slack connector right after it emits a ``RawItem`` built
     from ``ts_list`` so subsequent scans can skip those messages.  Uses

@@ -1,10 +1,9 @@
 """tests/test_situations.py — Tests for the situation layer endpoints."""
 import uuid
+from datetime import UTC
 
-import pytest
+from app import analyses, situations_tbl
 from tinydb import Query
-
-from app import situations_tbl, analyses, intel_tbl
 
 Q = Query()
 
@@ -212,8 +211,8 @@ def test_stale_flag_none_for_fresh_situation(client):
     sit = _sit(sit_id="st-fresh", item_ids=["st-a", "st-b"])
     sit["lifecycle_status"] = "waiting"
     # last_updated is just now (set by _sit fixture to a recent date)
-    from datetime import datetime, timezone
-    sit["last_updated"] = datetime.now(timezone.utc).isoformat()
+    from datetime import datetime
+    sit["last_updated"] = datetime.now(UTC).isoformat()
     situations_tbl.insert(sit)
     r = client.get("/situations/st-fresh")
     assert r.status_code == 200
@@ -221,12 +220,12 @@ def test_stale_flag_none_for_fresh_situation(client):
 
 
 def test_stale_flag_waiting_after_threshold(client):
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
     analyses.insert(_analysis("st2-a"))
     analyses.insert(_analysis("st2-b", source="slack"))
     sit = _sit(sit_id="st-old", item_ids=["st2-a", "st2-b"])
     sit["lifecycle_status"] = "waiting"
-    old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    old = (datetime.now(UTC) - timedelta(days=10)).isoformat()
     sit["last_updated"] = old
     situations_tbl.insert(sit)
     r = client.get("/situations/st-old")
@@ -235,13 +234,13 @@ def test_stale_flag_waiting_after_threshold(client):
 
 
 def test_stale_flag_investigating_requires_longer_threshold(client):
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
     analyses.insert(_analysis("st3-a"))
     analyses.insert(_analysis("st3-b", source="slack"))
     # 10 days old: past waiting threshold (7) but not investigating (14)
     sit = _sit(sit_id="st-inv-fresh", item_ids=["st3-a", "st3-b"])
     sit["lifecycle_status"] = "investigating"
-    sit["last_updated"] = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    sit["last_updated"] = (datetime.now(UTC) - timedelta(days=10)).isoformat()
     situations_tbl.insert(sit)
     r = client.get("/situations/st-inv-fresh")
     assert r.json()["stale_flag"] is None
@@ -249,20 +248,20 @@ def test_stale_flag_investigating_requires_longer_threshold(client):
     # 20 days: past investigating threshold
     sit2 = _sit(sit_id="st-inv-old", item_ids=["st3-a", "st3-b"])
     sit2["lifecycle_status"] = "investigating"
-    sit2["last_updated"] = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
+    sit2["last_updated"] = (datetime.now(UTC) - timedelta(days=20)).isoformat()
     situations_tbl.insert(sit2)
     r2 = client.get("/situations/st-inv-old")
     assert r2.json()["stale_flag"] == "stale_investigating"
 
 
 def test_stale_flag_ignored_for_new_status(client):
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
     analyses.insert(_analysis("st4-a"))
     analyses.insert(_analysis("st4-b", source="slack"))
     sit = _sit(sit_id="st-new-old", item_ids=["st4-a", "st4-b"])
     # lifecycle_status default in _sit is absent; ensure explicit
     sit["lifecycle_status"] = "new"
-    sit["last_updated"] = (datetime.now(timezone.utc) - timedelta(days=99)).isoformat()
+    sit["last_updated"] = (datetime.now(UTC) - timedelta(days=99)).isoformat()
     situations_tbl.insert(sit)
     r = client.get("/situations/st-new-old")
     assert r.json()["stale_flag"] is None

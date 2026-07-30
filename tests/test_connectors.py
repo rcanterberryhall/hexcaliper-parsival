@@ -1,12 +1,11 @@
-from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, MagicMock
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock, patch
 
+import config
 import connector_github
-import connector_slack
 import connector_jira
 import connector_outlook
-import config
-
+import connector_slack
 
 # ── GitHub ────────────────────────────────────────────────────────────────────
 
@@ -33,7 +32,7 @@ def test_github_fetch_returns_items(monkeypatch):
     monkeypatch.setattr(config, "GITHUB_USERNAME", "alice")
     monkeypatch.setattr(config, "LOOKBACK_HOURS", 48)
 
-    now = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     notifications = [
         {

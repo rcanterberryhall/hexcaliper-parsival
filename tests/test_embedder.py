@@ -1,15 +1,14 @@
 """tests/test_embedder.py — Tests for the embedding-based project classifier."""
-import pytest
 import numpy as np
-
+import pytest
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
 def mock_model(monkeypatch):
     """Replace model inference with a fixed unit-normalised vector and clear state after each test."""
-    import numpy as np
     import embedder
+    import numpy as np
 
     fake_vec = np.random.randn(384)
     fake_vec /= np.linalg.norm(fake_vec)

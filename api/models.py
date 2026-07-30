@@ -1,5 +1,4 @@
-"""
-models.py — Core data models for the Squire analysis pipeline.
+"""models.py — Core data models for the Squire analysis pipeline.
 
 Defines the two-stage data flow:
 
@@ -21,13 +20,11 @@ Category schema (4 categories + task_type):
   noise     — automated or irrelevant; no action required
 """
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
 class RawItem:
-    """
-    A normalised, source-agnostic item ready for AI analysis.
+    """A normalised, source-agnostic item ready for AI analysis.
 
     :ivar source: Originating system identifier, e.g. ``"outlook"``, ``"slack"``.
     :ivar item_id: Stable unique ID for this item used for deduplication.
@@ -51,22 +48,20 @@ class RawItem:
 
 @dataclass
 class ActionItem:
-    """
-    A single concrete action extracted from an analysed item.
+    """A single concrete action extracted from an analysed item.
 
     :ivar description: Human-readable description of the required action.
     :ivar deadline: ISO 8601 date string if a due date was identified, else ``None``.
     :ivar owner: Who is responsible — ``"me"`` or a named person.
     """
     description: str
-    deadline:    Optional[str]
+    deadline:    str | None
     owner:       str
 
 
 @dataclass
 class Analysis:
-    """
-    The structured result of running a ``RawItem`` through the LLM pipeline.
+    """The structured result of running a ``RawItem`` through the LLM pipeline.
 
     :ivar item_id: ID of the originating ``RawItem``.
     :ivar source: Originating system identifier.
@@ -118,29 +113,28 @@ class Analysis:
     category:       str
     action_items:   list[ActionItem]
     summary:        str
-    urgency_reason: Optional[str]
+    urgency_reason: str | None
     # Context-aware enrichment fields
-    task_type:         Optional[str]   = None   # "review" | "reply" | None
+    task_type:         str | None   = None   # "review" | "reply" | None
     hierarchy:         str             = "general"
     is_passdown:       bool            = False
-    project_tag:       Optional[str]   = None
+    project_tag:       str | None   = None
     direction:         str             = "received"   # "received" | "sent"
-    conversation_id:   Optional[str]   = None
-    conversation_topic: Optional[str]  = None
+    conversation_id:   str | None   = None
+    conversation_topic: str | None  = None
     goals:             list[str]       = field(default_factory=list)
     key_dates:         list[dict]      = field(default_factory=list)
     body_preview:      str             = ""
     to_field:          str             = ""
     cc_field:          str             = ""
     is_replied:        bool            = False
-    replied_at:        Optional[str]   = None
+    replied_at:        str | None   = None
     information_items: list[dict]      = field(default_factory=list)
 
 
 @dataclass
 class Situation:
-    """
-    A cross-source grouping of related Analysis items.
+    """A cross-source grouping of related Analysis items.
 
     :ivar situation_id: Stable UUID for this situation.
     :ivar title: LLM-generated short title.
@@ -165,12 +159,12 @@ class Situation:
     status:           str
     item_ids:         list
     sources:          list
-    project_tag:      Optional[str]
+    project_tag:      str | None
     score:            float
     priority:         str
     open_actions:     list
     references:       list
-    key_context:      Optional[str]
+    key_context:      str | None
     last_updated:     str
     created_at:       str
     score_updated_at: str

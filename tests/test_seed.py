@@ -1,10 +1,8 @@
 """tests/test_seed.py — Tests for POST /seed and POST /seed/apply."""
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-import pytest
 from app import analyses, settings_tbl
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

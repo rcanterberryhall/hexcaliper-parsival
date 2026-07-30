@@ -5,36 +5,32 @@ Tests for attention.py math (centroid update, decay, score normalization)
 and the API endpoints (/analyses/{id}/action, /attention/summary).
 """
 import math
-import time
-from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, MagicMock
-import pytest
+from datetime import UTC, datetime, timedelta
 
 import attention as attn
-
 
 # ── Unit tests: helpers ───────────────────────────────────────────────────────
 
 def test_decay_weight_recent():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ts  = now.isoformat()
     assert attn._decay_weight(ts, now) == 1.0
 
 
 def test_decay_weight_30_days():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ts  = (now - timedelta(days=35)).isoformat()
     assert attn._decay_weight(ts, now) == 0.5
 
 
 def test_decay_weight_60_days():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ts  = (now - timedelta(days=65)).isoformat()
     assert attn._decay_weight(ts, now) == 0.25
 
 
 def test_decay_weight_bad_ts():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     assert attn._decay_weight("not-a-date", now) == 1.0
 
 

@@ -8,17 +8,16 @@ import json
 import uuid
 from unittest.mock import patch
 
+from app import (
+    Q,
+    analyses,
+    scan_state,
+    situations_tbl,
+)
 from situation_manager import (
     _maybe_form_situation,
     _rescore_situation,
     _update_situation_record,
-)
-from app import (
-    analyses,
-    situations_tbl,
-    intel_tbl,
-    scan_state,
-    Q,
 )
 
 MOCK_SYNTHESIS = {

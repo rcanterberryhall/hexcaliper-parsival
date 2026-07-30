@@ -1,5 +1,4 @@
-"""
-app.py — Parsival FastAPI application.
+"""app.py — Parsival FastAPI application.
 
 Exposes the REST API consumed by the frontend and the host sidecar scripts.
 Key responsibilities:
@@ -40,35 +39,34 @@ Module-level singletons:
 import json
 import logging
 import secrets
-import time
 import threading
+import time
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 _req_log = logging.getLogger("parsival.requests")
 _log = logging.getLogger("parsival")
 import psutil as _psutil
+
 _psutil.cpu_percent()  # prime interval counter so first real call is accurate
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
-import requests as http_requests
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
+import attention as _attn
 import config
+import contacts as _contacts
+import correlator as _correlator
 import crypto
 import db
-from agent import extract_keywords, extract_emails, resolve_owner_email, generate_project_briefing
-from models import RawItem, Analysis
-import contacts as _contacts
-import signatures as _signatures
-import correlator as _correlator
-import situation_manager
 import orchestrator
+import requests as http_requests
 import seeder
-import attention as _attn
+import signatures as _signatures
+import situation_manager
+from agent import extract_emails, extract_keywords, generate_project_briefing, resolve_owner_email
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from models import Analysis, RawItem
+from pydantic import BaseModel
 
 app = FastAPI(title="Parsival API", version="1.0.0")
 
@@ -465,8 +463,7 @@ briefings_tbl  = _BriefingsProxy()
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def get_user(request: Request) -> str:
-    """
-    Extract the authenticated user's email from the Cloudflare Access header.
+    """Extract the authenticated user's email from the Cloudflare Access header.
 
     Mirrors hexcaliper's user-scoping convention.  Falls back to
     ``"local@dev"`` for requests that bypass Cloudflare Access (e.g. local
@@ -481,13 +478,12 @@ def get_user(request: Request) -> str:
 
 
 def now_iso() -> str:
-    """
-    Return the current UTC time as an ISO 8601 string.
+    """Return the current UTC time as an ISO 8601 string.
 
     :return: Current UTC timestamp in ISO 8601 format.
     :rtype: str
     """
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── Scan state ────────────────────────────────────────────────────────────────
@@ -511,8 +507,7 @@ situation_manager.init(scan_state)
 
 
 def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
-    """
-    Upsert an ``Analysis`` into SQLite and create todo/intel rows.
+    """Upsert an ``Analysis`` into SQLite and create todo/intel rows.
 
     Stores all base fields plus the context-aware enrichment fields.
     Todo rows are only inserted for action items that do not already exist for
@@ -713,8 +708,7 @@ seeder.init(scan_state,
 _MASK = "•"
 
 def _mask(val: str) -> str:
-    """
-    Partially redact a credential string for safe display in the settings API.
+    """Partially redact a credential string for safe display in the settings API.
 
     The first four characters are shown; the remainder is replaced with
     ``_MASK`` bullets (``•``).  The frontend uses the presence of ``•`` in a
@@ -733,8 +727,7 @@ def _mask(val: str) -> str:
 
 @app.get("/gpu")
 def gpu_stats():
-    """
-    Return live GPU utilisation, VRAM usage, and temperature via NVML for all
+    """Return live GPU utilisation, VRAM usage, and temperature via NVML for all
     detected GPUs.
 
     Used by the frontend GPU meter widgets.  Returns ``{"ok": False}`` when
@@ -773,8 +766,7 @@ def gpu_stats():
 
 @app.get("/system")
 def system_stats():
-    """
-    Return live CPU utilisation and RAM usage via psutil.
+    """Return live CPU utilisation and RAM usage via psutil.
 
     Always available (no optional dependency).  Used by the frontend
     system meter widgets alongside the GPU meters.
@@ -794,8 +786,7 @@ def system_stats():
 
 @app.get("/health")
 def health():
-    """
-    Service health check.
+    """Service health check.
 
     Mirrors hexcaliper's ``/health`` response shape.  Returns ``{"ok": True}``
     plus any configuration warnings from ``config.validate()``.
@@ -808,8 +799,7 @@ def health():
 
 @app.post("/reset")
 def reset_db():
-    """
-    Truncate all data tables while preserving saved settings.
+    """Truncate all data tables while preserving saved settings.
 
     :return: ``{"ok": True}``
     :rtype: dict
@@ -821,8 +811,7 @@ def reset_db():
 
 @app.get("/senders")
 def get_senders():
-    """
-    Return a flat sorted list of all known sender email addresses across all projects.
+    """Return a flat sorted list of all known sender email addresses across all projects.
 
     Combines static ``senders`` and runtime-learned ``learned_senders`` from
     every configured project, deduplicates, and returns them sorted.  Used by
@@ -841,8 +830,7 @@ def get_senders():
 
 @app.get("/projects")
 def get_projects():
-    """
-    Return all configured projects with learning metadata.
+    """Return all configured projects with learning metadata.
 
     For each project in ``config.PROJECTS``, returns:
     - ``name``, ``keywords``, ``channels`` — static config fields.
@@ -883,8 +871,7 @@ class TagRequest(BaseModel):
 
 @app.get("/analyses/{item_id}")
 def get_analysis(item_id: str):
-    """
-    Return a single deserialized analysis record with attention score attached.
+    """Return a single deserialized analysis record with attention score attached.
 
     Used by the frontend detail-panel cold path (``openTodoDetail``) so that
     opening an item that isn't yet in the in-memory ``allAnalyses`` cache
@@ -915,8 +902,7 @@ def get_analysis(item_id: str):
 
 @app.patch("/analyses/{item_id}")
 def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
-    """
-    Update editable fields on a stored analysis record.
+    """Update editable fields on a stored analysis record.
 
     Accepts any subset of ``priority``, ``category``, ``project_tag``, and
     ``is_passdown``.  Only values that pass the allowed-value guard are
@@ -1037,7 +1023,7 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
             if not body_text:
                 return
             try:
-                from embedder import embed, update_project, remove_item
+                from embedder import embed, remove_item, update_project
                 vector = embed(body_text)
                 if new_project:
                     update_project(
@@ -1085,8 +1071,7 @@ def _record_priority_override(
     user_priority: str,
     reason: str,
 ) -> None:
-    """
-    Append a priority override entry to settings so the analysis prompt can
+    """Append a priority override entry to settings so the analysis prompt can
     learn from it.
 
     Mirrors the shape of ``ASSIGNMENT_CORRECTIONS``: entries are grown
@@ -1122,8 +1107,7 @@ def _record_priority_override(
 
 @app.post("/analyses/{item_id}/tag")
 def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
-    """
-    Tag an analysis item to a project and trigger background keyword/sender learning.
+    """Tag an analysis item to a project and trigger background keyword/sender learning.
 
     Sets the item's ``project_tag`` synchronously, then runs a background task
     (``learn``) that:
@@ -1274,8 +1258,7 @@ def _learn_keywords_for_category(record: dict, category: str) -> None:
 
 @app.post("/analyses/{item_id}/noise")
 def mark_noise(item_id: str, background_tasks: BackgroundTasks):
-    """
-    Mark an analysis item as irrelevant and grow the noise keyword filter.
+    """Mark an analysis item as irrelevant and grow the noise keyword filter.
 
     Sets ``category="noise"``, ``priority="low"``, and ``has_action=False``
     synchronously, and removes all associated todos.  Then runs a background
@@ -1321,8 +1304,7 @@ def mark_noise(item_id: str, background_tasks: BackgroundTasks):
 
 @app.post("/analyses/{item_id}/action")
 def record_item_action(item_id: str, body: dict):
-    """
-    Record a user interaction for attention model training.
+    """Record a user interaction for attention model training.
 
     :param body: ``{"action_type": "opened"}``  (or tagged, noised, etc.)
     :return: ``{"ok": True}``
@@ -1336,14 +1318,13 @@ def record_item_action(item_id: str, body: dict):
 
 @app.get("/attention/summary")
 def attention_summary():
-    """
-    Return the attention model summary for the merLLM 'My Day' panel.
+    """Return the attention model summary for the merLLM 'My Day' panel.
 
     Includes cold-start flag, centroid counts, active situation counts,
     and overdue follow-up count.
     """
-    from datetime import datetime, timezone
-    today = datetime.now(timezone.utc).date().isoformat()
+    from datetime import datetime
+    today = datetime.now(UTC).date().isoformat()
 
     active_situations = db.get_active_situations()
     overdue_count = sum(
@@ -1366,8 +1347,7 @@ def attention_summary():
 
 @app.get("/settings")
 def get_settings():
-    """
-    Return all current configuration values for the settings UI.
+    """Return all current configuration values for the settings UI.
 
     Credential fields are partially masked via ``_mask`` so the frontend can
     distinguish "set" from "not set" without exposing full secrets.
@@ -1406,8 +1386,7 @@ def get_settings():
 
 @app.post("/settings")
 def save_settings(body: dict):
-    """
-    Persist settings to SQLite and hot-reload config.
+    """Persist settings to SQLite and hot-reload config.
 
     Merges ``body`` into the existing settings record.  Any field whose value
     is a string containing ``•`` (the mask character) is skipped — this
@@ -1482,8 +1461,7 @@ def get_noise_filters():
 
 @app.post("/noise-filters")
 def add_noise_filter(body: dict):
-    """
-    Append a noise filter rule.
+    """Append a noise filter rule.
 
     :param body: ``{"type": "sender_contains", "value": "noreply@"}``
     :return: Updated filter list.
@@ -1503,8 +1481,7 @@ def add_noise_filter(body: dict):
 
 @app.delete("/noise-filters/{index}")
 def delete_noise_filter(index: int):
-    """
-    Remove a noise filter rule by its zero-based index.
+    """Remove a noise filter rule by its zero-based index.
 
     :param index: Zero-based index of the rule to remove.
     :return: Updated filter list.
@@ -1544,8 +1521,7 @@ class IngestRequest(BaseModel):
 
 @app.post("/ingest")
 def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
-    """
-    Receive raw items from host sidecar scripts (Outlook, Thunderbird, etc.).
+    """Receive raw items from host sidecar scripts (Outlook, Thunderbird, etc.).
 
     Deduplicates by ``item_id`` against the items table — items that have
     already been processed are silently skipped.  New items are queued as a
@@ -1597,8 +1573,7 @@ class ScanRequest(BaseModel):
 
 @app.post("/scan")
 def start_scan(body: ScanRequest):
-    """
-    Start a multi-source scan in the background.
+    """Start a multi-source scan in the background.
 
     Returns immediately; poll ``GET /scan/status`` for progress.
 
@@ -1614,8 +1589,7 @@ def start_scan(body: ScanRequest):
 
 @app.get("/scan/status")
 def scan_status():
-    """
-    Return the current scan/ingest/reanalyze progress state.
+    """Return the current scan/ingest/reanalyze progress state.
 
     :return: Current ``scan_state`` dict plus ``auto_scans`` schedule status.
     :rtype: dict
@@ -1625,8 +1599,7 @@ def scan_status():
 
 @app.post("/scan/cancel")
 def cancel_scan():
-    """
-    Signal a running scan to stop after the current item finishes.
+    """Signal a running scan to stop after the current item finishes.
 
     :return: ``{"ok": True}`` if a scan was running, else ``{"ok": False, ...}``.
     :rtype: dict
@@ -1639,8 +1612,7 @@ def cancel_scan():
 
 @app.post("/analysis/stop")
 def stop_all_analysis():
-    """
-    Gracefully halt all ongoing analysis activity.
+    """Gracefully halt all ongoing analysis activity.
 
     :return: ``{"ok": True}``
     :rtype: dict
@@ -1652,8 +1624,7 @@ def stop_all_analysis():
 
 @app.post("/reanalyze")
 def start_reanalyze():
-    """
-    Re-run LLM analysis on all stored items using the current config.
+    """Re-run LLM analysis on all stored items using the current config.
 
     Returns immediately; poll ``GET /scan/status`` for progress.
 
@@ -1670,8 +1641,7 @@ def start_reanalyze():
 
 @app.get("/reanalyze/count")
 def reanalyze_count():
-    """
-    Return the number of stored items that would be processed by ``POST /reanalyze``.
+    """Return the number of stored items that would be processed by ``POST /reanalyze``.
 
     :return: ``{"count": N}``
     :rtype: dict
@@ -1684,12 +1654,11 @@ def reanalyze_count():
 
 @app.get("/todos")
 def get_todos(
-    source:   Optional[str] = None,
-    priority: Optional[str] = None,
+    source:   str | None = None,
+    priority: str | None = None,
     done:     bool          = False,
 ):
-    """
-    Return action-item todos, optionally filtered and sorted by priority.
+    """Return action-item todos, optionally filtered and sorted by priority.
 
     By default only open (``done=False``) items are returned.  Results are
     sorted by priority (high → medium → low) then by creation time ascending.
@@ -1715,8 +1684,7 @@ def get_todos(
 
 @app.post("/todos")
 def create_todo(body: dict):
-    """
-    Create a manual action item.
+    """Create a manual action item.
 
     Manual todos are not tied to LLM analysis — they represent work the user
     wants to track themselves.  The ``item_id`` field is optional; when
@@ -1734,7 +1702,7 @@ def create_todo(body: dict):
     priority = body.get("priority", "medium")
     if priority not in allowed_priorities:
         priority = "medium"
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     data = {
         "description": description,
         "priority":    priority,
@@ -1798,8 +1766,7 @@ def create_todo(body: dict):
 
 @app.get("/todos/assigned_count")
 def get_todos_assigned_count():
-    """
-    Return a count of open todos in the 'assigned' state with a non-empty
+    """Return a count of open todos in the 'assigned' state with a non-empty
     ``assigned_to``. Backs the Assigned vtab badge so the UI doesn't have
     to fetch and client-side filter the full open-todo set on every mutation.
 
@@ -1811,8 +1778,7 @@ def get_todos_assigned_count():
 
 @app.patch("/todos/{doc_id}")
 def patch_todo(doc_id: int, body: dict):
-    """
-    Update a todo item.
+    """Update a todo item.
 
     Accepted fields: ``status``, ``done``, ``assigned_to``, ``description``,
     ``deadline``, ``priority``, ``project_tag``.
@@ -1857,8 +1823,7 @@ def patch_todo(doc_id: int, body: dict):
 
 @app.delete("/todos/{doc_id}")
 def delete_todo(doc_id: int):
-    """
-    Permanently delete a todo item by its integer id.
+    """Permanently delete a todo item by its integer id.
 
     :param doc_id: Integer id of the todo record to remove.
     :return: HTTP 204 No Content.
@@ -1886,12 +1851,11 @@ def delete_todo(doc_id: int):
 
 @app.get("/intel")
 def get_intel(
-    source:             Optional[str] = None,
-    project:            Optional[str] = None,
+    source:             str | None = None,
+    project:            str | None = None,
     include_dismissed:  bool          = False,
 ):
-    """
-    Return intel (information) items sorted by timestamp descending.
+    """Return intel (information) items sorted by timestamp descending.
 
     A ``doc_id`` field is added to each returned row.
 
@@ -1914,8 +1878,7 @@ def get_intel(
 
 @app.delete("/intel/{doc_id}")
 def delete_intel(doc_id: int):
-    """
-    Permanently delete an intel item by its integer id.
+    """Permanently delete an intel item by its integer id.
 
     :param doc_id: Integer id of the intel record to remove.
     :return: HTTP 204 No Content.
@@ -1927,8 +1890,7 @@ def delete_intel(doc_id: int):
 
 @app.patch("/intel/{doc_id}")
 def patch_intel(doc_id: int, body: dict):
-    """
-    Update an intel item, currently limited to toggling the ``dismissed`` flag.
+    """Update an intel item, currently limited to toggling the ``dismissed`` flag.
 
     :param doc_id: Integer id of the intel record.
     :param body: Partial update dict; accepted key: ``dismissed`` (bool).
@@ -1944,8 +1906,7 @@ def patch_intel(doc_id: int, body: dict):
 # ── Briefing ──────────────────────────────────────────────────────────────────
 
 def _build_briefing(*, full: bool = False) -> dict:
-    """
-    Generate a project-status briefing using the LLM.
+    """Generate a project-status briefing using the LLM.
 
     Only projects (and the untagged pool) that have had intel, situation, or
     todo activity since the last briefing are included, saving LLM tokens.
@@ -2039,8 +2000,7 @@ def _build_briefing(*, full: bool = False) -> dict:
 
 @app.get("/briefing")
 def get_briefing():
-    """
-    Return the latest cached briefing, or an empty response if none exists.
+    """Return the latest cached briefing, or an empty response if none exists.
 
     :return: Briefing dict with ``generated_at`` and ``sections``, or ``{}``.
     :rtype: dict
@@ -2052,8 +2012,7 @@ def get_briefing():
 
 @app.post("/briefing/generate")
 def generate_briefing(background_tasks: BackgroundTasks):
-    """
-    Trigger briefing generation in the background.
+    """Trigger briefing generation in the background.
 
     :return: ``{"ok": True}``
     :rtype: dict
@@ -2076,8 +2035,7 @@ def generate_briefing(background_tasks: BackgroundTasks):
 # ── Passdown generator ───────────────────────────────────────────────────────
 
 def _build_passdown(hours: int = 12) -> dict:
-    """
-    Build a structured shift-handoff passdown from recent activity.
+    """Build a structured shift-handoff passdown from recent activity.
 
     Assembles sections from the current database state so the user can paste
     the result into an email.  Nothing is written to the DB — this is a
@@ -2095,8 +2053,8 @@ def _build_passdown(hours: int = 12) -> dict:
     :return: Dict with ``generated_at``, ``hours``, ``sections`` (list of
              ``{title, kind, items}``) and ``html`` (email-ready HTML).
     """
-    from datetime import datetime, timedelta, timezone
-    cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))
+    from datetime import datetime, timedelta
+    cutoff_dt = datetime.now(UTC) - timedelta(hours=max(1, int(hours)))
     cutoff    = cutoff_dt.isoformat()
 
     with db.lock:
@@ -2183,8 +2141,7 @@ def _build_passdown(hours: int = 12) -> dict:
 
 
 def _render_passdown_html(sections: list[dict], generated_at: str, hours: int) -> str:
-    """
-    Render passdown sections as email-ready HTML (inline styles, table-free).
+    """Render passdown sections as email-ready HTML (inline styles, table-free).
 
     Kept deliberately simple so the output pastes cleanly into Outlook and
     Gmail without CSS loss.  The user is expected to edit the result before
@@ -2268,8 +2225,7 @@ def _render_passdown_html(sections: list[dict], generated_at: str, hours: int) -
 
 @app.post("/passdown/generate")
 def generate_passdown(body: dict | None = None):
-    """
-    Build a passdown suggestion from recent activity.
+    """Build a passdown suggestion from recent activity.
 
     Stateless — nothing is written to the DB.  The caller is expected to edit
     the HTML before sending.
@@ -2287,8 +2243,7 @@ def generate_passdown(body: dict | None = None):
 # ── Analyses ──────────────────────────────────────────────────────────────────
 
 def _deserialize_analysis(a: dict) -> dict:
-    """
-    Deserialize JSON-string fields and normalise legacy field names for the frontend.
+    """Deserialize JSON-string fields and normalise legacy field names for the frontend.
 
     Also renames the legacy ``"urgency"`` key to ``"urgency_reason"`` for any
     records written before that field was renamed.
@@ -2313,17 +2268,16 @@ def _deserialize_analysis(a: dict) -> dict:
 
 @app.get("/analyses")
 def get_analyses(
-    source:    Optional[str] = None,
-    category:  Optional[str] = None,
-    hierarchy: Optional[str] = None,
-    project:   Optional[str] = None,
-    q:         Optional[str] = None,
-    from_date: Optional[str] = None,
-    to_date:   Optional[str] = None,
+    source:    str | None = None,
+    category:  str | None = None,
+    hierarchy: str | None = None,
+    project:   str | None = None,
+    q:         str | None = None,
+    from_date: str | None = None,
+    to_date:   str | None = None,
     limit:     int = 1000,
 ):
-    """
-    Return stored analysis records with optional filtering.
+    """Return stored analysis records with optional filtering.
 
     All filters are applied sequentially (AND logic).  Results are sorted by
     ``timestamp`` descending.  JSON-encoded fields are deserialized via
@@ -2403,15 +2357,14 @@ _ALL_LIFECYCLE    = {"new", "investigating", "waiting", "resolved", "dismissed"}
 
 @app.get("/situations")
 def get_situations(
-    project:             Optional[str] = None,
-    status:              Optional[str] = None,
-    lifecycle_status:    Optional[str] = None,
+    project:             str | None = None,
+    status:              str | None = None,
+    lifecycle_status:    str | None = None,
     min_score:           float         = 0.0,
     include_dismissed:   bool          = False,
     include_resolved:    bool          = False,
 ):
-    """
-    Return situations, filtered and sorted by score descending.
+    """Return situations, filtered and sorted by score descending.
 
     Default view: ``new``, ``investigating``, and ``waiting`` situations.
     Pass ``include_resolved=true`` to also show ``resolved``.
@@ -2444,8 +2397,7 @@ def get_situations(
 
 @app.get("/situations/{situation_id}")
 def get_situation(situation_id: str):
-    """
-    Return a single situation with all contributing analyses fully deserialized.
+    """Return a single situation with all contributing analyses fully deserialized.
 
     :param situation_id: UUID of the situation to retrieve.
     :return: Full situation dict with deserialized ``items`` list.
@@ -2466,8 +2418,7 @@ def get_situation(situation_id: str):
 
 @app.post("/situations/{situation_id}/dismiss")
 def dismiss_situation(situation_id: str, body: dict = {}):
-    """
-    Mark a situation as dismissed.
+    """Mark a situation as dismissed.
 
     :param situation_id: UUID of the situation to dismiss.
     :param body: Optional dict with a ``reason`` key.
@@ -2490,8 +2441,7 @@ def dismiss_situation(situation_id: str, body: dict = {}):
 
 @app.post("/situations/{situation_id}/undismiss")
 def undismiss_situation(situation_id: str):
-    """
-    Restore a previously dismissed situation.
+    """Restore a previously dismissed situation.
 
     :param situation_id: UUID of the situation to restore.
     :return: ``{"ok": True}``
@@ -2511,8 +2461,7 @@ def undismiss_situation(situation_id: str):
 
 @app.post("/situations/{situation_id}/rescore")
 def rescore_situation(situation_id: str):
-    """
-    Manually trigger a full score recomputation and LLM re-synthesis for a situation.
+    """Manually trigger a full score recomputation and LLM re-synthesis for a situation.
 
     :param situation_id: UUID of the situation to rescore.
     :return: Updated situation response dict.
@@ -2530,8 +2479,7 @@ def rescore_situation(situation_id: str):
 
 @app.post("/situations/{situation_id}/split")
 def split_situation_endpoint(situation_id: str, body: dict):
-    """
-    Move a subset of items out of ``situation_id`` into a new situation.
+    """Move a subset of items out of ``situation_id`` into a new situation.
 
     :param body: ``{"item_ids": ["..."], "new_title": "<optional>"}``
     :return: ``{"ok": True, "new_situation_id": "...", "original_situation_id": "..."}``
@@ -2560,8 +2508,7 @@ def split_situation_endpoint(situation_id: str, body: dict):
 
 @app.post("/situations/{situation_id}/merge")
 def merge_situation_endpoint(situation_id: str, body: dict):
-    """
-    Merge ``source_situation_id`` into ``situation_id`` (target).
+    """Merge ``source_situation_id`` into ``situation_id`` (target).
 
     :param body: ``{"source_situation_id": "..."}``
     :return: ``{"ok": True, "situation_id": "<target>"}``
@@ -2585,8 +2532,7 @@ def merge_situation_endpoint(situation_id: str, body: dict):
 
 @app.patch("/situations/{situation_id}")
 def patch_situation(situation_id: str, body: dict):
-    """
-    Manually override editable fields on a situation record.
+    """Manually override editable fields on a situation record.
 
     Only ``title``, ``status``, and ``project_tag`` may be changed this way.
 
@@ -2626,8 +2572,7 @@ def patch_situation(situation_id: str, body: dict):
 
 @app.post("/situations/{situation_id}/transition")
 def transition_situation(situation_id: str, body: dict):
-    """
-    Transition a situation to a new lifecycle status and log the event.
+    """Transition a situation to a new lifecycle status and log the event.
 
     :param body: ``{"to_status": "<status>", "note": "<optional note>",
                     "follow_up_date": "<optional ISO date>"}``
@@ -2669,8 +2614,7 @@ def transition_situation(situation_id: str, body: dict):
 
 @app.get("/situations/{situation_id}/events")
 def get_situation_events(situation_id: str):
-    """
-    Return the lifecycle event history for a situation, oldest first.
+    """Return the lifecycle event history for a situation, oldest first.
 
     :param situation_id: UUID of the situation.
     :return: List of event dicts with ``from_status``, ``to_status``,
@@ -2686,8 +2630,7 @@ def get_situation_events(situation_id: str):
 
 @app.post("/situations/{situation_id}/deep-analysis")
 def submit_deep_analysis(situation_id: str):
-    """
-    Submit a situation for extended-context deep analysis via merLLM's batch API.
+    """Submit a situation for extended-context deep analysis via merLLM's batch API.
 
     Builds a prompt from the situation's title, summary, and contributing items,
     then queues it on merLLM's background priority bucket so it drains behind
@@ -2764,8 +2707,7 @@ def submit_deep_analysis(situation_id: str):
 
 @app.post("/situations/{situation_id}/deep-analysis/save")
 def save_deep_analysis(situation_id: str, body: dict):
-    """
-    Fetch a completed batch job result from merLLM and store it as an intel item
+    """Fetch a completed batch job result from merLLM and store it as an intel item
     linked to the situation.
 
     :param situation_id: UUID of the situation.
@@ -2816,8 +2758,7 @@ def save_deep_analysis(situation_id: str, body: dict):
 
 @app.get("/batch/status/{job_id}")
 def proxy_batch_status(job_id: str):
-    """
-    Proxy GET /api/batch/status/{job_id} to merLLM.
+    """Proxy GET /api/batch/status/{job_id} to merLLM.
 
     :param job_id: Batch job UUID.
     :return: Job status dict from merLLM.
@@ -2841,8 +2782,7 @@ def proxy_batch_status(job_id: str):
 
 @app.get("/stats")
 def get_stats():
-    """
-    Return aggregate statistics for the dashboard summary bar.
+    """Return aggregate statistics for the dashboard summary bar.
 
     :return: Dict with counts and breakdowns.
     :rtype: dict
@@ -2933,8 +2873,7 @@ _SLACK_USER_SCOPES   = (
 
 @app.get("/slack/connect")
 def slack_connect():
-    """
-    Begin the Slack OAuth2 user-token flow.
+    """Begin the Slack OAuth2 user-token flow.
 
     :return: HTTP 302 redirect to the Slack authorization page.
     :raises HTTPException 400: If ``SLACK_CLIENT_ID`` is not yet configured.
@@ -2954,8 +2893,7 @@ def slack_connect():
 
 @app.get("/slack/callback")
 def slack_callback(code: str = None, error: str = None, state: str = None):
-    """
-    Handle the Slack OAuth2 redirect callback.
+    """Handle the Slack OAuth2 redirect callback.
 
     :param code: Authorization code returned by Slack.
     :param error: Error identifier returned by Slack if the user denied access.
@@ -3022,8 +2960,7 @@ def slack_callback(code: str = None, error: str = None, state: str = None):
 
 @app.get("/slack/workspaces")
 def get_slack_workspaces():
-    """
-    Return all connected Slack workspaces (without tokens).
+    """Return all connected Slack workspaces (without tokens).
 
     :return: List of dicts with ``team`` (display name) and ``team_id`` fields.
     :rtype: list[dict]
@@ -3036,8 +2973,7 @@ def get_slack_workspaces():
 
 @app.delete("/slack/workspaces/{team_id}")
 def disconnect_slack_workspace(team_id: str):
-    """
-    Remove a Slack workspace's user token from stored settings.
+    """Remove a Slack workspace's user token from stored settings.
 
     :param team_id: Slack workspace team ID to disconnect.
     :return: ``{"ok": True}``
@@ -3061,8 +2997,7 @@ _TEAMS_SCOPES       = "Chat.Read ChannelMessage.Read.All Channel.ReadBasic.All o
 
 @app.get("/teams/connect")
 def teams_connect():
-    """
-    Begin the Microsoft Teams (Azure AD) OAuth2 user-token flow.
+    """Begin the Microsoft Teams (Azure AD) OAuth2 user-token flow.
 
     :return: HTTP 302 redirect to the Microsoft authorization page.
     :raises HTTPException 400: If ``TEAMS_CLIENT_ID`` is not yet configured.
@@ -3084,8 +3019,7 @@ def teams_connect():
 
 @app.get("/teams/callback")
 def teams_callback(code: str = None, error: str = None, error_description: str = None, state: str = None):
-    """
-    Handle the Microsoft Teams OAuth2 redirect callback.
+    """Handle the Microsoft Teams OAuth2 redirect callback.
 
     :param code: Authorization code returned by Microsoft.
     :param error: Error identifier returned if the user denied access.
@@ -3168,8 +3102,7 @@ def teams_callback(code: str = None, error: str = None, error_description: str =
 
 @app.get("/teams/workspaces")
 def get_teams_workspaces():
-    """
-    Return all connected Microsoft Teams accounts (without tokens).
+    """Return all connected Microsoft Teams accounts (without tokens).
 
     :return: List of dicts with ``display_name``, ``account_id``, and
              ``tenant`` fields.
@@ -3186,8 +3119,7 @@ def get_teams_workspaces():
 
 @app.delete("/teams/workspaces/{account_id}")
 def disconnect_teams_account(account_id: str):
-    """
-    Remove a Teams account's token bundle from stored settings.
+    """Remove a Teams account's token bundle from stored settings.
 
     :param account_id: Microsoft Graph user ID of the account to disconnect.
     :return: ``{"ok": True}``
@@ -3207,8 +3139,7 @@ def disconnect_teams_account(account_id: str):
 
 @app.post("/seed")
 async def seed_preview(request: Request):
-    """
-    Start the seed state machine.  Always succeeds immediately — the
+    """Start the seed state machine.  Always succeeds immediately — the
     ``waiting_for_ingest`` phase handles empty databases by polling until
     items arrive.  Returns the current seed job state.
     """
@@ -3223,8 +3154,7 @@ async def seed_preview(request: Request):
 
 @app.patch("/seed/context")
 async def seed_update_context(request: Request):
-    """
-    Update the user-provided context string while the seed job is in the
+    """Update the user-provided context string while the seed job is in the
     ``waiting_for_ingest`` state.
 
     :param request: Request body must be JSON with a ``context`` key.
@@ -3238,8 +3168,7 @@ async def seed_update_context(request: Request):
 
 @app.get("/seed/status")
 def seed_status():
-    """
-    Return the current state of the background seed job.
+    """Return the current state of the background seed job.
 
     :return: Current seed job state dict.
     :rtype: dict
@@ -3249,8 +3178,7 @@ def seed_status():
 
 @app.post("/seed/apply")
 def seed_apply(body: dict, background_tasks: BackgroundTasks):
-    """
-    Apply the seed editor's confirmed projects and topics to settings.
+    """Apply the seed editor's confirmed projects and topics to settings.
 
     :param body: Dict with keys ``projects`` (list), ``topics`` (list), and
                  optionally ``retag`` (bool, default ``True``).
@@ -3262,8 +3190,7 @@ def seed_apply(body: dict, background_tasks: BackgroundTasks):
 
 @app.post("/seed/scan")
 def seed_run_scan():
-    """
-    Transition the seed state machine from ``scan_prompt`` to ``scanning``,
+    """Transition the seed state machine from ``scan_prompt`` to ``scanning``,
     run a full multi-source scan, then transition to ``done``.
 
     :return: ``{"ok": True}``
@@ -3274,8 +3201,7 @@ def seed_run_scan():
 
 @app.post("/seed/skip_scan")
 def seed_skip_scan():
-    """
-    Transition the seed state machine from ``scan_prompt`` to ``done``
+    """Transition the seed state machine from ``scan_prompt`` to ``done``
     without running a connector scan.
 
     :return: ``{"ok": True}``
@@ -3303,8 +3229,7 @@ def merllm_status():
 
 @app.get("/contacts")
 def list_contacts(query: str | None = None, limit: int = 500):
-    """
-    List contacts, most-recently-seen first, optionally filtered.
+    """List contacts, most-recently-seen first, optionally filtered.
 
     :param query: Optional case-insensitive substring matched against name,
                   employer, title, or any associated email.
@@ -3319,8 +3244,7 @@ def list_contacts(query: str | None = None, limit: int = 500):
 
 @app.get("/contacts/{contact_id}")
 def get_contact(contact_id: int):
-    """
-    Fetch one contact, with all attached emails.
+    """Fetch one contact, with all attached emails.
 
     :raises HTTPException 404: If no contact with ``contact_id`` exists.
     """
@@ -3333,8 +3257,7 @@ def get_contact(contact_id: int):
 
 @app.post("/contacts")
 def create_contact(body: dict):
-    """
-    Manually create a new contact.
+    """Manually create a new contact.
 
     Accepts: ``name``, ``phone``, ``employer``, ``title``, ``employer_address``,
     ``notes``, and an optional ``emails`` list.  The first email in the list
@@ -3351,8 +3274,7 @@ def create_contact(body: dict):
 
 @app.patch("/contacts/{contact_id}")
 def patch_contact(contact_id: int, body: dict):
-    """
-    Update editable fields on a contact.  Unknown columns are silently dropped.
+    """Update editable fields on a contact.  Unknown columns are silently dropped.
 
     Any editable field included in the request body is treated as a manual
     edit: its ``<field>_source`` is stamped ``manual`` and the field name is
@@ -3393,8 +3315,7 @@ def patch_contact(contact_id: int, body: dict):
 
 @app.delete("/contacts/{contact_id}")
 def delete_contact(contact_id: int):
-    """
-    Delete a contact and all of its email associations.
+    """Delete a contact and all of its email associations.
 
     :raises HTTPException 404: If no contact with ``contact_id`` exists.
     """
@@ -3408,8 +3329,7 @@ def delete_contact(contact_id: int):
 
 @app.post("/contacts/{contact_id}/emails")
 def add_contact_email(contact_id: int, body: dict):
-    """
-    Attach an email address to an existing contact.
+    """Attach an email address to an existing contact.
 
     Body: ``{"email": "addr@host", "is_primary": false}``
 
@@ -3436,8 +3356,7 @@ def add_contact_email(contact_id: int, body: dict):
 
 @app.delete("/contacts/{contact_id}/emails/{email}")
 def delete_contact_email(contact_id: int, email: str):
-    """
-    Detach an email from a contact.  Does not delete the contact even if this
+    """Detach an email from a contact.  Does not delete the contact even if this
     was its only email — that requires the contact-level DELETE.
 
     :raises HTTPException 404: If no contact with ``contact_id`` exists.
@@ -3452,8 +3371,7 @@ def delete_contact_email(contact_id: int, email: str):
 
 @app.post("/contacts/rebuild")
 def rebuild_contacts():
-    """
-    Walk every existing item and (re)populate the contacts table from To/CC/
+    """Walk every existing item and (re)populate the contacts table from To/CC/
     author headers.  Idempotent — safe to re-run after schema changes or new
     bulk imports.
 
@@ -3465,8 +3383,7 @@ def rebuild_contacts():
 
 @app.post("/contacts/reparse-signatures")
 def reparse_contact_signatures():
-    """
-    Walk every existing item and re-run the email-body signature parser
+    """Walk every existing item and re-run the email-body signature parser
     against the corresponding contact rows (squire#31).  Manually-edited
     fields are never overwritten — see ``signatures.apply_to_contact``.
 
@@ -3532,9 +3449,9 @@ def _card_input(body: dict, *, require_all: bool = False) -> dict:
 
 
 @app.get("/lookahead/cards")
-def lookahead_list_cards(project: Optional[str] = None,
-                          start: Optional[str]   = None,
-                          end:   Optional[str]   = None):
+def lookahead_list_cards(project: str | None = None,
+                          start: str | None   = None,
+                          end:   str | None   = None):
     """List cards, optionally filtered by project tag and overlapping date window."""
     with db.lock:
         return db.list_lookahead_cards(project=project, start_date=start, end_date=end)
@@ -3561,7 +3478,7 @@ def _card_todo_payload(card: dict) -> dict:
         "is_manual":   1,
         "done":        1 if status == "done" else 0,
         "status":      status,
-        "created_at":  datetime.now(timezone.utc).isoformat(),
+        "created_at":  datetime.now(UTC).isoformat(),
         "source":      "lookahead",
         "title":       desc,
         "url":         "",
@@ -3683,7 +3600,7 @@ def lookahead_set_card_resource_status(card_id: str, resource_id: int, body: dic
 # ── Resources ────────────────────────────────────────────────────────────────
 
 @app.get("/lookahead/resources")
-def lookahead_list_resources(type: Optional[str] = None):
+def lookahead_list_resources(type: str | None = None):
     with db.lock:
         return db.list_resources(type_filter=type)
 
@@ -3722,7 +3639,7 @@ def lookahead_delete_resource(resource_id: int):
 # ── Project shifts ────────────────────────────────────────────────────────────
 
 @app.get("/lookahead/shifts")
-def lookahead_list_shifts(project: Optional[str] = None):
+def lookahead_list_shifts(project: str | None = None):
     with db.lock:
         return db.list_project_shifts(project_tag=project)
 
@@ -3745,7 +3662,7 @@ def lookahead_delete_shift(project_tag: str, shift_num: int):
 # ── Overview (cross-project) ─────────────────────────────────────────────────
 
 @app.get("/lookahead/overview")
-def lookahead_overview(start: Optional[str] = None, end: Optional[str] = None):
+def lookahead_overview(start: str | None = None, end: str | None = None):
     """Return one row per project with cards overlapping the window.
 
     Empty-window projects are omitted so the UI can render only rows that
@@ -3792,7 +3709,7 @@ def _validate_template_body(body: dict, *, require_name: bool) -> None:
 
 
 @app.get("/lookahead/templates")
-def lookahead_list_templates(owner: Optional[str] = None):
+def lookahead_list_templates(owner: str | None = None):
     with db.lock:
         return db.list_templates(owner=owner)
 
@@ -3856,8 +3773,8 @@ def lookahead_instantiate_template(template_id: str, body: dict):
 
 
 @app.get("/lookahead/instances")
-def lookahead_list_instances(project: Optional[str] = None,
-                              status:  Optional[str] = None):
+def lookahead_list_instances(project: str | None = None,
+                              status:  str | None = None):
     with db.lock:
         return db.list_instances(project=project, status=status)
 
@@ -3926,8 +3843,9 @@ def lookahead_detach_card(card_id: str):
 # which items are genuinely related.  Matches land in a suggestions pool; the
 # user accepts or rejects each proposal and accepted ones become normal links.
 
-import llm as _llm
 import json as _json
+
+import llm as _llm
 
 
 def _parse_llm_json_array(text: str) -> list:

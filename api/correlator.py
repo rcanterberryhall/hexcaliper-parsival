@@ -1,5 +1,4 @@
-"""
-correlator.py — Cross-source situation correlation and synthesis.
+"""correlator.py — Cross-source situation correlation and synthesis.
 
 Owns all situation formation logic:
   extract_references()         — pull Jira keys, PR numbers, issue refs from text
@@ -10,13 +9,11 @@ Owns all situation formation logic:
 import json
 import math
 import re
-from datetime import datetime, timezone
-
-import requests
-import llm
+from datetime import UTC, datetime
 
 import config
 import db
+import llm
 
 # ── Reference extraction ───────────────────────────────────────────────────────
 
@@ -29,8 +26,7 @@ _REF_PATTERNS = [
 
 
 def extract_references(title: str, body: str) -> list:
-    """
-    Extract explicit cross-source identifiers from item title and body.
+    """Extract explicit cross-source identifiers from item title and body.
     Returns a deduplicated lowercase list, e.g. ["proj-142", "pr-89"].
     """
     text = (title or "") + " " + (body or "")
@@ -56,8 +52,7 @@ def find_correlated_candidates(
     all_analyses: list,
     similarity_threshold: float = 0.82,
 ) -> list:
-    """
-    Return item_ids of analyses likely describing the same situation.
+    """Return item_ids of analyses likely describing the same situation.
 
     Two-pass approach:
     1. Deterministic: all analyses sharing at least one reference string.
@@ -119,8 +114,7 @@ def find_correlated_candidates(
 # ── Situation scoring ──────────────────────────────────────────────────────────
 
 def score_situation(item_ids: list, analyses: list) -> float:
-    """
-    Compute a composite urgency score for a candidate situation cluster.
+    """Compute a composite urgency score for a candidate situation cluster.
 
     Components:
       source_score    (0.35) — log2(unique_source_types + 1)
@@ -140,7 +134,7 @@ def score_situation(item_ids: list, analyses: list) -> float:
         latest = max(timestamps)
         try:
             dt        = datetime.fromisoformat(latest.replace("Z", "+00:00"))
-            hours_ago = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+            hours_ago = (datetime.now(UTC) - dt).total_seconds() / 3600
         except Exception:
             hours_ago = 48
     else:
@@ -195,8 +189,7 @@ Do NOT list anything in ``open_actions`` that already appears under "Completed a
 def synthesize_situation(item_records: list, user_name: str,
                          intel_items: list = None,
                          completed_actions: list = None) -> dict:
-    """
-    Call Ollama to produce a cross-source narrative for a situation cluster.
+    """Call Ollama to produce a cross-source narrative for a situation cluster.
     Falls back to a minimal dict on failure.
 
     items_block: per-item summary lines capped at 6 items × 200 chars each.

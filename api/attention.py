@@ -1,5 +1,4 @@
-"""
-attention.py — Adaptive attention model for Parsival.
+"""attention.py — Adaptive attention model for Parsival.
 
 Tracks implicit user behavioral signals to learn which items deserve
 attention.  Maintains two centroid embeddings in the model_state table:
@@ -28,7 +27,7 @@ older than DECAY_60_DAYS days at 0.25 weight.
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime
 
 import db
 
@@ -58,7 +57,7 @@ _lock = threading.Lock()
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _decay_weight(ts_iso: str, now: datetime) -> float:
@@ -168,8 +167,7 @@ def _update_centroids() -> None:
 
 
 def compute_score(item_embedding: list) -> float:
-    """
-    Return attention score in [0, 1].  Returns 0.5 on cold start or unavailability.
+    """Return attention score in [0, 1].  Returns 0.5 on cold start or unavailability.
     """
     if not item_embedding or not _NP:
         return 0.5
@@ -216,8 +214,7 @@ def get_why(item_embedding: list) -> str:
 
 
 def get_summary() -> dict:
-    """
-    Return a summary dict for the merLLM 'My Day' panel.
+    """Return a summary dict for the merLLM 'My Day' panel.
 
     Includes high-attention item count, cold-start flag, and centroid freshness.
     """

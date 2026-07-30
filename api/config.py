@@ -1,5 +1,4 @@
-"""
-config.py — Runtime configuration for the Squire API.
+"""config.py — Runtime configuration for the Squire API.
 
 All values are read from environment variables on startup.  The
 ``apply_overrides`` function allows settings saved via the ``/settings``
@@ -51,11 +50,11 @@ App:
     ``PAGE_API_PORT``, ``DB_PATH``, ``LOOKBACK_HOURS``
 """
 import os
+from typing import Any
 
 
 def _get(key: str, default: str = "") -> str:
-    """
-    Read an environment variable, stripping surrounding whitespace.
+    """Read an environment variable, stripping surrounding whitespace.
 
     :param key: Environment variable name.
     :type key: str
@@ -170,8 +169,7 @@ LOOKBACK_HOURS = int(_get("LOOKBACK_HOURS", "48"))
 
 
 def apply_overrides(d: dict) -> None:
-    """
-    Hot-reload config from a saved-settings dict without restarting the container.
+    """Hot-reload config from a saved-settings dict without restarting the container.
 
     Called on startup (if saved settings exist in the DB) and after every
     successful ``POST /settings`` or OAuth callback.  Handles all string
@@ -184,7 +182,12 @@ def apply_overrides(d: dict) -> None:
     :type d: dict
     """
     import sys
-    mod = sys.modules[__name__]
+
+    # Typed Any deliberately.  This function hot-reloads config by writing the
+    # module's own globals through its module object, which is dynamic by nature:
+    # a bare ModuleType declares no attributes, so every assignment below would
+    # otherwise read as "module has no attribute X" to the type checker.
+    mod: Any = sys.modules[__name__]
     str_fields = {
         "ollama_url":           "OLLAMA_URL",
         "ollama_model":         "OLLAMA_MODEL",
@@ -217,7 +220,7 @@ def apply_overrides(d: dict) -> None:
             {**t, "token": _crypto.decrypt_secret(t["token"])} if "token" in t else t
             for t in d["slack_user_tokens"]
         ]
-        setattr(mod, "SLACK_USER_TOKENS", slack_tokens)
+        mod.SLACK_USER_TOKENS = slack_tokens
     if "teams_user_tokens" in d and isinstance(d["teams_user_tokens"], list):
         import crypto as _crypto  # local import to avoid circular dependency
         teams_tokens = [
@@ -228,29 +231,29 @@ def apply_overrides(d: dict) -> None:
             }
             for t in d["teams_user_tokens"]
         ]
-        setattr(mod, "TEAMS_USER_TOKENS", teams_tokens)
+        mod.TEAMS_USER_TOKENS = teams_tokens
     if "slack_channels" in d:
         sc = d["slack_channels"] or ""
-        setattr(mod, "SLACK_CHANNELS", [c.strip() for c in sc.split(",") if c.strip()])
+        mod.SLACK_CHANNELS = [c.strip() for c in sc.split(",") if c.strip()]
     if "focus_topics" in d:
         ft = d["focus_topics"] or ""
-        setattr(mod, "FOCUS_TOPICS", [t.strip() for t in ft.split(",") if t.strip()])
+        mod.FOCUS_TOPICS = [t.strip() for t in ft.split(",") if t.strip()]
     if "projects" in d and isinstance(d["projects"], list):
-        setattr(mod, "PROJECTS", d["projects"])
+        mod.PROJECTS = d["projects"]
     if "noise_keywords" in d and isinstance(d["noise_keywords"], list):
-        setattr(mod, "NOISE_KEYWORDS", d["noise_keywords"])
+        mod.NOISE_KEYWORDS = d["noise_keywords"]
     if "task_keywords" in d and isinstance(d["task_keywords"], list):
-        setattr(mod, "TASK_KEYWORDS", d["task_keywords"])
+        mod.TASK_KEYWORDS = d["task_keywords"]
     if "approval_keywords" in d and isinstance(d["approval_keywords"], list):
-        setattr(mod, "APPROVAL_KEYWORDS", d["approval_keywords"])
+        mod.APPROVAL_KEYWORDS = d["approval_keywords"]
     if "fyi_keywords" in d and isinstance(d["fyi_keywords"], list):
-        setattr(mod, "FYI_KEYWORDS", d["fyi_keywords"])
+        mod.FYI_KEYWORDS = d["fyi_keywords"]
     if "assignment_corrections" in d and isinstance(d["assignment_corrections"], list):
-        setattr(mod, "ASSIGNMENT_CORRECTIONS", d["assignment_corrections"])
+        mod.ASSIGNMENT_CORRECTIONS = d["assignment_corrections"]
     if "priority_overrides" in d and isinstance(d["priority_overrides"], list):
-        setattr(mod, "PRIORITY_OVERRIDES", d["priority_overrides"])
+        mod.PRIORITY_OVERRIDES = d["priority_overrides"]
     if "lookback_hours" in d and d["lookback_hours"] not in (None, ""):
-        setattr(mod, "LOOKBACK_HOURS", int(d["lookback_hours"]))
+        mod.LOOKBACK_HOURS = int(d["lookback_hours"])
 
 
 def effective_model() -> str:
@@ -259,8 +262,7 @@ def effective_model() -> str:
 
 
 def ollama_headers(priority: str | None = None) -> dict:
-    """
-    Build request headers for Ollama API calls.
+    """Build request headers for Ollama API calls.
 
     Includes Cloudflare Access service token headers when both
     ``CF_CLIENT_ID`` and ``CF_CLIENT_SECRET`` are configured, allowing
@@ -287,8 +289,7 @@ def ollama_headers(priority: str | None = None) -> dict:
 
 
 def validate() -> list[str]:
-    """
-    Return a list of warnings for missing or placeholder configuration values.
+    """Return a list of warnings for missing or placeholder configuration values.
 
     Used by the ``/health`` and ``/settings`` endpoints to surface
     integration issues to the frontend without raising exceptions.

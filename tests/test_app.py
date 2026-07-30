@@ -1,10 +1,7 @@
-import json
-import time
 from unittest.mock import patch
 
-import pytest
-from app import todos, analyses, scan_logs, scan_state, intel_tbl, _save_analysis, Q
-from models import Analysis, ActionItem
+from app import Q, _save_analysis, analyses, intel_tbl, scan_state, todos
+from models import ActionItem, Analysis
 
 
 def _mock_analysis(item_id="x1", source="outlook"):
@@ -58,7 +55,7 @@ def test_ingest_skips_items_without_item_id(client):
 
 def test_ingest_deduplicates_already_processed(client):
     """Items already in the analyses table should be skipped."""
-    from app import analyses, Q
+    from app import analyses
     analyses.insert({"item_id": "dup1", "source": "outlook"})
 
     with patch("orchestrator.analyze", return_value=_mock_analysis()):
@@ -1040,7 +1037,9 @@ class TestPatchAnalysisRichFields:
         resp = client.patch("/analyses/edit_me",
                             json={"goals": ["draft proposal", "review metrics"]})
         assert resp.status_code == 200
-        import db as _db, json as _json
+        import json as _json
+
+        import db as _db
         with _db.lock:
             row = _db.get_item("edit_me")
         assert _json.loads(row["goals"]) == ["draft proposal", "review metrics"]
@@ -1054,7 +1053,9 @@ class TestPatchAnalysisRichFields:
         ]
         resp = client.patch("/analyses/edit_me", json={"key_dates": payload})
         assert resp.status_code == 200
-        import db as _db, json as _json
+        import json as _json
+
+        import db as _db
         with _db.lock:
             row = _db.get_item("edit_me")
         assert _json.loads(row["key_dates"]) == payload
@@ -1069,7 +1070,9 @@ class TestPatchAnalysisRichFields:
             "user_summary":   "my note",
         })
         assert resp.status_code == 200
-        import db as _db, json as _json
+        import json as _json
+
+        import db as _db
         with _db.lock:
             row = _db.get_item("edit_me")
         assert row["title"]        == "new title"

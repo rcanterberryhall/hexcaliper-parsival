@@ -7,8 +7,6 @@ Checks that:
  - Existing timers are cancelled when schedule is replaced
  - Scans are skipped when one is already running
 """
-import time
-from unittest.mock import MagicMock, patch
 
 import orchestrator
 

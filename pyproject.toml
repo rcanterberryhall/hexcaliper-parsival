@@ -49,7 +49,9 @@ convention = "google"
 # Tests are documented by their names and assertions; docstring rules would add
 # ceremony without adding information. conftest.py must mutate sys.path and set
 # DB_PATH before importing the app, which is an intentional import-order break.
-"tests/**" = ["D", "E402", "F401", "E741"]
+# F401 is deliberately NOT ignored here: unused test imports are cruft, and the
+# suite itself catches any import that was actually load-bearing.
+"tests/**" = ["D", "E402", "E741"]
 
 # app.py calls logging.basicConfig() and primes psutil's CPU-percent interval
 # counter between imports: basicConfig must run before any other module creates a

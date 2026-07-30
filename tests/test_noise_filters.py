@@ -3,12 +3,9 @@ test_noise_filters.py — B6: Pre-scan noise filters.
 
 Tests for noise_filter.py matching logic and the /noise-filters endpoints.
 """
-import pytest
 from dataclasses import dataclass, field
 
-
 # ── noise_filter unit tests ───────────────────────────────────────────────────
-
 import noise_filter as nf
 
 

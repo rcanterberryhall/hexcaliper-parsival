@@ -13,17 +13,14 @@ thread holding it can call helpers that also acquire it without deadlocking.
 """
 import threading
 
-import pytest
-
 import db
+import pytest
 
 
 def test_db_lock_is_reentrant():
     """``db.lock`` must allow the same thread to acquire it multiple times."""
-    with db.lock:
-        with db.lock:
-            with db.lock:
-                pass
+    with db.lock, db.lock, db.lock:
+        pass
 
 
 @pytest.mark.timeout(5)

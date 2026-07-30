@@ -1,5 +1,4 @@
-"""
-contacts.py — Contacts table population from email headers.
+"""contacts.py — Contacts table population from email headers.
 
 The contacts table is identified by a stable serial integer (`contact_id`),
 **never** by email — emails change when people switch jobs, but the person
@@ -17,7 +16,7 @@ it here.
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 import db
 from agent import _NAME_EMAIL_RE, extract_emails
@@ -97,7 +96,7 @@ def scrape_item_headers(item: dict) -> int:
     return touched
 
 
-def rebuild_from_items(items: Optional[Iterable[dict]] = None) -> dict:
+def rebuild_from_items(items: Iterable[dict] | None = None) -> dict:
     """Walk every item (or a provided subset) and populate contacts.
 
     Idempotent — re-running on the same corpus will bump source counts but
