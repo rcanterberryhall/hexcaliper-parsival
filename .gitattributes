@@ -13,6 +13,16 @@
 Dockerfile      text eol=lf
 *.dockerfile    text eol=lf
 
+# Windows host scripts — the mirror image of the rule above.  The sidecar wrappers
+# are launched by Task Scheduler on the Windows host, never inside the container,
+# and cmd.exe's parser is only reliable on CRLF: an LF-only batch file can
+# misparse labels and multi-line for/if blocks.  The blanket `eol=lf` default
+# would otherwise force LF on these and reintroduce, in reverse, exactly the
+# platform breakage the LF policy exists to prevent.
+*.cmd           text eol=crlf
+*.bat           text eol=crlf
+*.ps1           text eol=crlf
+
 # Other text that should stay LF for the Linux image / tooling.
 *.py            text eol=lf
 *.toml          text eol=lf
@@ -21,10 +31,18 @@ Dockerfile      text eol=lf
 *.json          text eol=lf
 *.md            text eol=lf
 
-# Binary assets — never touch these.
+# Binary assets — never touch these.  One pattern per line: git reads only the
+# first token on a line as the pattern and every token after it as an attribute
+# name, so a combined line like `*.png *.jpg binary` is rejected whole and
+# silently protects nothing.  Verify with `git check-attr binary -- <files>`,
+# not by reading this file.
 *.png           binary
 *.jpg           binary
 *.jpeg          binary
 *.gif           binary
 *.pdf           binary
 *.ico           binary
+*.woff          binary
+*.woff2         binary
+*.so            binary
+*.so.*          binary
