@@ -351,22 +351,57 @@ def test_post_exits_with_credential_message_on_403():
     assert "Cloudflare Access" in str(exc_info.value)
 
 
-def test_post_exits_with_plain_http_message_on_500():
-    """Non-auth HTTP errors still exit with a useful message (not swallowed)."""
+def _always_500() -> MagicMock:
+    """Build a mock response whose raise_for_status always raises a 500."""
     import requests as req
-    sidecar = _sidecar()
     mock_resp = MagicMock()
     mock_resp.status_code = 500
     mock_resp.raise_for_status.side_effect = req.HTTPError(
         "500 Server Error", response=mock_resp
     )
-    with patch("outlook_sidecar.requests.post", return_value=mock_resp):
+    return mock_resp
+
+
+def test_post_skips_single_poison_item_on_persistent_500(capsys):
+    """A lone item that keeps 500ing is dropped and reported, not fatal.
+
+    A 5xx is transient, so it is retried; when a single-item group still fails
+    it is a poison item.  One bad email must not stall the run, so it is
+    skipped rather than aborting -- 1 drop is well under _MAX_SKIPPED_ITEMS.
+    The failure is still surfaced loudly (SKIP line + WARNING + dropped count)
+    rather than swallowed.
+    """
+    sidecar = _sidecar()
+    with patch("outlook_sidecar.requests.post", return_value=_always_500()), \
+         patch("outlook_sidecar.time.sleep"):
+        sidecar.post([{"item_id": "E1"}], "cid", "csec")   # must NOT raise SystemExit
+
+    out = capsys.readouterr().out
+    assert "SKIP uningestable item E1" in out
+    assert "500 Server Error" in out
+    assert "1 item(s) could not be ingested" in out
+    assert "1 dropped" in out
+    assert "Cloudflare Access" not in out
+
+
+def test_post_aborts_when_drops_exceed_max_skipped_items():
+    """More than _MAX_SKIPPED_ITEMS drops is systemic, so the run aborts.
+
+    The high-water mark must not advance in this case: the whole window is
+    retried on the next run rather than being silently written off.
+    """
+    sidecar = _sidecar()
+    items = [{"item_id": f"E{i}"} for i in range(sidecar._MAX_SKIPPED_ITEMS + 1)]
+
+    with patch("outlook_sidecar.requests.post", return_value=_always_500()), \
+         patch("outlook_sidecar.time.sleep"):
         with pytest.raises(SystemExit) as exc_info:
-            sidecar.post([{"item_id": "E1"}], "cid", "csec")
+            sidecar.post(items, "cid", "csec")
 
     msg = str(exc_info.value)
-    assert "500" in msg
-    assert "Cloudflare Access" not in msg
+    assert f"more than {sidecar._MAX_SKIPPED_ITEMS} items failed to ingest" in msg
+    assert "looks systemic" in msg
+    assert "State not advanced" in msg
 
 
 def test_post_prints_received_and_skipped_counts(capsys):
