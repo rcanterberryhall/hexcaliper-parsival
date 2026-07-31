@@ -5597,6 +5597,8 @@ async function populateLancellmotDropdowns() {
     }
     const current = aliasByTag[parsivalProj];
     if (current) sel.value = current.lancellmot_project_id;
+    // Server-confirmed selection, so a failed write can revert to it (parsival#96).
+    sel.dataset.alias = sel.value;
     if (!sel.dataset.wired) {
       sel.dataset.wired = '1';
       sel.addEventListener('change', () => onLancellmotSelectChange(sel));
@@ -5604,27 +5606,37 @@ async function populateLancellmotDropdowns() {
   });
 }
 
+// Save the picked mapping, or clear it when the user selects "— none —". Both
+// paths go through api() so a 4xx/5xx counts as a failure — a raw fetch resolves
+// on a 500 and the clear would report success while the alias survived. A failed
+// write reverts the <select> and reports in the settings modal rather than
+// leaving the control asserting a mapping the server never stored (parsival#96).
 async function onLancellmotSelectChange(sel) {
   const row = sel.closest('.project-row');
   const parsivalProj = ((row && (row.querySelector('.proj-name') || {}).value) || '').trim();
   if (!parsivalProj) return;
-  if (sel.value === '') {
-    try {
-      await fetch(API + '/lancellmot/aliases/' + encodeURIComponent(parsivalProj),
-                  { method: 'DELETE' });
-      refreshLancellmotChips();
-    } catch (_) {}
-    return;
-  }
-  const picked = sel.options[sel.selectedIndex];
+  const prev     = sel.dataset.alias || '';
+  const clearing = sel.value === '';
+  const msg      = $('settings-msg');
   try {
-    await api('/lancellmot/aliases', 'PUT', {
-      parsival_project: parsivalProj,
-      lancellmot_project_id: sel.value,
-      lancellmot_project_name: picked.dataset.name || picked.textContent,
-    });
+    if (clearing) {
+      await api('/lancellmot/aliases/' + encodeURIComponent(parsivalProj), 'DELETE');
+    } else {
+      const picked = sel.options[sel.selectedIndex];
+      await api('/lancellmot/aliases', 'PUT', {
+        parsival_project: parsivalProj,
+        lancellmot_project_id: sel.value,
+        lancellmot_project_name: picked.dataset.name || picked.textContent,
+      });
+    }
+    sel.dataset.alias = sel.value;
+    msg.textContent   = '';
     refreshLancellmotChips();
-  } catch (_) {}
+  } catch (e) {
+    sel.value       = prev;
+    msg.className   = 'settings-msg err';
+    msg.textContent = `Mapping ${clearing ? 'clear' : 'save'} failed: ${e.message}`;
+  }
 }
 
 async function clearNoiseFilter() {
