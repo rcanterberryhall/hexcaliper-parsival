@@ -1824,6 +1824,11 @@ def _card_with_relations(row: dict) -> dict:
 
 
 def get_lookahead_card(card_id: str) -> dict | None:
+    """Return one card with its dependencies, links and resources hydrated.
+
+    :param card_id: The card's UUID.
+    :return: The card dict, or ``None`` if no such card exists.
+    """
     row = conn().execute("SELECT * FROM lookahead_cards WHERE id = ?", (card_id,)).fetchone()
     return _card_with_relations(_row_to_dict(row)) if row else None
 
@@ -1877,10 +1882,28 @@ def upsert_lookahead_card(data: dict) -> dict:
 
 
 def delete_lookahead_card(card_id: str) -> None:
+    """Delete a card.
+
+    Dependency, link and resource rows are removed by ``ON DELETE CASCADE``, so
+    this does not need to clean them up itself.  Deleting a card that does not
+    exist is a no-op rather than an error.
+
+    :param card_id: The card's UUID.
+    """
     conn().execute("DELETE FROM lookahead_cards WHERE id = ?", (card_id,))
 
 
 def set_card_dependencies(card_id: str, depends_on_ids: list[str]) -> None:
+    """Replace a card's dependency set wholesale.
+
+    Existing rows are deleted first, so passing an empty or ``None`` list clears
+    the dependencies.  A card listing itself is skipped -- a self-dependency is
+    meaningless and would make the card permanently unschedulable.  Duplicates
+    are absorbed by ``INSERT OR IGNORE``.
+
+    :param card_id: The dependent card's UUID.
+    :param depends_on_ids: UUIDs this card should depend on.
+    """
     c = conn()
     c.execute("DELETE FROM lookahead_card_deps WHERE card_id = ?", (card_id,))
     for dep_id in depends_on_ids or []:
@@ -1986,6 +2009,16 @@ def set_card_resources(card_id: str, entries: list[dict]) -> None:
 
 
 def set_card_resource_status(card_id: str, resource_id: int, status: str) -> None:
+    """Set the fulfilment status of one resource assigned to one card.
+
+    This is the BOM status the board cycles through (e.g. ordered / received).
+    A pairing that is not currently assigned updates nothing rather than raising.
+
+    :param card_id: The card's UUID.
+    :param resource_id: The assigned resource's integer primary key.
+    :param status: One of ``_RESOURCE_STATUSES``.
+    :raises ValueError: If ``status`` is not a recognised status.
+    """
     if status not in _RESOURCE_STATUSES:
         raise ValueError(f"invalid status: {status}")
     conn().execute(
@@ -1997,6 +2030,12 @@ def set_card_resource_status(card_id: str, resource_id: int, status: str) -> Non
 # ── Resources (global catalog) ────────────────────────────────────────────────
 
 def list_resources(type_filter: str | None = None) -> list[dict]:
+    """List the global resource catalog, ordered by type then name.
+
+    :param type_filter: Optional resource type to restrict to; ``None`` returns
+        every resource.
+    :return: Resource rows as dicts.
+    """
     sql = "SELECT * FROM lookahead_resources"
     args: list = []
     if type_filter:
@@ -2007,12 +2046,25 @@ def list_resources(type_filter: str | None = None) -> list[dict]:
 
 
 def get_resource(resource_id: int) -> dict | None:
+    """Return one resource from the global catalog.
+
+    :param resource_id: The resource's integer primary key.
+    :return: The resource dict, or ``None`` if no such resource exists.
+    """
     row = conn().execute("SELECT * FROM lookahead_resources WHERE id = ?",
                          (int(resource_id),)).fetchone()
     return _row_to_dict(row)
 
 
 def create_resource(name: str, type_: str, notes: str = "") -> dict:
+    """Add a resource to the global catalog.
+
+    :param name: Display name; surrounding whitespace is stripped.
+    :param type_: One of ``_RESOURCE_TYPES``.
+    :param notes: Optional free-text note.
+    :return: The newly created resource dict.
+    :raises ValueError: If ``type_`` is not a recognised resource type.
+    """
     if type_ not in _RESOURCE_TYPES:
         raise ValueError(f"invalid resource type: {type_}")
     cur = conn().execute(
@@ -2023,6 +2075,17 @@ def create_resource(name: str, type_: str, notes: str = "") -> dict:
 
 
 def update_resource(resource_id: int, updates: dict) -> dict | None:
+    """Patch a resource's ``name``, ``type`` or ``notes``.
+
+    Keys outside that set are ignored rather than rejected, so a caller may hand
+    over a whole request body.  An update containing none of them is a no-op that
+    still returns the current row.
+
+    :param resource_id: The resource's integer primary key.
+    :param updates: Partial field/value mapping.
+    :return: The updated resource dict, or ``None`` if it does not exist.
+    :raises ValueError: If ``type`` is present but not a recognised type.
+    """
     allowed = {k: v for k, v in updates.items() if k in ("name", "type", "notes")}
     if not allowed:
         return get_resource(resource_id)
@@ -2037,12 +2100,24 @@ def update_resource(resource_id: int, updates: dict) -> dict | None:
 
 
 def delete_resource(resource_id: int) -> None:
+    """Remove a resource from the global catalog.
+
+    Per-card assignments referencing it are removed by ``ON DELETE CASCADE``.
+
+    :param resource_id: The resource's integer primary key.
+    """
     conn().execute("DELETE FROM lookahead_resources WHERE id = ?", (int(resource_id),))
 
 
 # ── Project shift schedules ───────────────────────────────────────────────────
 
 def list_project_shifts(project_tag: str | None = None) -> list[dict]:
+    """List shift definitions, ordered by project then shift number.
+
+    :param project_tag: Optional project to restrict to; ``None`` returns the
+        shift schedules for every project.
+    :return: Shift rows as dicts.
+    """
     sql  = "SELECT * FROM project_shifts"
     args: list = []
     if project_tag:
@@ -2076,6 +2151,14 @@ def upsert_project_shift(project_tag: str, shift_num: int, data: dict) -> dict:
 
 
 def delete_project_shift(project_tag: str, shift_num: int) -> None:
+    """Delete one shift from a project's schedule.
+
+    Cards already scheduled against this shift number are left untouched; the
+    shift row only defines the label and hours the board renders.
+
+    :param project_tag: The project the shift belongs to.
+    :param shift_num: The shift's number within that project.
+    """
     conn().execute(
         "DELETE FROM project_shifts WHERE project_tag = ? AND shift_num = ?",
         (project_tag, int(shift_num)),
@@ -2127,6 +2210,14 @@ def _template_with_tasks(row: dict) -> dict:
 
 
 def get_template(template_id: str) -> dict | None:
+    """Return one template with its task graph attached.
+
+    Each task in the returned ``tasks`` list carries its own ``depends_on`` local
+    ids and ``resource_requirements``.
+
+    :param template_id: The template's UUID.
+    :return: The template dict, or ``None`` if no such template exists.
+    """
     row = conn().execute(
         "SELECT * FROM lookahead_templates WHERE id = ?", (template_id,)
     ).fetchone()
@@ -2134,6 +2225,11 @@ def get_template(template_id: str) -> dict | None:
 
 
 def list_templates(owner: str | None = None) -> list[dict]:
+    """List templates, each with its task graph attached, ordered by name.
+
+    :param owner: Optional owner to restrict to; ``None`` returns every template.
+    :return: Template dicts, hydrated the same way as :func:`get_template`.
+    """
     sql = "SELECT * FROM lookahead_templates"
     args: list = []
     if owner:
@@ -2247,6 +2343,15 @@ def update_template(template_id: str, updates: dict) -> dict | None:
 
 
 def delete_template(template_id: str) -> None:
+    """Delete a template and its task graph.
+
+    Tasks, dependencies and resource requirements go with it via
+    ``ON DELETE CASCADE``.  Cards already instantiated from this template are
+    deliberately left in place -- they are concrete scheduled work, and deleting
+    the pattern they came from should not erase them.
+
+    :param template_id: The template's UUID.
+    """
     conn().execute("DELETE FROM lookahead_templates WHERE id = ?", (template_id,))
 
 
@@ -2414,6 +2519,12 @@ def _annotate_instance_outdated(inst: dict) -> dict:
 
 
 def get_instance(instance_id: str) -> dict | None:
+    """Return one template instance with its cohort of cards attached.
+
+    :param instance_id: The instance's UUID.
+    :return: The instance dict including its ``cards``, or ``None`` if no such
+        instance exists.
+    """
     row = conn().execute(
         "SELECT * FROM lookahead_template_instances WHERE id = ?", (instance_id,)
     ).fetchone()
@@ -2427,6 +2538,13 @@ def get_instance(instance_id: str) -> dict | None:
 
 def list_instances(project: str | None = None,
                    status: str | None = None) -> list[dict]:
+    """List template instances, optionally filtered by project and status.
+
+    :param project: Optional project tag to restrict to.
+    :param status: Optional instance status to restrict to (see
+        ``_INSTANCE_STATUSES``).
+    :return: Instance rows as dicts.
+    """
     sql = "SELECT * FROM lookahead_template_instances"
     args: list = []
     where: list[str] = []
@@ -2444,6 +2562,14 @@ def list_instances(project: str | None = None,
 
 
 def list_lookahead_cards_for_instance(instance_id: str) -> list[dict]:
+    """List the cards created by one template instantiation, in schedule order.
+
+    This is the cohort a reschedule moves together: every card stamped with the
+    same ``template_instance_id`` shifts by the same delta.
+
+    :param instance_id: The instance's UUID.
+    :return: Card dicts, hydrated the same way as :func:`get_lookahead_card`.
+    """
     rows = _rows_to_list(conn().execute(
         "SELECT * FROM lookahead_cards WHERE template_instance_id = ? "
         "ORDER BY start_date, start_shift_num, id",
@@ -2635,6 +2761,16 @@ def upgrade_instance(instance_id: str) -> dict | None:
 
 
 def set_instance_status(instance_id: str, status: str) -> dict | None:
+    """Move a template instance to a new lifecycle status.
+
+    The instance's cards are not touched: cancelling an instance records that the
+    cohort is no longer being pursued without deleting the scheduled work.
+
+    :param instance_id: The instance's UUID.
+    :param status: One of ``_INSTANCE_STATUSES``.
+    :return: The updated instance dict, or ``None`` if it does not exist.
+    :raises ValueError: If ``status`` is not a recognised instance status.
+    """
     if status not in _INSTANCE_STATUSES:
         raise ValueError(f"invalid instance status: {status}")
     conn().execute(

@@ -3459,6 +3459,10 @@ def lookahead_list_cards(project: str | None = None,
 
 @app.get("/lookahead/cards/{card_id}")
 def lookahead_get_card(card_id: str):
+    """Return one look-ahead card, with dependencies, links and resources.
+
+    Responds 404 when the card does not exist.
+    """
     with db.lock:
         card = db.get_lookahead_card(card_id)
     if not card:
@@ -3517,6 +3521,14 @@ _backfill_lookahead_todos()
 
 @app.post("/lookahead/cards")
 def lookahead_create_card(body: dict):
+    """Create a look-ahead card and the todo that mirrors it.
+
+    A card id may be supplied for idempotent creation; otherwise one is
+    generated.  ``depends_on``, ``links`` and ``resources`` are applied only when
+    present in the body, so an omitted key leaves that relation untouched rather
+    than clearing it.  Every card is paired with a manual todo (single read path
+    for the Todos tab, parsival#85), created here unless one is already linked.
+    """
     data = _card_input(body, require_all=True)
     data["id"] = body.get("id") or str(_uuid.uuid4())
     data.setdefault("start_shift_num", 1)
@@ -3537,6 +3549,14 @@ def lookahead_create_card(body: dict):
 
 @app.patch("/lookahead/cards/{card_id}")
 def lookahead_update_card(card_id: str, body: dict):
+    """Patch a card and propagate the change to its mirrored todo.
+
+    Only the fields present in the body are written.  Title, end date, project,
+    assignee and status are mirrored onto the linked todo so the Todos tab and
+    the board never disagree; a card that somehow has no todo gets one here.
+    When the card belongs to a template instance, completing it may auto-complete
+    that instance.  Responds 404 when the card does not exist.
+    """
     data = _card_input(body)
     with db.lock:
         existing = db.get_lookahead_card(card_id)
@@ -3579,6 +3599,11 @@ def lookahead_update_card(card_id: str, body: dict):
 
 @app.delete("/lookahead/cards/{card_id}")
 def lookahead_delete_card(card_id: str):
+    """Delete a card and the todo mirroring it.
+
+    The todo id is read before the card is removed, because the link row goes
+    with the card via cascade.  Deleting an absent card is a no-op.
+    """
     with db.lock:
         todo_id = db.get_card_todo_id(card_id)
         db.delete_lookahead_card(card_id)
@@ -3589,6 +3614,12 @@ def lookahead_delete_card(card_id: str):
 
 @app.patch("/lookahead/cards/{card_id}/resources/{resource_id}")
 def lookahead_set_card_resource_status(card_id: str, resource_id: int, body: dict):
+    """Set the BOM fulfilment status of one resource on one card.
+
+    Validated against ``db._RESOURCE_STATUSES`` and rejected with 400 rather than
+    stored, so the board's status cycle cannot write an unknown value.  Returns
+    the whole refreshed card so the caller can re-render without a second fetch.
+    """
     status = body.get("status")
     if status not in db._RESOURCE_STATUSES:
         raise HTTPException(status_code=400, detail=f"invalid status: {status}")
@@ -3601,12 +3632,18 @@ def lookahead_set_card_resource_status(card_id: str, resource_id: int, body: dic
 
 @app.get("/lookahead/resources")
 def lookahead_list_resources(type: str | None = None):
+    """List the global resource catalog, optionally filtered by ``type``."""
     with db.lock:
         return db.list_resources(type_filter=type)
 
 
 @app.post("/lookahead/resources")
 def lookahead_create_resource(body: dict):
+    """Add a resource to the global catalog.
+
+    ``name`` is required and ``type`` defaults to ``person``; both are validated
+    here so a bad request returns 400 instead of a ValueError traceback.
+    """
     name = (body.get("name") or "").strip()
     type_ = body.get("type") or "person"
     if not name:
@@ -3619,6 +3656,11 @@ def lookahead_create_resource(body: dict):
 
 @app.patch("/lookahead/resources/{resource_id}")
 def lookahead_update_resource(resource_id: int, body: dict):
+    """Patch a catalog resource's name, type or notes.
+
+    An invalid type surfaces as 400 and a missing resource as 404, rather than
+    either escaping as a 500.
+    """
     try:
         with db.lock:
             res = db.update_resource(resource_id, body)
@@ -3631,6 +3673,11 @@ def lookahead_update_resource(resource_id: int, body: dict):
 
 @app.delete("/lookahead/resources/{resource_id}")
 def lookahead_delete_resource(resource_id: int):
+    """Remove a resource from the global catalog.
+
+    Its per-card assignments are removed with it by cascade, so cards that
+    referenced it simply lose that requirement.
+    """
     with db.lock:
         db.delete_resource(resource_id)
     return {"ok": True}
@@ -3640,12 +3687,18 @@ def lookahead_delete_resource(resource_id: int):
 
 @app.get("/lookahead/shifts")
 def lookahead_list_shifts(project: str | None = None):
+    """List per-project shift schedules, optionally for one project only."""
     with db.lock:
         return db.list_project_shifts(project_tag=project)
 
 
 @app.put("/lookahead/shifts/{project_tag}/{shift_num}")
 def lookahead_upsert_shift(project_tag: str, shift_num: int, body: dict):
+    """Create or replace one shift in a project's schedule.
+
+    Shift numbers are capped at 1-3 to match the board's three-shift day; a
+    higher number is rejected with 400 rather than stored and silently unrendered.
+    """
     if shift_num not in (1, 2, 3):
         raise HTTPException(status_code=400, detail="shift_num must be 1, 2, or 3")
     with db.lock:
@@ -3654,6 +3707,11 @@ def lookahead_upsert_shift(project_tag: str, shift_num: int, body: dict):
 
 @app.delete("/lookahead/shifts/{project_tag}/{shift_num}")
 def lookahead_delete_shift(project_tag: str, shift_num: int):
+    """Remove one shift from a project's schedule.
+
+    Cards already scheduled on that shift number are left alone -- the shift row
+    only supplies the label and hours the board draws.
+    """
     with db.lock:
         db.delete_project_shift(project_tag, shift_num)
     return {"ok": True}
@@ -3710,12 +3768,17 @@ def _validate_template_body(body: dict, *, require_name: bool) -> None:
 
 @app.get("/lookahead/templates")
 def lookahead_list_templates(owner: str | None = None):
+    """List work-package templates, each with its task graph attached."""
     with db.lock:
         return db.list_templates(owner=owner)
 
 
 @app.get("/lookahead/templates/{template_id}")
 def lookahead_get_template(template_id: str):
+    """Return one template with its tasks, dependencies and resource needs.
+
+    Responds 404 when the template does not exist.
+    """
     with db.lock:
         tpl = db.get_template(template_id)
     if not tpl:
@@ -3725,6 +3788,12 @@ def lookahead_get_template(template_id: str):
 
 @app.post("/lookahead/templates")
 def lookahead_create_template(body: dict):
+    """Create a work-package template and its task graph.
+
+    An id may be supplied for idempotent creation; otherwise one is generated.
+    The body is validated up front and again by the DB layer, whose ValueError is
+    translated to 400 so a malformed task graph never surfaces as a 500.
+    """
     _validate_template_body(body, require_name=True)
     data = dict(body)
     data["id"] = body.get("id") or str(_uuid.uuid4())
@@ -3737,6 +3806,12 @@ def lookahead_create_template(body: dict):
 
 @app.patch("/lookahead/templates/{template_id}")
 def lookahead_update_template(template_id: str, body: dict):
+    """Patch a template, replacing its task graph when ``tasks`` is supplied.
+
+    Editing a template does not touch instances already created from it -- use
+    the per-instance upgrade endpoint for that (parsival#60).  Invalid input is
+    400, a missing template 404.
+    """
     _validate_template_body(body, require_name=False)
     with db.lock:
         try:
@@ -3750,6 +3825,11 @@ def lookahead_update_template(template_id: str, body: dict):
 
 @app.delete("/lookahead/templates/{template_id}")
 def lookahead_delete_template(template_id: str):
+    """Delete a template and its task graph.
+
+    Cards already instantiated from it are deliberately kept: they are real
+    scheduled work, and removing the pattern should not erase them.
+    """
     with db.lock:
         db.delete_template(template_id)
     return {"ok": True}
@@ -3757,6 +3837,13 @@ def lookahead_delete_template(template_id: str):
 
 @app.post("/lookahead/templates/{template_id}/instantiate")
 def lookahead_instantiate_template(template_id: str, body: dict):
+    """Instantiate a template into concrete cards from ``start_date``.
+
+    Task offsets are resolved to absolute dates and every created card is stamped
+    with the new instance id, so a later reschedule can move the whole cohort by
+    one delta.  ``start_date`` is required; ``project_tag`` is required too, but
+    may come from the template's default rather than the body.
+    """
     start_date = (body.get("start_date") or "").strip()
     if not start_date:
         raise HTTPException(status_code=400, detail="start_date is required")
@@ -3775,12 +3862,20 @@ def lookahead_instantiate_template(template_id: str, body: dict):
 @app.get("/lookahead/instances")
 def lookahead_list_instances(project: str | None = None,
                               status:  str | None = None):
+    """List template instances, optionally filtered by project and status.
+
+    Rows carry the outdated flag the UI renders as an "upgrade available" badge.
+    """
     with db.lock:
         return db.list_instances(project=project, status=status)
 
 
 @app.get("/lookahead/instances/{instance_id}")
 def lookahead_get_instance(instance_id: str):
+    """Return one template instance together with its cohort of cards.
+
+    Responds 404 when the instance does not exist.
+    """
     with db.lock:
         inst = db.get_instance(instance_id)
     if not inst:
@@ -3790,6 +3885,12 @@ def lookahead_get_instance(instance_id: str):
 
 @app.patch("/lookahead/instances/{instance_id}")
 def lookahead_update_instance(instance_id: str, body: dict):
+    """Reschedule an instance and/or move it to a new status.
+
+    A new ``start_date`` shifts every card in the cohort by the same delta rather
+    than re-deriving them, which preserves any manual per-card adjustments.  An
+    invalid status is 400; a missing instance is 404.
+    """
     with db.lock:
         inst = db.get_instance(instance_id)
         if not inst:
@@ -3806,6 +3907,7 @@ def lookahead_update_instance(instance_id: str, body: dict):
 
 @app.delete("/lookahead/instances/{instance_id}")
 def lookahead_delete_instance(instance_id: str):
+    """Delete a template instance and the cards it created."""
     with db.lock:
         db.delete_instance(instance_id)
     return {"ok": True}
@@ -3828,6 +3930,12 @@ def lookahead_upgrade_instance(instance_id: str):
 
 @app.post("/lookahead/cards/{card_id}/detach")
 def lookahead_detach_card(card_id: str):
+    """Detach a card from its template instance, leaving it standalone.
+
+    Used when one task of an instantiated work package diverges: clearing the
+    instance stamp exempts the card from cohort reschedules and upgrades while
+    keeping the card itself.  Responds 404 when the card does not exist.
+    """
     with db.lock:
         card = db.detach_card(card_id)
     if not card:
@@ -3939,6 +4047,13 @@ def _annotate_card(card: dict, *, max_candidates: int = 40,
 @app.get("/lookahead/cards/{card_id}/suggestions")
 def lookahead_list_suggestions(card_id: str,
                                 include_decided: bool = False):
+    """List the LLM's proposed cross-system links for one card.
+
+    Pending proposals only by default; ``include_decided`` also returns ones
+    already accepted or rejected.  Item suggestions are enriched here with the
+    target's title, source and url so the UI can render the list without a
+    round-trip per row.  Responds 404 when the card does not exist.
+    """
     with db.lock:
         if not db.get_lookahead_card(card_id):
             raise HTTPException(status_code=404, detail="card not found")
@@ -3998,6 +4113,10 @@ def lookahead_annotate_project(body: dict):
 
 @app.post("/lookahead/suggestions/{suggestion_id}/accept")
 def lookahead_accept_suggestion(suggestion_id: int):
+    """Accept an LLM link proposal, promoting it to a real card link.
+
+    Deciding an already-decided suggestion is a 400; an unknown id is a 404.
+    """
     with db.lock:
         try:
             row = db.decide_card_suggestion(suggestion_id, "accepted")
@@ -4010,6 +4129,11 @@ def lookahead_accept_suggestion(suggestion_id: int):
 
 @app.post("/lookahead/suggestions/{suggestion_id}/reject")
 def lookahead_reject_suggestion(suggestion_id: int):
+    """Reject an LLM link proposal, leaving the card's links unchanged.
+
+    The rejection is recorded rather than deleted so the annotator does not keep
+    re-proposing the same pairing.  Re-deciding is a 400; an unknown id a 404.
+    """
     with db.lock:
         try:
             row = db.decide_card_suggestion(suggestion_id, "rejected")
