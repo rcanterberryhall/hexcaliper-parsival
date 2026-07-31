@@ -3256,10 +3256,18 @@ async function renderLancellmotChips(host, tags) {
     if (body.status === 'ok') {
       const n = body.docs.length;
       chip.textContent = tag + ' · ' + n + ' doc' + (n === 1 ? '' : 's');
-      chip.title = 'Related documents in lancellmot';
+      chip.title = 'Related documents in lancellmot — click to change the mapping';
       chip.onmouseenter = () => showLancellmotPopover(chip, body);
       chip.onmouseleave = () => hideLancellmotPopover(chip);
-      chip.onclick = (e) => e.stopPropagation();
+      // A resolved chip routes to Settings just like an unmapped one. Without
+      // this the only affordance for reaching the mapping disappears the moment
+      // one exists, leaving no way to change or clear it from the board.
+      // The popover is dismissed first so it cannot strand itself over the modal.
+      chip.onclick = (e) => {
+        e.stopPropagation();
+        hideLancellmotPopover(chip);
+        openSettingsFocusedOn(tag);
+      };
     } else if (body.status === 'unmapped') {
       chip.classList.add('unmapped');
       chip.textContent = tag + ' · Map →';
