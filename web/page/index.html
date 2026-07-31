@@ -3225,6 +3225,20 @@ function hydrateLancellmotChips() {
   });
 }
 
+// Re-resolve every chip after an alias is added or removed. Without this the
+// mapping saves but the board still reads "Map →" until the next render, which
+// looks like the save failed at the exact moment the user acts.
+//
+// Clearing the guard is enough — each host still carries its data-tags, so this
+// re-queries docs-for-tag without refetching /situations, leaving scroll
+// position and any expanded evidence panels alone.
+function refreshLancellmotChips() {
+  document.querySelectorAll('.lmot-chip-host').forEach(host => {
+    host.dataset.hydrated = '';
+  });
+  hydrateLancellmotChips();
+}
+
 async function renderLancellmotChips(host, tags) {
   host.innerHTML = '';
   for (const tag of tags) {
@@ -5590,6 +5604,7 @@ async function onLancellmotSelectChange(sel) {
     try {
       await fetch(API + '/lancellmot/aliases/' + encodeURIComponent(parsivalProj),
                   { method: 'DELETE' });
+      refreshLancellmotChips();
     } catch (_) {}
     return;
   }
@@ -5600,6 +5615,7 @@ async function onLancellmotSelectChange(sel) {
       lancellmot_project_id: sel.value,
       lancellmot_project_name: picked.dataset.name || picked.textContent,
     });
+    refreshLancellmotChips();
   } catch (_) {}
 }
 
