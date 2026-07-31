@@ -1,0 +1,26 @@
+# Pre-commit hooks (STANDARDS.md DOC-008).
+#
+# The code map and api/README.md's Public API section are generated from
+# docstrings. This hook regenerates them on commit so they cannot drift from
+# the code; CI runs the same generator with --check and fails the build if a
+# commit lands stale docs anyway.
+#
+# Install once:
+#   pip install -r requirements-dev.txt
+#   pre-commit install
+#
+# If the hook rewrites a file it reports "files were modified by this hook" and
+# aborts the commit — stage the regenerated docs and commit again.
+#
+# Entry uses python3 explicitly: Ubuntu has no bare `python` on PATH.
+
+repos:
+  - repo: local
+    hooks:
+      - id: gen-code-map
+        name: regenerate code map from docstrings
+        entry: python3 scripts/gen_code_map.py --src-root api --flat
+        language: system
+        pass_filenames: false
+        # Only the sources the map is derived from can invalidate it.
+        files: ^(api/.*\.py|scripts/gen_code_map\.py)$

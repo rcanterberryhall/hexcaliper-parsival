@@ -8,3 +8,7 @@ httpx==0.28.1
 # changes in reformat noise. Configuration lives in pyproject.toml.
 ruff==0.15.14
 mypy==2.1.0
+
+# Runs the code-map generator on commit (DOC-008). See .pre-commit-config.yaml;
+# activate with `pre-commit install` after installing this file.
+pre-commit==4.6.1
