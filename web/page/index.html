@@ -5597,6 +5597,9 @@ async function populateLancellmotDropdowns() {
     }
     const current = aliasByTag[parsivalProj];
     if (current) sel.value = current.lancellmot_project_id;
+    // Remember what the server actually holds, so a rejected save can put the
+    // control back instead of leaving it showing a mapping that was never stored.
+    sel.dataset.current = sel.value;
     if (!sel.dataset.wired) {
       sel.dataset.wired = '1';
       sel.addEventListener('change', () => onLancellmotSelectChange(sel));
@@ -5604,27 +5607,48 @@ async function populateLancellmotDropdowns() {
   });
 }
 
+// Persist (or clear) a project's lancellmot alias when the dropdown changes.
+//
+// Both branches go through api(), which throws on any non-2xx, so the delete
+// and the upsert share one error contract; a raw fetch() would resolve happily
+// on a 500 and report success for a delete that never happened.
+//
+// A failure must not leave the <select> asserting a mapping the server rejected:
+// the control is put back to the last known-good value, the reason is shown, and
+// the chips are only re-resolved once the write is confirmed.
 async function onLancellmotSelectChange(sel) {
   const row = sel.closest('.project-row');
   const parsivalProj = ((row && (row.querySelector('.proj-name') || {}).value) || '').trim();
   if (!parsivalProj) return;
-  if (sel.value === '') {
-    try {
-      await fetch(API + '/lancellmot/aliases/' + encodeURIComponent(parsivalProj),
-                  { method: 'DELETE' });
-      refreshLancellmotChips();
-    } catch (_) {}
-    return;
-  }
-  const picked = sel.options[sel.selectedIndex];
+
+  const msg = $('settings-msg');
+  const previous = sel.dataset.current || '';
+  const clearing = sel.value === '';
+  const picked = clearing ? null : sel.options[sel.selectedIndex];
+
   try {
-    await api('/lancellmot/aliases', 'PUT', {
-      parsival_project: parsivalProj,
-      lancellmot_project_id: sel.value,
-      lancellmot_project_name: picked.dataset.name || picked.textContent,
-    });
+    if (clearing) {
+      await api('/lancellmot/aliases/' + encodeURIComponent(parsivalProj), 'DELETE');
+    } else {
+      await api('/lancellmot/aliases', 'PUT', {
+        parsival_project: parsivalProj,
+        lancellmot_project_id: sel.value,
+        lancellmot_project_name: picked.dataset.name || picked.textContent,
+      });
+    }
+    sel.dataset.current = sel.value;
+    msg.className = 'settings-msg ok';
+    msg.textContent = clearing
+      ? `Cleared lancellmot mapping for ${parsivalProj}.`
+      : `Mapped ${parsivalProj} → ${picked.dataset.name || picked.textContent}.`;
+    setTimeout(() => { msg.textContent = ''; }, 3000);
     refreshLancellmotChips();
-  } catch (_) {}
+  } catch (e) {
+    sel.value = previous;
+    msg.className = 'settings-msg err';
+    msg.textContent =
+      (clearing ? 'Clearing mapping failed: ' : 'Saving mapping failed: ') + e.message;
+  }
 }
 
 async function clearNoiseFilter() {

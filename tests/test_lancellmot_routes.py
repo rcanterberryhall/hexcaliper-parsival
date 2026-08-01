@@ -64,6 +64,20 @@ def test_delete_alias_removes():
     assert db.get_lancellmot_alias_for_tag("Gone") is None
 
 
+def test_delete_alias_returns_a_json_body():
+    """The delete must answer with JSON, not an empty 204 (parsival#96).
+
+    Settings routes this through the UI's ``api()`` helper, which calls
+    ``r.json()`` on every response. A bodyless success would raise there and be
+    reported to the user as a failed delete that had in fact succeeded.
+    """
+    db.upsert_lancellmot_alias("Gone2", "id-g", "g-name")
+    resp = client.delete("/lancellmot/aliases/Gone2")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.json() == {"ok": True}
+
+
 # ── projects proxy ────────────────────────────────────────────────────────────
 
 
