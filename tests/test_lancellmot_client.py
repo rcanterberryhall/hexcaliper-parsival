@@ -1,4 +1,5 @@
 """Tests for lancellmot_client (parsival#43)."""
+
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -19,8 +20,7 @@ def test_list_projects_returns_list_of_dicts():
         {"id": "p1", "name": "alpha"},
         {"id": "p2", "name": "beta"},
     ]
-    with patch("lancellmot_client.requests.get",
-               return_value=_ok_response(payload)) as mock_get:
+    with patch("lancellmot_client.requests.get", return_value=_ok_response(payload)) as mock_get:
         result = lancellmot_client.list_projects()
     assert result == payload
     call_url = mock_get.call_args[0][0]
@@ -30,15 +30,17 @@ def test_list_projects_returns_list_of_dicts():
 
 
 def test_list_projects_raises_on_network_error():
-    with patch("lancellmot_client.requests.get",
-               side_effect=__import__("requests").ConnectionError("boom")):
+    with patch(
+        "lancellmot_client.requests.get", side_effect=__import__("requests").ConnectionError("boom")
+    ):
         with pytest.raises(lancellmot_client.LancellmotUnavailable):
             lancellmot_client.list_projects()
 
 
 def test_list_projects_raises_on_timeout():
-    with patch("lancellmot_client.requests.get",
-               side_effect=__import__("requests").Timeout("slow")):
+    with patch(
+        "lancellmot_client.requests.get", side_effect=__import__("requests").Timeout("slow")
+    ):
         with pytest.raises(lancellmot_client.LancellmotUnavailable):
             lancellmot_client.list_projects()
 
@@ -60,12 +62,11 @@ def test_html_body_with_200_is_unavailable():
     fallback, which answers 200 with index.html rather than 404.
     """
     import requests as req
+
     html = MagicMock()
     html.status_code = 200
     html.raise_for_status.return_value = None
-    html.json.side_effect = req.exceptions.JSONDecodeError(
-        "Expecting value", "<!DOCTYPE html>", 0
-    )
+    html.json.side_effect = req.exceptions.JSONDecodeError("Expecting value", "<!DOCTYPE html>", 0)
     with patch("lancellmot_client.requests.get", return_value=html):
         with pytest.raises(lancellmot_client.LancellmotUnavailable):
             lancellmot_client.list_projects()
@@ -75,8 +76,7 @@ def test_html_body_with_200_is_unavailable():
 
 def test_list_documents_returns_trimmed_list():
     payload = [{"id": f"d{i}", "filename": f"doc{i}.pdf"} for i in range(10)]
-    with patch("lancellmot_client.requests.get",
-               return_value=_ok_response(payload)) as mock_get:
+    with patch("lancellmot_client.requests.get", return_value=_ok_response(payload)) as mock_get:
         result = lancellmot_client.list_documents("proj-1", limit=5)
     assert len(result) == 5
     assert result[0]["filename"] == "doc0.pdf"
@@ -87,14 +87,14 @@ def test_list_documents_returns_trimmed_list():
 
 def test_list_documents_default_limit_is_5():
     payload = [{"id": f"d{i}", "filename": f"doc{i}.pdf"} for i in range(20)]
-    with patch("lancellmot_client.requests.get",
-               return_value=_ok_response(payload)):
+    with patch("lancellmot_client.requests.get", return_value=_ok_response(payload)):
         result = lancellmot_client.list_documents("proj-1")
     assert len(result) == 5
 
 
 def test_list_documents_raises_on_failure():
-    with patch("lancellmot_client.requests.get",
-               side_effect=__import__("requests").ConnectionError("boom")):
+    with patch(
+        "lancellmot_client.requests.get", side_effect=__import__("requests").ConnectionError("boom")
+    ):
         with pytest.raises(lancellmot_client.LancellmotUnavailable):
             lancellmot_client.list_documents("proj-1")

@@ -16,6 +16,7 @@ messages are pre-filtered by ``_relevance()`` before being turned into
 Each call to ``fetch()`` returns a deduplicated list of ``RawItem`` objects
 covering the lookback window defined in ``config.LOOKBACK_HOURS``.
 """
+
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -30,6 +31,7 @@ TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 
 
 # ── Token management ──────────────────────────────────────────────────────────
+
 
 def _refresh_token(ws: dict) -> str | None:
     """Exchange a refresh token for a fresh access token.
@@ -46,13 +48,17 @@ def _refresh_token(ws: dict) -> str | None:
     if not refresh or not client_id or not client_secret:
         return None
     try:
-        r = requests.post(TOKEN_URL, data={
-            "grant_type":    "refresh_token",
-            "refresh_token": refresh,
-            "client_id":     client_id,
-            "client_secret": client_secret,
-            "scope":         "Chat.Read ChannelMessage.Read.All Channel.ReadBasic.All offline_access",
-        }, timeout=15)
+        r = requests.post(
+            TOKEN_URL,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "Chat.Read ChannelMessage.Read.All Channel.ReadBasic.All offline_access",
+            },
+            timeout=15,
+        )
         r.raise_for_status()
         data = r.json()
         if "access_token" in data:
@@ -105,6 +111,7 @@ def _paged(token: str, path: str, params: dict = None) -> list:
 
 # ── Relevance filtering ───────────────────────────────────────────────────────
 
+
 def _user_identifiers() -> list[str]:
     ids = []
     if config.USER_NAME:
@@ -148,6 +155,7 @@ def _relevance(text: str) -> tuple[bool, str, str | None]:
 
 # ── Per-token fetch ───────────────────────────────────────────────────────────
 
+
 def _parse_ts(ts_str: str | None) -> float:
     """Parse a Graph API ISO timestamp to a UTC Unix float."""
     if not ts_str:
@@ -167,6 +175,7 @@ def _body_text(msg: dict) -> str:
     # Strip basic HTML tags for contentType=html messages
     if b.get("contentType") == "html":
         import re
+
         content = re.sub(r"<[^>]+>", " ", content)
         content = re.sub(r"\s+", " ", content).strip()
     return content
@@ -190,14 +199,14 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
         return []
 
     items: list[RawItem] = []
-    seen:  set[str]      = set()
+    seen: set[str] = set()
 
     # Identify the token owner
     try:
         me = _get(token, "/me")
-        my_id    = me.get("id", "")
-        my_name  = me.get("displayName", "me")
-        tenant   = me.get("userPrincipalName", "").split("@")[-1] or "teams"
+        my_id = me.get("id", "")
+        my_name = me.get("displayName", "me")
+        tenant = me.get("userPrincipalName", "").split("@")[-1] or "teams"
     except Exception as e:
         # Try refreshing the token once
         token = _refresh_token(ws) or ""
@@ -206,9 +215,9 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
             return []
         try:
             me = _get(token, "/me")
-            my_id   = me.get("id", "")
+            my_id = me.get("id", "")
             my_name = me.get("displayName", "me")
-            tenant  = me.get("userPrincipalName", "").split("@")[-1] or "teams"
+            tenant = me.get("userPrincipalName", "").split("@")[-1] or "teams"
         except Exception as e2:
             log.error("/me failed after refresh: %s", e2)
             return []
@@ -218,11 +227,15 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
 
     # ── 1. @mentions via activity feed ────────────────────────────────────────
     try:
-        feed = _paged(token, "/me/messages", {
-            "$top": 50,
-            "$filter": f"createdDateTime ge {cutoff_iso}",
-            "$orderby": "createdDateTime desc",
-        })
+        feed = _paged(
+            token,
+            "/me/messages",
+            {
+                "$top": 50,
+                "$filter": f"createdDateTime ge {cutoff_iso}",
+                "$orderby": "createdDateTime desc",
+            },
+        )
         log.info("%s: activity feed: %d messages", tenant, len(feed))
         for msg in feed:
             ts = _parse_ts(msg.get("createdDateTime"))
@@ -234,34 +247,44 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
             seen.add(mid)
             text = _body_text(msg)
             sender = (msg.get("from") or {}).get("user", {}).get("displayName", "?")
-            items.append(RawItem(
-                source    = "teams",
-                item_id   = mid,
-                title     = f"[@mention] ({tenant}): {text[:80]}",
-                body      = text[:3000],
-                url       = (msg.get("webUrl") or ""),
-                author    = sender,
-                timestamp = datetime.fromtimestamp(ts, tz=UTC).isoformat(),
-                metadata  = {"tenant": tenant, "type": "mention"},
-            ))
+            items.append(
+                RawItem(
+                    source="teams",
+                    item_id=mid,
+                    title=f"[@mention] ({tenant}): {text[:80]}",
+                    body=text[:3000],
+                    url=(msg.get("webUrl") or ""),
+                    author=sender,
+                    timestamp=datetime.fromtimestamp(ts, tz=UTC).isoformat(),
+                    metadata={"tenant": tenant, "type": "mention"},
+                )
+            )
     except Exception as e:
         log.error("%s: activity feed: %s", tenant, e)
 
     # ── 2. Direct messages and group chats ────────────────────────────────────
     try:
-        chats = _paged(token, "/me/chats", {
-            "$top": 50,
-            "$expand": "members",
-        })
+        chats = _paged(
+            token,
+            "/me/chats",
+            {
+                "$top": 50,
+                "$expand": "members",
+            },
+        )
         log.info("%s: chats found: %d", tenant, len(chats))
         for chat in chats:
-            chat_id   = chat.get("id", "")
+            chat_id = chat.get("id", "")
             chat_type = chat.get("chatType", "")
             try:
-                msgs = _paged(token, f"/me/chats/{chat_id}/messages", {
-                    "$top": 10,
-                    "$orderby": "createdDateTime desc",
-                })
+                msgs = _paged(
+                    token,
+                    f"/me/chats/{chat_id}/messages",
+                    {
+                        "$top": 10,
+                        "$orderby": "createdDateTime desc",
+                    },
+                )
             except Exception:
                 continue
             if not msgs:
@@ -296,16 +319,21 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
                 if m.get("displayName") and m.get("displayName") != my_name
             ]
             title_names = ", ".join(other_names[:3]) or "?"
-            items.append(RawItem(
-                source    = "teams",
-                item_id   = mid,
-                title     = f"[{label}] ({tenant}) w/ {title_names}: {lines[-1][:60]}",
-                body      = "\n".join(lines)[:3000],
-                url       = chat.get("webUrl") or f"https://teams.microsoft.com/l/chat/{chat_id}/",
-                author    = other_names[0] if other_names else my_name,
-                timestamp = datetime.fromtimestamp(latest_ts, tz=UTC).isoformat(),
-                metadata  = {"tenant": tenant, "type": "dm" if chat_type == "oneOnOne" else "group_chat"},
-            ))
+            items.append(
+                RawItem(
+                    source="teams",
+                    item_id=mid,
+                    title=f"[{label}] ({tenant}) w/ {title_names}: {lines[-1][:60]}",
+                    body="\n".join(lines)[:3000],
+                    url=chat.get("webUrl") or f"https://teams.microsoft.com/l/chat/{chat_id}/",
+                    author=other_names[0] if other_names else my_name,
+                    timestamp=datetime.fromtimestamp(latest_ts, tz=UTC).isoformat(),
+                    metadata={
+                        "tenant": tenant,
+                        "type": "dm" if chat_type == "oneOnOne" else "group_chat",
+                    },
+                )
+            )
     except Exception as e:
         log.error("%s: chats: %s", tenant, e)
 
@@ -316,7 +344,7 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
         filtering = bool(config.PROJECTS or config.FOCUS_TOPICS)
 
         for team in joined:
-            team_id   = team.get("id", "")
+            team_id = team.get("id", "")
             team_name = team.get("displayName", team_id)
             try:
                 channels = _paged(token, f"/teams/{team_id}/channels")
@@ -324,13 +352,17 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
                 continue
 
             for ch in channels:
-                ch_id   = ch.get("id", "")
+                ch_id = ch.get("id", "")
                 ch_name = ch.get("displayName", ch_id)
                 try:
-                    msgs = _paged(token, f"/teams/{team_id}/channels/{ch_id}/messages", {
-                        "$top": 50 if filtering else 20,
-                        "$filter": f"createdDateTime ge {cutoff_iso}",
-                    })
+                    msgs = _paged(
+                        token,
+                        f"/teams/{team_id}/channels/{ch_id}/messages",
+                        {
+                            "$top": 50 if filtering else 20,
+                            "$filter": f"createdDateTime ge {cutoff_iso}",
+                        },
+                    )
                 except Exception:
                     continue
 
@@ -338,7 +370,7 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
                     continue
 
                 ch_hierarchy = "general"
-                ch_project   = None
+                ch_project = None
                 if filtering:
                     relevant = []
                     for msg in msgs:
@@ -389,23 +421,25 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
                 if mid in seen:
                     continue
                 seen.add(mid)
-                items.append(RawItem(
-                    source    = "teams",
-                    item_id   = mid,
-                    title     = f"[#{ch_name}] {team_name} ({tenant}): recent activity",
-                    body      = "\n".join(lines)[:3000],
-                    url       = ch.get("webUrl") or "https://teams.microsoft.com",
-                    author    = f"#{ch_name}",
-                    timestamp = datetime.fromtimestamp(latest_ts, tz=UTC).isoformat(),
-                    metadata  = {
-                        "channel":     ch_name,
-                        "team":        team_name,
-                        "tenant":      tenant,
-                        "type":        "channel",
-                        "hierarchy":   ch_hierarchy,
-                        "project_tag": ch_project,
-                    },
-                ))
+                items.append(
+                    RawItem(
+                        source="teams",
+                        item_id=mid,
+                        title=f"[#{ch_name}] {team_name} ({tenant}): recent activity",
+                        body="\n".join(lines)[:3000],
+                        url=ch.get("webUrl") or "https://teams.microsoft.com",
+                        author=f"#{ch_name}",
+                        timestamp=datetime.fromtimestamp(latest_ts, tz=UTC).isoformat(),
+                        metadata={
+                            "channel": ch_name,
+                            "team": team_name,
+                            "tenant": tenant,
+                            "type": "channel",
+                            "hierarchy": ch_hierarchy,
+                            "project_tag": ch_project,
+                        },
+                    )
+                )
     except Exception as e:
         log.error("%s: joined teams/channels: %s", tenant, e)
 
@@ -414,6 +448,7 @@ def _fetch_for_token(ws: dict, cutoff_ts: float) -> list[RawItem]:
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
+
 
 def fetch() -> list[RawItem]:
     """Fetch Teams items across all connected accounts.
@@ -426,14 +461,12 @@ def fetch() -> list[RawItem]:
         log.info("not configured — skipping")
         return []
 
-    cutoff_ts = (
-        datetime.now(UTC) - timedelta(hours=config.LOOKBACK_HOURS)
-    ).timestamp()
+    cutoff_ts = (datetime.now(UTC) - timedelta(hours=config.LOOKBACK_HOURS)).timestamp()
 
     all_items: list[RawItem] = []
     for ws in config.TEAMS_USER_TOKENS:
         try:
             all_items.extend(_fetch_for_token(ws, cutoff_ts))
         except Exception as e:
-            log.error("account %s: %s", ws.get('display_name', '?'), e)
+            log.error("account %s: %s", ws.get("display_name", "?"), e)
     return all_items

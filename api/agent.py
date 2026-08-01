@@ -36,6 +36,7 @@ Key helpers:
         5–10 characteristic keywords from an item, used by the project and noise
         learning endpoints in ``app.py``.
 """
+
 import json
 import logging
 import re
@@ -201,12 +202,12 @@ def _projects_ctx() -> str:
     project_names = {p.get("name") for p in config.PROJECTS}
     parts = []
     for p in config.PROJECTS:
-        name   = p.get("name", "unnamed")
+        name = p.get("name", "unnamed")
         parent = p.get("parent", "")
         desc_text = p.get("description", "")
-        kw     = list(p.get("keywords", [])) + list(p.get("learned_keywords", []))
-        ch     = ", ".join(p.get("channels", []))
-        sr     = list(p.get("senders", [])) + list(p.get("learned_senders", []))
+        kw = list(p.get("keywords", [])) + list(p.get("learned_keywords", []))
+        ch = ", ".join(p.get("channels", []))
+        sr = list(p.get("senders", [])) + list(p.get("learned_senders", []))
 
         line = name
         if parent and parent in project_names:
@@ -260,7 +261,7 @@ def _assignment_corrections_ctx() -> str:
         return "none"
     lines = []
     for c in corrections:
-        desc    = c.get("description", "")
+        desc = c.get("description", "")
         llm_own = c.get("llm_owner") or "me"
         correct = c.get("corrected_to", "")
         lines.append(f'  - "{desc}": LLM assigned to "{llm_own}", user corrected to "{correct}"')
@@ -288,17 +289,16 @@ def _priority_overrides_ctx() -> str:
         by_reason.setdefault(o.get("reason", "other"), []).append(o)
     lines = []
     for reason, entries in by_reason.items():
-        lines.append(f'  - Reason: {reason}')
+        lines.append(f"  - Reason: {reason}")
         for o in entries[-8:]:  # cap per-reason detail
             author = o.get("author") or "unknown sender"
-            tag    = o.get("project_tag") or ""
-            llm_p  = o.get("llm_priority") or "?"
+            tag = o.get("project_tag") or ""
+            llm_p = o.get("llm_priority") or "?"
             user_p = o.get("user_priority") or "?"
-            title  = (o.get("title") or "")[:80]
-            tag_part = f' [{tag}]' if tag else ""
+            title = (o.get("title") or "")[:80]
+            tag_part = f" [{tag}]" if tag else ""
             lines.append(
-                f'    · "{title}" from {author}{tag_part}: '
-                f'LLM said {llm_p}, user set {user_p}'
+                f'    · "{title}" from {author}{tag_part}: LLM said {llm_p}, user set {user_p}'
             )
     return "\n" + "\n".join(lines)
 
@@ -349,8 +349,8 @@ Write a concise paragraph that tells {user_name} where this project stands right
 
 def generate_project_briefing(
     project_name: str,
-    intel_facts:  list[str],
-    situations:   list[str],
+    intel_facts: list[str],
+    situations: list[str],
     action_items: list[str],
 ) -> str:
     """Ask the LLM to write a 2-3 sentence status paragraph for a project.
@@ -362,19 +362,23 @@ def generate_project_briefing(
     :return: Prose status paragraph, or empty string on failure.
     :rtype: str
     """
+
     def _fmt(items: list[str], limit: int) -> str:
         return "\n".join(f"- {i}" for i in items[:limit]) if items else "- (none)"
 
     try:
         text = llm.generate(
             BRIEFING_PROMPT.format(
-                user_name    = config.USER_NAME or "the user",
-                project_name = project_name,
-                intel_facts  = _fmt(intel_facts,  10),
-                situations   = _fmt(situations,    5),
-                action_items = _fmt(action_items,  8),
+                user_name=config.USER_NAME or "the user",
+                project_name=project_name,
+                intel_facts=_fmt(intel_facts, 10),
+                situations=_fmt(situations, 5),
+                action_items=_fmt(action_items, 8),
             ),
-            format=None, temperature=0.3, num_predict=512, timeout=60,
+            format=None,
+            temperature=0.3,
+            num_predict=512,
+            timeout=60,
             priority="feedback",
         )
         return text.strip()
@@ -406,11 +410,14 @@ def extract_keywords(project_name: str, title: str, body: str) -> list[str]:
     try:
         text = llm.generate(
             KEYWORD_PROMPT.format(
-                project_name = project_name,
-                title        = title,
-                body         = body[:2000],
+                project_name=project_name,
+                title=title,
+                body=body[:2000],
             ),
-            format="json", temperature=0.1, num_predict=256, timeout=60,
+            format="json",
+            temperature=0.1,
+            num_predict=256,
+            timeout=60,
             priority="short",
         )
         data = json.loads(text or "[]")
@@ -428,25 +435,25 @@ def extract_keywords(project_name: str, title: str, body: str) -> list[str]:
 import re as _re
 
 _PASSDOWN_PATTERNS = _re.compile(
-    r'\bpassdown\b'
-    r'|notes from \w+ shift'
-    r'|\bshift highlights\b'
-    r'|\bshift activities\b'
-    r'|\bshift notes\b'
-    r'|\bshift report\b'
-    r'|\bshift summary\b'
-    r'|\bshift handoff\b'
-    r'|\bshift handover\b'
-    r'|\bshift update\b',
+    r"\bpassdown\b"
+    r"|notes from \w+ shift"
+    r"|\bshift highlights\b"
+    r"|\bshift activities\b"
+    r"|\bshift notes\b"
+    r"|\bshift report\b"
+    r"|\bshift summary\b"
+    r"|\bshift handoff\b"
+    r"|\bshift handover\b"
+    r"|\bshift update\b",
     _re.IGNORECASE,
 )
-_EMAIL_RE = _re.compile(r'[\w.+\-]+@[\w.\-]+\.[a-z]{2,}', _re.IGNORECASE)
+_EMAIL_RE = _re.compile(r"[\w.+\-]+@[\w.\-]+\.[a-z]{2,}", _re.IGNORECASE)
 
 # Matches the author field of Microsoft 365 quarantine digest emails.
-_QUARANTINE_AUTHOR_RE = _re.compile(r'quarantine@.*\.microsoft\.com', _re.IGNORECASE)
+_QUARANTINE_AUTHOR_RE = _re.compile(r"quarantine@.*\.microsoft\.com", _re.IGNORECASE)
 
 # Extracts the quarantined sender line from the body, e.g. "Sender:   foo@bar.com"
-_QUARANTINE_SENDER_RE = _re.compile(r'Sender:\s+([\w.+\-]+@[\w.\-]+\.[a-z]{2,})', _re.IGNORECASE)
+_QUARANTINE_SENDER_RE = _re.compile(r"Sender:\s+([\w.+\-]+@[\w.\-]+\.[a-z]{2,})", _re.IGNORECASE)
 
 
 def extract_emails(text: str) -> list[str]:
@@ -464,14 +471,14 @@ def extract_emails(text: str) -> list[str]:
 
 
 # Matches RFC-style "Display Name <email@host>" pairs.
-_NAME_EMAIL_RE = _re.compile(r'([^<;,]+?)\s*<([\w.+\-]+@[\w.\-]+\.[a-z]{2,})>', _re.IGNORECASE)
+_NAME_EMAIL_RE = _re.compile(r"([^<;,]+?)\s*<([\w.+\-]+@[\w.\-]+\.[a-z]{2,})>", _re.IGNORECASE)
 
 
 # Distribution-list and group-alias patterns — if any address in To/CC matches,
 # the message is classified as broadcast regardless of recipient count.  Covers
 # common conventions like ``all-hands@``, ``dl-engineering@``, ``eng-team@``,
 # ``everyone@``, and dedicated list domains such as ``*@lists.company.com``.
-_DL_LOCAL_RE  = _re.compile(
+_DL_LOCAL_RE = _re.compile(
     r"^(?:all[-_.]|dl[-_.]|everyone$|team$|[\w.\-]+[-_.](?:team|list|group|all))",
     _re.IGNORECASE,
 )
@@ -526,8 +533,8 @@ def compute_recipient_scope(user_email: str, to_field: str, cc_field: str) -> di
     user_in_cc = ue in cc_emails if ue else False
 
     all_emails = set(to_emails) | set(cc_emails)
-    dls        = sorted(e for e in all_emails if _is_distribution_list(e))
-    total      = len(all_emails)
+    dls = sorted(e for e in all_emails if _is_distribution_list(e))
+    total = len(all_emails)
 
     if total == 0:
         scope = "direct"
@@ -546,11 +553,11 @@ def compute_recipient_scope(user_email: str, to_field: str, cc_field: str) -> di
         scope = "broadcast"
 
     return {
-        "scope":      scope,
-        "to_count":   len(to_emails),
-        "cc_count":   len(cc_emails),
-        "total":      total,
-        "dls":        dls,
+        "scope": scope,
+        "to_count": len(to_emails),
+        "cc_count": len(cc_emails),
+        "total": total,
+        "dls": dls,
         "user_in_to": user_in_to,
         "user_in_cc": user_in_cc,
     }
@@ -572,7 +579,7 @@ def _recipient_scope_hint(scope_info: dict, user_name: str) -> str:
 
     scope = scope_info["scope"]
     total = scope_info["total"]
-    dls   = scope_info["dls"]
+    dls = scope_info["dls"]
 
     if scope == "direct":
         body = (
@@ -628,7 +635,7 @@ def resolve_owner_email(owner: str, *header_fields: str) -> str | None:
     for field in header_fields:
         for match in _NAME_EMAIL_RE.finditer(field or ""):
             display_name = match.group(1).strip()
-            email        = match.group(2).lower()
+            email = match.group(2).lower()
             if owner_lower in display_name.lower():
                 return email
 
@@ -638,8 +645,9 @@ def resolve_owner_email(owner: str, *header_fields: str) -> str | None:
     # refactors from accidentally inverting that dependency).
     try:
         import db as _db
+
         matches = _db.find_contacts_by_name(owner_lower)
-    except Exception:                                       # pragma: no cover
+    except Exception:  # pragma: no cover
         return None
     for contact in matches:
         primary = contact.get("primary_email")
@@ -709,10 +717,7 @@ def _detect_passdown(title: str, body: str) -> bool:
     :return: ``True`` if any passdown pattern matches.
     :rtype: bool
     """
-    return bool(
-        _PASSDOWN_PATTERNS.search(title)
-        or _PASSDOWN_PATTERNS.search(body[:300])
-    )
+    return bool(_PASSDOWN_PATTERNS.search(title) or _PASSDOWN_PATTERNS.search(body[:300]))
 
 
 def _detect_quarantine_noise(item: "RawItem") -> bool:
@@ -752,9 +757,9 @@ def _detect_quarantine_noise(item: "RawItem") -> bool:
 
 
 _CAUTION_PATTERN = re.compile(
-    r'CAUTION:\s*This email originated from outside[^\n]*\n'
-    r'(?:Do not click[^\n]*\n)?'
-    r'(?:\n)*',
+    r"CAUTION:\s*This email originated from outside[^\n]*\n"
+    r"(?:Do not click[^\n]*\n)?"
+    r"(?:\n)*",
     re.IGNORECASE,
 )
 
@@ -777,7 +782,7 @@ def _strip_caution(body: str) -> str:
              stripped.
     :rtype: str
     """
-    return _CAUTION_PATTERN.sub('', body).lstrip()
+    return _CAUTION_PATTERN.sub("", body).lstrip()
 
 
 def _validated_project_tags(tags) -> list[str]:
@@ -864,6 +869,7 @@ def _strip_quoted_reply_tail(body: str) -> str:
     if not body:
         return body
     from signatures import _QUOTE_MARKERS  # deferred: signatures imports agent at module scope
+
     lines = body.splitlines()
     for idx, line in enumerate(lines):
         for marker in _QUOTE_MARKERS:
@@ -920,18 +926,18 @@ def build_prompt(item: RawItem, *, thread_todos: list[dict] | None = None) -> st
     :return: Fully formatted prompt string.
     :rtype: str
     """
-    to_field     = item.metadata.get("to", "")
-    cc_field     = item.metadata.get("cc", "")
-    is_replied   = bool(item.metadata.get("is_replied", False))
+    to_field = item.metadata.get("to", "")
+    cc_field = item.metadata.get("cc", "")
+    is_replied = bool(item.metadata.get("is_replied", False))
     is_forwarded = bool(item.metadata.get("is_forwarded", False))
-    replied_at   = item.metadata.get("replied_at")
-    _user_name   = config.USER_NAME or "the user"
+    replied_at = item.metadata.get("replied_at")
+    _user_name = config.USER_NAME or "the user"
 
     _sender_match = _match_sender(item)
     if _sender_match:
         sender_hint = (
             f"\n- Sender/recipient hint: past items from this sender or group "
-            f"have been tagged to project \"{_sender_match}\". "
+            f'have been tagged to project "{_sender_match}". '
             f"Use this as a signal but verify against the content."
         )
     else:
@@ -941,7 +947,7 @@ def build_prompt(item: RawItem, *, thread_todos: list[dict] | None = None) -> st
     if _manual_tag:
         manual_tag_hint = (
             f"\n- Manual project tag: the user has tagged this item to project "
-            f"\"{_manual_tag}\". Treat this as a strong signal for project_tag "
+            f'"{_manual_tag}". Treat this as a strong signal for project_tag '
             f"and hierarchy assignment. Include it in project_tags."
         )
     else:
@@ -964,8 +970,9 @@ def build_prompt(item: RawItem, *, thread_todos: list[dict] | None = None) -> st
     graph_hint = ""
     try:
         import graph as _graph
+
         ctx_items = _graph.get_context(item, max_n=4)
-        ctx_text  = _graph.format_context(ctx_items)
+        ctx_text = _graph.format_context(ctx_items)
         if ctx_text:
             graph_hint = f"\n- {ctx_text}"
     except Exception as e:
@@ -976,14 +983,15 @@ def build_prompt(item: RawItem, *, thread_todos: list[dict] | None = None) -> st
     if body_text:
         try:
             from embedder import embed, score_item
-            vector  = embed(body_text)
+
+            vector = embed(body_text)
             matches = score_item(vector, min_count=3)
             if matches:
                 top = matches[0]
                 if top["score"] > 0.75:
                     embedding_hint = (
                         f"\n- Embedding classifier hint: this item is semantically similar to "
-                        f"past items tagged to project \"{top['project']}\" "
+                        f'past items tagged to project "{top["project"]}" '
                         f"(category: {top['category']}, confidence: {top['score']:.2f}, "
                         f"based on {top['count']} training items). "
                         f"Use this as a strong signal but verify against content."
@@ -991,43 +999,41 @@ def build_prompt(item: RawItem, *, thread_todos: list[dict] | None = None) -> st
                 elif top["score"] > 0.55:
                     embedding_hint = (
                         f"\n- Embedding classifier hint: weak similarity to project "
-                        f"\"{top['project']}\" (score: {top['score']:.2f}). "
+                        f'"{top["project"]}" (score: {top["score"]:.2f}). '
                         f"Consider but do not rely on this signal."
                     )
         except Exception as e:
             log.warning("embedding score failed: %s", e)
 
-    scope_info          = compute_recipient_scope(config.USER_EMAIL or "", to_field, cc_field)
-    recipient_scope_hint = _recipient_scope_hint(
-        scope_info, config.USER_NAME or "the user"
-    )
+    scope_info = compute_recipient_scope(config.USER_EMAIL or "", to_field, cc_field)
+    recipient_scope_hint = _recipient_scope_hint(scope_info, config.USER_NAME or "the user")
     thread_todos_hint = _render_thread_todos_hint(thread_todos)
 
     return PROMPT.format(
-        source       = item.source,
-        title        = item.title,
-        author       = item.author,
-        timestamp    = item.timestamp,
-        body         = _clean_body_for_llm(item.body),
-        user_name    = config.USER_NAME or "the user",
-        user_email   = config.USER_EMAIL or "",
-        projects_ctx  = _projects_ctx(),
-        topics_ctx    = _topics_ctx(),
-        assignment_corrections_ctx = _assignment_corrections_ctx(),
-        priority_overrides_ctx     = _priority_overrides_ctx(),
-        task_ctx      = _task_ctx(),
-        approval_ctx  = _approval_ctx(),
-        fyi_ctx       = _fyi_ctx(),
-        noise_ctx     = _noise_ctx(),
-        to_field     = to_field,
-        cc_field     = cc_field,
-        sender_hint     = sender_hint,
-        replied_hint    = replied_hint,
-        manual_tag_hint = manual_tag_hint,
-        graph_hint      = graph_hint,
-        embedding_hint  = embedding_hint,
-        recipient_scope_hint = recipient_scope_hint,
-        thread_todos_hint = thread_todos_hint,
+        source=item.source,
+        title=item.title,
+        author=item.author,
+        timestamp=item.timestamp,
+        body=_clean_body_for_llm(item.body),
+        user_name=config.USER_NAME or "the user",
+        user_email=config.USER_EMAIL or "",
+        projects_ctx=_projects_ctx(),
+        topics_ctx=_topics_ctx(),
+        assignment_corrections_ctx=_assignment_corrections_ctx(),
+        priority_overrides_ctx=_priority_overrides_ctx(),
+        task_ctx=_task_ctx(),
+        approval_ctx=_approval_ctx(),
+        fyi_ctx=_fyi_ctx(),
+        noise_ctx=_noise_ctx(),
+        to_field=to_field,
+        cc_field=cc_field,
+        sender_hint=sender_hint,
+        replied_hint=replied_hint,
+        manual_tag_hint=manual_tag_hint,
+        graph_hint=graph_hint,
+        embedding_hint=embedding_hint,
+        recipient_scope_hint=recipient_scope_hint,
+        thread_todos_hint=thread_todos_hint,
     )
 
 
@@ -1070,9 +1076,9 @@ def build_analysis_from_llm_json(
 
     action_items = [
         ActionItem(
-            description = a.get("description", ""),
-            deadline    = a.get("deadline"),
-            owner       = a.get("owner", "me"),
+            description=a.get("description", ""),
+            deadline=a.get("deadline"),
+            owner=a.get("owner", "me"),
         )
         for a in data.get("action_items", [])
         if a.get("description")
@@ -1089,7 +1095,7 @@ def build_analysis_from_llm_json(
         if i.get("fact")
     ]
 
-    category  = data.get("category", "fyi")
+    category = data.get("category", "fyi")
     task_type = data.get("task_type")  # "reply" | "review" | None
 
     # Deterministic override: quarantine digest with unknown sender → always noise.
@@ -1102,46 +1108,48 @@ def build_analysis_from_llm_json(
     # Jira fallback — always surface open tickets even if the LLM returns sparse
     # output or assigns category=fyi.  Must run after the fyi-clear above.
     if item.source == "jira" and not action_items:
-        action_items = [ActionItem(
-            description = f"Work on: {item.title}",
-            deadline    = item.metadata.get("due"),
-            owner       = "me",
-        )]
+        action_items = [
+            ActionItem(
+                description=f"Work on: {item.title}",
+                deadline=item.metadata.get("due"),
+                owner="me",
+            )
+        ]
 
     return Analysis(
-        item_id           = item.item_id,
-        source            = item.source,
-        title             = item.title,
-        author            = item.author,
-        timestamp         = item.timestamp,
-        url               = item.url,
-        category          = category,
-        task_type         = task_type,
-        has_action        = bool(action_items),
-        priority          = data.get("priority", "medium"),
-        action_items      = action_items,
-        summary           = data.get("summary", item.title),
-        urgency_reason    = data.get("urgency_reason"),
-        hierarchy         = data.get("hierarchy", item.metadata.get("hierarchy", "general")),
-        is_passdown       = _detect_passdown(item.title, item.body) or bool(data.get("is_passdown", False)),
-        project_tag       = db.serialize_project_tags(
-                               _validated_project_tags(
-                                   data.get("project_tags")
-                                   or data.get("project_tag")
-                                   or item.metadata.get("project_tag")
-                               )
-                           ),
-        direction         = item.metadata.get("direction", "received"),
-        conversation_id   = item.metadata.get("conversation_id"),
-        conversation_topic = item.metadata.get("conversation_topic"),
-        goals             = [g for g in data.get("goals", []) if isinstance(g, str) and g],
-        key_dates         = [d for d in data.get("key_dates", []) if isinstance(d, dict)],
-        body_preview      = _strip_caution(item.body)[:2000],
-        to_field          = item.metadata.get("to", ""),
-        cc_field          = item.metadata.get("cc", ""),
-        is_replied        = bool(item.metadata.get("is_replied", False)),
-        replied_at        = item.metadata.get("replied_at"),
-        information_items = information_items,
+        item_id=item.item_id,
+        source=item.source,
+        title=item.title,
+        author=item.author,
+        timestamp=item.timestamp,
+        url=item.url,
+        category=category,
+        task_type=task_type,
+        has_action=bool(action_items),
+        priority=data.get("priority", "medium"),
+        action_items=action_items,
+        summary=data.get("summary", item.title),
+        urgency_reason=data.get("urgency_reason"),
+        hierarchy=data.get("hierarchy", item.metadata.get("hierarchy", "general")),
+        is_passdown=_detect_passdown(item.title, item.body) or bool(data.get("is_passdown", False)),
+        project_tag=db.serialize_project_tags(
+            _validated_project_tags(
+                data.get("project_tags")
+                or data.get("project_tag")
+                or item.metadata.get("project_tag")
+            )
+        ),
+        direction=item.metadata.get("direction", "received"),
+        conversation_id=item.metadata.get("conversation_id"),
+        conversation_topic=item.metadata.get("conversation_topic"),
+        goals=[g for g in data.get("goals", []) if isinstance(g, str) and g],
+        key_dates=[d for d in data.get("key_dates", []) if isinstance(d, dict)],
+        body_preview=_strip_caution(item.body)[:2000],
+        to_field=item.metadata.get("to", ""),
+        cc_field=item.metadata.get("cc", ""),
+        is_replied=bool(item.metadata.get("is_replied", False)),
+        replied_at=item.metadata.get("replied_at"),
+        information_items=information_items,
     )
 
 
@@ -1179,12 +1187,12 @@ def analyze(
     :rtype: Analysis
     :raises requests.HTTPError: If the Ollama API request fails.
     """
-    to_field     = item.metadata.get("to", "")
-    cc_field     = item.metadata.get("cc", "")
-    is_replied   = bool(item.metadata.get("is_replied", False))
+    to_field = item.metadata.get("to", "")
+    cc_field = item.metadata.get("cc", "")
+    is_replied = bool(item.metadata.get("is_replied", False))
     is_forwarded = bool(item.metadata.get("is_forwarded", False))
-    replied_at   = item.metadata.get("replied_at")
-    _user_name   = config.USER_NAME or "the user"
+    replied_at = item.metadata.get("replied_at")
+    _user_name = config.USER_NAME or "the user"
 
     # Build sender hint — tells the LLM which project this sender/group is
     # historically associated with, but does not override LLM classification.
@@ -1192,7 +1200,7 @@ def analyze(
     if _sender_match:
         sender_hint = (
             f"\n- Sender/recipient hint: past items from this sender or group "
-            f"have been tagged to project \"{_sender_match}\". "
+            f'have been tagged to project "{_sender_match}". '
             f"Use this as a signal but verify against the content."
         )
     else:
@@ -1204,7 +1212,7 @@ def analyze(
     if _manual_tag:
         manual_tag_hint = (
             f"\n- Manual project tag: the user has tagged this item to project "
-            f"\"{_manual_tag}\". Treat this as a strong signal for project_tag "
+            f'"{_manual_tag}". Treat this as a strong signal for project_tag '
             f"and hierarchy assignment. Include it in project_tags."
         )
     else:
@@ -1228,8 +1236,9 @@ def analyze(
     graph_hint = ""
     try:
         import graph as _graph
+
         ctx_items = _graph.get_context(item, max_n=4)
-        ctx_text  = _graph.format_context(ctx_items)
+        ctx_text = _graph.format_context(ctx_items)
         if ctx_text:
             graph_hint = f"\n- {ctx_text}"
     except Exception as e:
@@ -1240,14 +1249,15 @@ def analyze(
     if body_text:
         try:
             from embedder import embed, score_item
-            vector  = embed(body_text)
+
+            vector = embed(body_text)
             matches = score_item(vector, min_count=3)
             if matches:
                 top = matches[0]
                 if top["score"] > 0.75:
                     embedding_hint = (
                         f"\n- Embedding classifier hint: this item is semantically similar to "
-                        f"past items tagged to project \"{top['project']}\" "
+                        f'past items tagged to project "{top["project"]}" '
                         f"(category: {top['category']}, confidence: {top['score']:.2f}, "
                         f"based on {top['count']} training items). "
                         f"Use this as a strong signal but verify against content."
@@ -1255,44 +1265,47 @@ def analyze(
                 elif top["score"] > 0.55:
                     embedding_hint = (
                         f"\n- Embedding classifier hint: weak similarity to project "
-                        f"\"{top['project']}\" (score: {top['score']:.2f}). "
+                        f'"{top["project"]}" (score: {top["score"]:.2f}). '
                         f"Consider but do not rely on this signal."
                     )
         except Exception as e:
             log.warning("embedding score failed: %s", e)
 
-    scope_info          = compute_recipient_scope(config.USER_EMAIL or "", to_field, cc_field)
+    scope_info = compute_recipient_scope(config.USER_EMAIL or "", to_field, cc_field)
     recipient_scope_hint = _recipient_scope_hint(scope_info, _user_name)
-    thread_todos_hint    = _render_thread_todos_hint(thread_todos)
+    thread_todos_hint = _render_thread_todos_hint(thread_todos)
 
     text = llm.generate(
         PROMPT.format(
-            source       = item.source,
-            title        = item.title,
-            author       = item.author,
-            timestamp    = item.timestamp,
-            body         = _clean_body_for_llm(item.body),
-            user_name    = config.USER_NAME or "the user",
-            user_email   = config.USER_EMAIL or "",
-            projects_ctx  = _projects_ctx(),
-            topics_ctx    = _topics_ctx(),
-            assignment_corrections_ctx = _assignment_corrections_ctx(),
-            priority_overrides_ctx    = _priority_overrides_ctx(),
-            task_ctx      = _task_ctx(),
-            approval_ctx  = _approval_ctx(),
-            fyi_ctx       = _fyi_ctx(),
-            noise_ctx     = _noise_ctx(),
-            to_field     = to_field,
-            cc_field     = cc_field,
-            sender_hint     = sender_hint,
-            replied_hint    = replied_hint,
-            manual_tag_hint = manual_tag_hint,
-            graph_hint      = graph_hint,
-            embedding_hint  = embedding_hint,
-            recipient_scope_hint = recipient_scope_hint,
-            thread_todos_hint = thread_todos_hint,
+            source=item.source,
+            title=item.title,
+            author=item.author,
+            timestamp=item.timestamp,
+            body=_clean_body_for_llm(item.body),
+            user_name=config.USER_NAME or "the user",
+            user_email=config.USER_EMAIL or "",
+            projects_ctx=_projects_ctx(),
+            topics_ctx=_topics_ctx(),
+            assignment_corrections_ctx=_assignment_corrections_ctx(),
+            priority_overrides_ctx=_priority_overrides_ctx(),
+            task_ctx=_task_ctx(),
+            approval_ctx=_approval_ctx(),
+            fyi_ctx=_fyi_ctx(),
+            noise_ctx=_noise_ctx(),
+            to_field=to_field,
+            cc_field=cc_field,
+            sender_hint=sender_hint,
+            replied_hint=replied_hint,
+            manual_tag_hint=manual_tag_hint,
+            graph_hint=graph_hint,
+            embedding_hint=embedding_hint,
+            recipient_scope_hint=recipient_scope_hint,
+            thread_todos_hint=thread_todos_hint,
         ),
-        format="json", temperature=0.1, num_predict=768, timeout=90,
+        format="json",
+        temperature=0.1,
+        num_predict=768,
+        timeout=90,
         priority=priority,
     )
 

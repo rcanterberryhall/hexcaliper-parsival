@@ -9,6 +9,7 @@ scripts in ``/scripts``:
 
 Both sidecars POST directly to the ``/ingest`` endpoint.
 """
+
 import logging
 
 from models import RawItem

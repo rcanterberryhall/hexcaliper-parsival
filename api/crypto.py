@@ -26,6 +26,7 @@ Secret fields (shared with routers/connections.py)
 ─────────────────────────────────────────────────────────────────────────────
   SECRET_FIELDS = {"password", "client_secret", "token"}
 """
+
 import base64
 import hashlib
 import logging
@@ -45,10 +46,12 @@ def _get_fernet():
         return _fernet
     # Import here to avoid circular imports at module load time.
     import config
+
     key_str = config.CREDENTIALS_KEY
     if not key_str:
         return None
     from cryptography.fernet import Fernet
+
     # Derive a 32-byte Fernet key from the passphrase using SHA-256.
     # CREDENTIALS_KEY should be a strong random value (e.g. a UUID4 or 32 random
     # bytes encoded as hex).  SHA-256 is used as a key-derivation convenience —

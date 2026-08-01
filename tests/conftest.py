@@ -47,6 +47,7 @@ def clear_db():
     briefings_tbl.truncate()
     # Contacts tables don't have a TinyDB-compat proxy; wipe them directly.
     import db as _db
+
     _db.conn().execute("DELETE FROM contact_emails")
     _db.conn().execute("DELETE FROM contacts")
     _db.conn().execute("DELETE FROM lancellmot_aliases")

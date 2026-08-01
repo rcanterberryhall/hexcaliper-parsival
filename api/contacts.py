@@ -13,6 +13,7 @@ Signature parsing (extracting phone/title from email body footers) is a
 separate, larger effort and lives in its own follow-up issue — do not bundle
 it here.
 """
+
 from __future__ import annotations
 
 import logging
@@ -39,7 +40,7 @@ def parse_header_pairs(field: str) -> list[tuple[str, str]]:
 
     # 1. RFC-style "Name <addr>" pairs
     for match in _NAME_EMAIL_RE.finditer(field):
-        name  = match.group(1).strip().strip('"').strip("'")
+        name = match.group(1).strip().strip('"').strip("'")
         email = match.group(2).lower()
         if email in seen:
             continue
@@ -66,11 +67,11 @@ def scrape_item_headers(item: dict) -> int:
     """
     if not item:
         return 0
-    item_id   = item.get("item_id")
+    item_id = item.get("item_id")
     timestamp = item.get("timestamp")
 
     fields = (
-        item.get("author")   or "",
+        item.get("author") or "",
         item.get("to_field") or "",
         item.get("cc_field") or "",
     )
@@ -91,7 +92,7 @@ def scrape_item_headers(item: dict) -> int:
                     item_timestamp=timestamp,
                 )
                 touched += 1
-            except Exception as exc:                       # pragma: no cover
+            except Exception as exc:  # pragma: no cover
                 log.warning("contacts: failed to upsert %s: %s", email, exc)
     return touched
 
@@ -107,18 +108,19 @@ def rebuild_from_items(items: Iterable[dict] | None = None) -> dict:
     if items is None:
         items = db.get_all_items()
 
-    items_scanned    = 0
+    items_scanned = 0
     contacts_touched = 0
     for item in items:
-        items_scanned   += 1
+        items_scanned += 1
         contacts_touched += scrape_item_headers(item)
 
     log.info(
         "contacts: rebuild scanned %d items, touched %d header entries",
-        items_scanned, contacts_touched,
+        items_scanned,
+        contacts_touched,
     )
     return {
-        "items_scanned":    items_scanned,
+        "items_scanned": items_scanned,
         "contacts_touched": contacts_touched,
-        "total_contacts":   db.count_contacts(),
+        "total_contacts": db.count_contacts(),
     }

@@ -1140,10 +1140,6 @@ non-package neighbours and external services rather than sibling packages:
 - `is_cold_start() -> bool` — Return True when fewer than COLD_START_THRESHOLD actions are recorded.
 - `record_action(item_id: str, action_type: str) -> None` — Log a user interaction with an item.
 - `compute_score(item_embedding: list) -> float` — Return attention score in [0, 1].  Returns 0.5 on cold start or unavailability.
-  <details><summary>full docstring</summary>
-
-      
-  </details>
 - `get_why(item_embedding: list) -> str` — Return a human-readable explanation for the attention score.
 - `get_summary() -> dict` — Return a summary dict for the merLLM 'My Day' panel.
   <details><summary>full docstring</summary>
@@ -2042,10 +2038,6 @@ non-package neighbours and external services rather than sibling packages:
   else ``(False, None)``.
   </details>
 - `validate_rule(rule: dict) -> str | None` — Validate a single filter rule.  Returns an error string or None if valid.
-  <details><summary>full docstring</summary>
-
-      
-  </details>
 
 ### `api.orchestrator`
 *orchestrator.py — Scan, reanalyze, and ingest orchestration for Squire.*

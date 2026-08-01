@@ -36,6 +36,7 @@ Module-level singletons:
                          progress reporting via ``GET /scan/status``.
     ``_seed_job``      — Single-slot state dict for the seed background job.
 """
+
 import json
 import logging
 import secrets
@@ -114,6 +115,7 @@ except Exception as _exc:
 # Startup diagnostics: check Ollama reachability
 try:
     import requests as _req
+
     _r = _req.get(f"{config.OLLAMA_URL.rstrip('/generate')}/api/tags", timeout=5)
     _log.info("Ollama reachable (%d models)", len(_r.json().get("models", [])))
 except Exception as _exc:
@@ -140,10 +142,11 @@ if _startup_schedule:
 # These proxy objects expose a minimal TinyDB-compatible surface so existing
 # tests can use analyses.insert(), todos.get(doc_id=...), etc. without changes.
 
+
 class _QPredicate:
     def __init__(self, field: str, val):
         self.field = field
-        self.val   = val
+        self.val = val
 
     def __and__(self, other):
         return _QAndPredicate(self, other)
@@ -151,7 +154,7 @@ class _QPredicate:
 
 class _QAndPredicate:
     def __init__(self, left: _QPredicate, right: _QPredicate):
-        self.left  = left
+        self.left = left
         self.right = right
 
 
@@ -452,17 +455,18 @@ class _BriefingsProxy:
 
 
 # Expose as module-level names so tests can import them from app
-analyses       = _AnalysesProxy()
-todos          = _TodosProxy()
-intel_tbl      = _IntelProxy()
+analyses = _AnalysesProxy()
+todos = _TodosProxy()
+intel_tbl = _IntelProxy()
 situations_tbl = _SituationsProxy()
-settings_tbl   = _SettingsProxy()
-scan_logs      = _ScanLogsProxy()
+settings_tbl = _SettingsProxy()
+scan_logs = _ScanLogsProxy()
 embeddings_tbl = _EmbeddingsProxy()
-briefings_tbl  = _BriefingsProxy()
+briefings_tbl = _BriefingsProxy()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def get_user(request: Request) -> str:
     """Extract the authenticated user's email from the Cloudflare Access header.
@@ -491,17 +495,17 @@ def now_iso() -> str:
 # ── Scan state ────────────────────────────────────────────────────────────────
 
 scan_state: dict = {
-    "running":                     False,
-    "cancelled":                   False,
-    "progress":                    0,
-    "total":                       0,
-    "current_source":              "",
-    "current_item":                "",
-    "message":                     "idle",
-    "ingest_pending":              0,
-    "situations_pending":          0,
-    "total_items":                 0,
-    "completed_items":             0,
+    "running": False,
+    "cancelled": False,
+    "progress": 0,
+    "total": 0,
+    "current_source": "",
+    "current_item": "",
+    "message": "idle",
+    "ingest_pending": 0,
+    "situations_pending": 0,
+    "total_items": 0,
+    "completed_items": 0,
     "estimated_minutes_remaining": 0,
 }
 
@@ -536,7 +540,7 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
     :type reanalyze: bool
     """
     with db.lock:
-        existing              = db.get_item(a.item_id)
+        existing = db.get_item(a.item_id)
         existing_situation_id = (existing or {}).get("situation_id")
 
         # Before wiping todos on reanalyze, snapshot any manual assignment
@@ -547,7 +551,7 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
                 if t.get("assigned_to") or t.get("status") == "assigned":
                     todo_overrides[t["description"]] = {
                         "assigned_to": t.get("assigned_to"),
-                        "status":      t.get("status"),
+                        "status": t.get("status"),
                     }
             db.delete_todos_for_item(a.item_id)
             db.delete_intel_for_item(a.item_id)
@@ -557,70 +561,78 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
         # all existing non-null values are kept for backward compat.  On
         # reanalysis the LLM's fresh output wins EXCEPT for fields the user
         # manually changed via the UI (tracked in user_edited_fields).
-        user_edited = set(
-            json.loads(existing.get("user_edited_fields") or "[]")
-        ) if existing else set()
+        user_edited = (
+            set(json.loads(existing.get("user_edited_fields") or "[]")) if existing else set()
+        )
 
         if existing and not reanalyze:
             # Incremental scan — preserve all existing non-null values
-            priority    = existing.get("priority")    or a.priority
-            category    = existing.get("category")    or a.category
+            priority = existing.get("priority") or a.priority
+            category = existing.get("category") or a.category
             project_tag = existing.get("project_tag") or a.project_tag
             is_passdown = existing.get("is_passdown") or a.is_passdown
         else:
             # Reanalysis or first save — use fresh LLM values, but honour
             # any field the user has explicitly overridden.
-            priority    = existing.get("priority")    if "priority"    in user_edited else a.priority
-            category    = existing.get("category")    if "category"    in user_edited else a.category
-            project_tag = existing.get("project_tag") if "project_tag" in user_edited else (
-                              existing.get("project_tag") or a.project_tag if existing else a.project_tag
-                          )
-            is_passdown = existing.get("is_passdown") if "is_passdown" in user_edited else a.is_passdown
+            priority = existing.get("priority") if "priority" in user_edited else a.priority
+            category = existing.get("category") if "category" in user_edited else a.category
+            project_tag = (
+                existing.get("project_tag")
+                if "project_tag" in user_edited
+                else (existing.get("project_tag") or a.project_tag if existing else a.project_tag)
+            )
+            is_passdown = (
+                existing.get("is_passdown") if "is_passdown" in user_edited else a.is_passdown
+            )
 
         # Extract cross-source references
         refs = _correlator.extract_references(a.title, a.body_preview or "")
 
-        db.upsert_item({
-            "item_id":            a.item_id,
-            "source":             a.source,
-            "direction":          a.direction,
-            "title":              a.title,
-            "author":             a.author,
-            "timestamp":          a.timestamp,
-            "url":                a.url,
-            "has_action":         1 if a.has_action else 0,
-            "priority":           priority,
-            "category":           category,
-            "task_type":          a.task_type,
-            "summary":            a.summary,
-            "urgency":            a.urgency_reason,
-            "action_items":       json.dumps([
-                {"description": x.description, "deadline": x.deadline, "owner": x.owner}
-                for x in a.action_items
-            ]),
-            "hierarchy":          a.hierarchy,
-            "is_passdown":        1 if is_passdown else 0,
-            "project_tag":        project_tag,
-            "conversation_id":    a.conversation_id,
-            "conversation_topic": a.conversation_topic,
-            "goals":              json.dumps(a.goals),
-            "key_dates":          json.dumps(a.key_dates),
-            "information_items":  json.dumps(a.information_items),
-            "body_preview":       a.body_preview,
-            "to_field":           a.to_field,
-            "cc_field":           a.cc_field,
-            "is_replied":         1 if a.is_replied else 0,
-            "replied_at":         a.replied_at,
-            "processed_at":       now_iso(),
-            "situation_id":       existing_situation_id,
-            "references":         json.dumps(refs),
-        })
+        db.upsert_item(
+            {
+                "item_id": a.item_id,
+                "source": a.source,
+                "direction": a.direction,
+                "title": a.title,
+                "author": a.author,
+                "timestamp": a.timestamp,
+                "url": a.url,
+                "has_action": 1 if a.has_action else 0,
+                "priority": priority,
+                "category": category,
+                "task_type": a.task_type,
+                "summary": a.summary,
+                "urgency": a.urgency_reason,
+                "action_items": json.dumps(
+                    [
+                        {"description": x.description, "deadline": x.deadline, "owner": x.owner}
+                        for x in a.action_items
+                    ]
+                ),
+                "hierarchy": a.hierarchy,
+                "is_passdown": 1 if is_passdown else 0,
+                "project_tag": project_tag,
+                "conversation_id": a.conversation_id,
+                "conversation_topic": a.conversation_topic,
+                "goals": json.dumps(a.goals),
+                "key_dates": json.dumps(a.key_dates),
+                "information_items": json.dumps(a.information_items),
+                "body_preview": a.body_preview,
+                "to_field": a.to_field,
+                "cc_field": a.cc_field,
+                "is_replied": 1 if a.is_replied else 0,
+                "replied_at": a.replied_at,
+                "processed_at": now_iso(),
+                "situation_id": existing_situation_id,
+                "references": json.dumps(refs),
+            }
+        )
 
         # Scrape contacts from this item's headers (live ingestion).  Failures
         # are swallowed inside the helper so they cannot break analysis.
         item_for_contacts = {
-            "item_id":  a.item_id,
-            "author":   a.author,
+            "item_id": a.item_id,
+            "author": a.author,
             "to_field": a.to_field,
             "cc_field": a.cc_field,
             "timestamp": a.timestamp,
@@ -633,7 +645,7 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
         # helper is a no-op when it doesn't.  Failures are swallowed inside.
         try:
             _signatures.parse_item_body(item_for_contacts)
-        except Exception as exc:                                # pragma: no cover
+        except Exception as exc:  # pragma: no cover
             _log.warning("signatures: live parse failed for %s: %s", a.item_id, exc)
 
         if a.has_action and a.category != "fyi":
@@ -650,64 +662,74 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
                 # someone other than the user.  Resolve their email from
                 # To/CC fields; fall back to the owner name if not found.
                 auto_assigned_to = None
-                auto_status      = "open"
+                auto_status = "open"
                 if item.owner and item.owner.lower() not in ("me", config.USER_NAME.lower()):
                     resolved = resolve_owner_email(item.owner, a.to_field, a.cc_field)
                     auto_assigned_to = resolved or item.owner
-                    auto_status      = "assigned"
+                    auto_status = "assigned"
 
                 # Manual overrides (set by the user before a reanalyze) win.
-                override         = todo_overrides.get(item.description, {})
-                assigned_to      = override.get("assigned_to") or auto_assigned_to
-                status           = override.get("status")      or auto_status
+                override = todo_overrides.get(item.description, {})
+                assigned_to = override.get("assigned_to") or auto_assigned_to
+                status = override.get("status") or auto_status
 
-                db.insert_todo({
-                    "item_id":     a.item_id,
-                    "source":      a.source,
-                    "title":       a.title,
-                    "url":         a.url,
-                    "description": item.description,
-                    "deadline":    item.deadline,
-                    "owner":       item.owner,
-                    "priority":    a.priority,
-                    "done":        0,
-                    "status":      status,
-                    "assigned_to": assigned_to,
-                    "created_at":  now_iso(),
-                })
+                db.insert_todo(
+                    {
+                        "item_id": a.item_id,
+                        "source": a.source,
+                        "title": a.title,
+                        "url": a.url,
+                        "description": item.description,
+                        "deadline": item.deadline,
+                        "owner": item.owner,
+                        "priority": a.priority,
+                        "done": 0,
+                        "status": status,
+                        "assigned_to": assigned_to,
+                        "created_at": now_iso(),
+                    }
+                )
 
         for item in a.information_items:
             if not item.get("fact"):
                 continue
             if not db.intel_exists(a.item_id, item["fact"]):
-                db.insert_intel({
-                    "item_id":     a.item_id,
-                    "source":      a.source,
-                    "title":       a.title,
-                    "url":         a.url,
-                    "fact":        item["fact"],
-                    "relevance":   item.get("relevance", ""),
-                    "project_tag": a.project_tag,
-                    "priority":    a.priority,
-                    "timestamp":   a.timestamp,
-                    "dismissed":   0,
-                    "created_at":  now_iso(),
-                })
+                db.insert_intel(
+                    {
+                        "item_id": a.item_id,
+                        "source": a.source,
+                        "title": a.title,
+                        "url": a.url,
+                        "fact": item["fact"],
+                        "relevance": item.get("relevance", ""),
+                        "project_tag": a.project_tag,
+                        "priority": a.priority,
+                        "timestamp": a.timestamp,
+                        "dismissed": 0,
+                        "created_at": now_iso(),
+                    }
+                )
 
 
-orchestrator.init(scan_state, save_analysis_fn=_save_analysis,
-                  spawn_situation_fn=situation_manager._spawn_situation_task,
-                  generate_briefing_fn=lambda: _build_briefing())
+orchestrator.init(
+    scan_state,
+    save_analysis_fn=_save_analysis,
+    spawn_situation_fn=situation_manager._spawn_situation_task,
+    generate_briefing_fn=lambda: _build_briefing(),
+)
 
-seeder.init(scan_state,
-            run_scan_fn=orchestrator.run_scan,
-            run_reanalyze_fn=orchestrator.run_reanalyze,
-            maybe_form_situation_fn=situation_manager._maybe_form_situation)
+seeder.init(
+    scan_state,
+    run_scan_fn=orchestrator.run_scan,
+    run_reanalyze_fn=orchestrator.run_reanalyze,
+    maybe_form_situation_fn=situation_manager._maybe_form_situation,
+)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 _MASK = "•"
+
 
 def _mask(val: str) -> str:
     """Partially redact a credential string for safe display in the settings API.
@@ -743,24 +765,27 @@ def gpu_stats():
     """
     try:
         import pynvml
+
         pynvml.nvmlInit()
         count = pynvml.nvmlDeviceGetCount()
         gpus = []
         for i in range(count):
             handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            util   = pynvml.nvmlDeviceGetUtilizationRates(handle)
-            mem    = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            temp   = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
-            name   = pynvml.nvmlDeviceGetName(handle)
+            util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+            name = pynvml.nvmlDeviceGetName(handle)
             if isinstance(name, bytes):
                 name = name.decode()
-            gpus.append({
-                "name":        name,
-                "gpu_util":    util.gpu,
-                "mem_used":    mem.used,
-                "mem_total":   mem.total,
-                "temperature": temp,
-            })
+            gpus.append(
+                {
+                    "name": name,
+                    "gpu_util": util.gpu,
+                    "mem_used": mem.used,
+                    "mem_total": mem.total,
+                    "temperature": temp,
+                }
+            )
         return {"ok": True, "gpus": gpus}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -779,9 +804,9 @@ def system_stats():
     """
     mem = _psutil.virtual_memory()
     return {
-        "ok":        True,
-        "cpu_util":  int(_psutil.cpu_percent(interval=None)),
-        "mem_used":  mem.used,
+        "ok": True,
+        "cpu_util": int(_psutil.cpu_percent(interval=None)),
+        "mem_used": mem.used,
         "mem_total": mem.total,
     }
 
@@ -846,18 +871,19 @@ def get_projects():
     :rtype: list[dict]
     """
     from embedder import get_project_stats
+
     stats = get_project_stats()
     return [
         {
-            "name":               p.get("name", ""),
-            "keywords":           p.get("keywords", []),
-            "channels":           p.get("channels", []),
-            "learned_keywords":   p.get("learned_keywords", []),
-            "learned_count":      len(p.get("learned_keywords", [])),
-            "learned_senders":    p.get("learned_senders", []),
-            "sender_count":       len(p.get("learned_senders", [])),
-            "embedding_items":    stats.get(p.get("name", ""), {}).get("total_items", 0),
-            "embedding_subs":     stats.get(p.get("name", ""), {}).get("subdivisions", []),
+            "name": p.get("name", ""),
+            "keywords": p.get("keywords", []),
+            "channels": p.get("channels", []),
+            "learned_keywords": p.get("learned_keywords", []),
+            "learned_count": len(p.get("learned_keywords", [])),
+            "learned_senders": p.get("learned_senders", []),
+            "sender_count": len(p.get("learned_senders", [])),
+            "embedding_items": stats.get(p.get("name", ""), {}).get("total_items", 0),
+            "embedding_subs": stats.get(p.get("name", ""), {}).get("subdivisions", []),
         }
         for p in config.PROJECTS
     ]
@@ -868,6 +894,7 @@ class TagRequest(BaseModel):
 
     :ivar project: Exact name of the target project (must match a configured project).
     """
+
     project: str
 
 
@@ -894,7 +921,8 @@ def get_analysis(item_id: str):
     else:
         try:
             from embedder import get_item_vector
-            vec   = get_item_vector(item_id)
+
+            vec = get_item_vector(item_id)
             score = _attn.compute_score(vec or [])
         except Exception:
             score = 0.5
@@ -982,10 +1010,19 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail="No valid fields to update.")
     # Track which fields the user has manually edited so reanalyze preserves them.
     _editable_fields = {
-        "priority", "category", "project_tag", "is_passdown",
+        "priority",
+        "category",
+        "project_tag",
+        "is_passdown",
         # Issue #85 additions:
-        "title", "summary", "user_summary", "urgency", "body_preview",
-        "hierarchy", "goals", "key_dates",
+        "title",
+        "summary",
+        "user_summary",
+        "urgency",
+        "body_preview",
+        "hierarchy",
+        "goals",
+        "key_dates",
     }
     with db.lock:
         old_record = db.get_item(item_id)
@@ -1007,14 +1044,15 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
     if "project_tag" in updates:
         situation_manager._sync_situation_tags_for_item(item_id)
 
-    old_project  = old_record.get("project_tag")
+    old_project = old_record.get("project_tag")
     old_category = old_record.get("category")
-    new_project  = updates.get("project_tag", old_project)
+    new_project = updates.get("project_tag", old_project)
     new_category = updates.get("category", old_category)
-    project_changed  = "project_tag" in updates and new_project != old_project
+    project_changed = "project_tag" in updates and new_project != old_project
     category_changed = "category" in updates and new_category != old_category
 
     if (project_changed or category_changed) and (new_project or old_project):
+
         def relearn() -> None:
             """Update embeddings when a project tag or category changes on an existing item."""
             with db.lock:
@@ -1026,23 +1064,25 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
                 return
             try:
                 from embedder import embed, remove_item, update_project
+
                 vector = embed(body_text)
                 if new_project:
                     update_project(
-                        project_name = new_project,
-                        item_id      = item_id,
-                        vector       = vector,
-                        category     = new_category,
-                        hierarchy    = record.get("hierarchy", "general"),
-                        source       = record.get("source", ""),
-                        priority     = record.get("priority", "medium"),
-                        old_project  = old_project if project_changed else None,
-                        old_category = old_category if category_changed else None,
+                        project_name=new_project,
+                        item_id=item_id,
+                        vector=vector,
+                        category=new_category,
+                        hierarchy=record.get("hierarchy", "general"),
+                        source=record.get("source", ""),
+                        priority=record.get("priority", "medium"),
+                        old_project=old_project if project_changed else None,
+                        old_category=old_category if category_changed else None,
                     )
                 elif old_project:
                     remove_item(item_id, old_project)
             except Exception as e:
                 print(f"[patch] embedding update failed: {e}")
+
         background_tasks.add_task(relearn)
 
     # Record attention signal for project tagging
@@ -1053,15 +1093,13 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
     # picks it up on the next analysis (see agent.PRIORITY_OVERRIDES).
     old_priority = old_record.get("priority")
     new_priority = updates.get("priority")
-    if (
-        priority_reason
-        and "priority" in updates
-        and new_priority
-        and new_priority != old_priority
-    ):
+    if priority_reason and "priority" in updates and new_priority and new_priority != old_priority:
         background_tasks.add_task(
             _record_priority_override,
-            old_record, old_priority, new_priority, priority_reason,
+            old_record,
+            old_priority,
+            new_priority,
+            priority_reason,
         )
 
     return {"ok": True, **updates}
@@ -1085,24 +1123,28 @@ def _record_priority_override(
         with db.lock:
             saved = db.get_settings()
         overrides = list(saved.get("priority_overrides", []))
-        overrides.append({
-            "item_id":       record.get("item_id"),
-            "author":        record.get("author", ""),
-            "project_tag":   record.get("project_tag", ""),
-            "title":         (record.get("title") or "")[:160],
-            "llm_priority":  llm_priority,
-            "user_priority": user_priority,
-            "reason":        reason,
-            "created_at":    now_iso(),
-        })
+        overrides.append(
+            {
+                "item_id": record.get("item_id"),
+                "author": record.get("author", ""),
+                "project_tag": record.get("project_tag", ""),
+                "title": (record.get("title") or "")[:160],
+                "llm_priority": llm_priority,
+                "user_priority": user_priority,
+                "reason": reason,
+                "created_at": now_iso(),
+            }
+        )
         # Cap at 100 most recent overrides.
         overrides = overrides[-100:]
         saved["priority_overrides"] = overrides
         with db.lock:
             db.save_settings(saved)
         config.apply_overrides(saved)
-        print(f"[priority_override] {reason}: {llm_priority} -> {user_priority} "
-              f"({len(overrides)} total)")
+        print(
+            f"[priority_override] {reason}: {llm_priority} -> {user_priority} "
+            f"({len(overrides)} total)"
+        )
     except Exception as e:
         print(f"[priority_override] failed to record: {e}")
 
@@ -1148,18 +1190,21 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
 
         edited = set(json.loads(record.get("user_edited_fields") or "[]"))
         edited.add("project_tag")
-        db.update_item(item_id, {
-            "project_tag": new_tag_val,
-            "user_edited_fields": json.dumps(sorted(edited)),
-        })
+        db.update_item(
+            item_id,
+            {
+                "project_tag": new_tag_val,
+                "user_edited_fields": json.dumps(sorted(edited)),
+            },
+        )
         db.update_intel_project(item_id, new_tag_val)
     situation_manager._sync_situation_tags_for_item(item_id)
 
     def learn() -> None:
         """Extract keywords and senders from the tagged item and update project config."""
-        title        = record.get("title", "")
+        title = record.get("title", "")
         body_preview = record.get("body_preview", "") or record.get("summary", "")
-        keywords     = extract_keywords(project_name, title, body_preview)
+        keywords = extract_keywords(project_name, title, body_preview)
 
         # Collect sender and recipient email addresses from the stored record
         raw_senders: list[str] = []
@@ -1198,25 +1243,28 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
         config.apply_overrides(saved)
         kw_total = len(p.get("learned_keywords", []))
         sr_total = len(p.get("learned_senders", []))
-        print(f"[learn] {project_name}: +{len(keywords)} keywords ({kw_total} total), "
-              f"+{len(senders)} senders ({sr_total} total)")
+        print(
+            f"[learn] {project_name}: +{len(keywords)} keywords ({kw_total} total), "
+            f"+{len(senders)} senders ({sr_total} total)"
+        )
 
         # Embedding update
         body_text = record.get("body_preview", "") or record.get("summary", "")
         if body_text:
             try:
                 from embedder import embed, update_project
+
                 vector = embed(body_text)
                 update_project(
-                    project_name = project_name,
-                    item_id      = item_id,
-                    vector       = vector,
-                    category     = record.get("category", "fyi"),
-                    hierarchy    = record.get("hierarchy", "general"),
-                    source       = record.get("source", ""),
-                    priority     = record.get("priority", "medium"),
-                    old_project  = None,
-                    old_category = None,
+                    project_name=project_name,
+                    item_id=item_id,
+                    vector=vector,
+                    category=record.get("category", "fyi"),
+                    hierarchy=record.get("hierarchy", "general"),
+                    source=record.get("source", ""),
+                    priority=record.get("priority", "medium"),
+                    old_project=None,
+                    old_category=None,
                 )
             except Exception as e:
                 print(f"[learn] embedding update failed: {e}")
@@ -1226,10 +1274,10 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
 
 
 _CATEGORY_KEYWORD_FIELD = {
-    "noise":    "noise_keywords",
-    "task":     "task_keywords",
+    "noise": "noise_keywords",
+    "task": "task_keywords",
     "approval": "approval_keywords",
-    "fyi":      "fyi_keywords",
+    "fyi": "fyi_keywords",
 }
 
 
@@ -1239,9 +1287,9 @@ def _learn_keywords_for_category(record: dict, category: str) -> None:
     if not settings_field:
         return
 
-    title        = record.get("title", "")
+    title = record.get("title", "")
     body_preview = record.get("body_preview", "") or record.get("summary", "")
-    keywords     = extract_keywords(category, title, body_preview)
+    keywords = extract_keywords(category, title, body_preview)
     if not keywords:
         return
 
@@ -1294,6 +1342,7 @@ def mark_noise(item_id: str, background_tasks: BackgroundTasks):
         repo = (record.get("metadata") or {}).get("repo") or ""
         if isinstance(record.get("metadata"), str):
             import json as _json
+
             try:
                 repo = _json.loads(record["metadata"]).get("repo", "")
             except Exception:
@@ -1326,26 +1375,26 @@ def attention_summary():
     and overdue follow-up count.
     """
     from datetime import datetime
+
     today = datetime.now(UTC).date().isoformat()
 
     active_situations = db.get_active_situations()
     overdue_count = sum(
-        1 for s in active_situations
-        if s.get("follow_up_date") and s["follow_up_date"] < today
+        1 for s in active_situations if s.get("follow_up_date") and s["follow_up_date"] < today
     )
     new_investigating = sum(
-        1 for s in active_situations
-        if s.get("lifecycle_status") in ("new", "investigating")
+        1 for s in active_situations if s.get("lifecycle_status") in ("new", "investigating")
     )
 
     summary = _attn.get_summary()
-    summary["active_situations"]    = len(active_situations)
-    summary["new_investigating"]    = new_investigating
-    summary["overdue_followups"]    = overdue_count
+    summary["active_situations"] = len(active_situations)
+    summary["new_investigating"] = new_investigating
+    summary["overdue_followups"] = overdue_count
     return summary
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
+
 
 @app.get("/settings")
 def get_settings():
@@ -1358,31 +1407,31 @@ def get_settings():
     :rtype: dict
     """
     return {
-        "ollama_url":           config.OLLAMA_URL,
-        "ollama_model":         config.OLLAMA_MODEL,
-        "escalation_provider":  config.ESCALATION_PROVIDER,
-        "escalation_model":     config.ESCALATION_MODEL,
-        "escalation_api_key":   _mask(config.ESCALATION_API_KEY),
-        "escalation_api_url":   config.ESCALATION_API_URL,
-        "cf_client_id":         _mask(config.CF_CLIENT_ID),
-        "cf_client_secret":     _mask(config.CF_CLIENT_SECRET),
-        "slack_client_id":      config.SLACK_CLIENT_ID,
-        "slack_client_secret":  _mask(config.SLACK_CLIENT_SECRET),
-        "github_pat":           _mask(config.GITHUB_PAT),
-        "github_username":      config.GITHUB_USERNAME,
-        "jira_email":           config.JIRA_EMAIL,
-        "jira_token":           _mask(config.JIRA_TOKEN),
-        "jira_domain":          config.JIRA_DOMAIN,
-        "jira_jql":             config.JIRA_JQL,
-        "lookback_hours":       config.LOOKBACK_HOURS,
-        "user_name":            config.USER_NAME,
-        "user_email":           config.USER_EMAIL,
-        "focus_topics":         ", ".join(config.FOCUS_TOPICS),
-        "projects":             config.PROJECTS,
-        "noise_keywords":       config.NOISE_KEYWORDS,
-        "scan_schedule":        (db.get_settings() or {}).get("scan_schedule", {}),
-        "noise_filters":        (db.get_settings() or {}).get("noise_filters", []),
-        "warnings":             config.validate(),
+        "ollama_url": config.OLLAMA_URL,
+        "ollama_model": config.OLLAMA_MODEL,
+        "escalation_provider": config.ESCALATION_PROVIDER,
+        "escalation_model": config.ESCALATION_MODEL,
+        "escalation_api_key": _mask(config.ESCALATION_API_KEY),
+        "escalation_api_url": config.ESCALATION_API_URL,
+        "cf_client_id": _mask(config.CF_CLIENT_ID),
+        "cf_client_secret": _mask(config.CF_CLIENT_SECRET),
+        "slack_client_id": config.SLACK_CLIENT_ID,
+        "slack_client_secret": _mask(config.SLACK_CLIENT_SECRET),
+        "github_pat": _mask(config.GITHUB_PAT),
+        "github_username": config.GITHUB_USERNAME,
+        "jira_email": config.JIRA_EMAIL,
+        "jira_token": _mask(config.JIRA_TOKEN),
+        "jira_domain": config.JIRA_DOMAIN,
+        "jira_jql": config.JIRA_JQL,
+        "lookback_hours": config.LOOKBACK_HOURS,
+        "user_name": config.USER_NAME,
+        "user_email": config.USER_EMAIL,
+        "focus_topics": ", ".join(config.FOCUS_TOPICS),
+        "projects": config.PROJECTS,
+        "noise_keywords": config.NOISE_KEYWORDS,
+        "scan_schedule": (db.get_settings() or {}).get("scan_schedule", {}),
+        "noise_filters": (db.get_settings() or {}).get("noise_filters", []),
+        "warnings": config.validate(),
     }
 
 
@@ -1414,10 +1463,14 @@ def save_settings(body: dict):
             _log.debug("settings key %r skipped (contains mask)", k)
 
     new_project_names = {p.get("name") for p in existing.get("projects", [])}
-    removed_projects  = old_project_names - new_project_names
+    removed_projects = old_project_names - new_project_names
 
-    _log.info("save_settings: old_projects=%s new_projects=%s removed=%s",
-              old_project_names, new_project_names, removed_projects)
+    _log.info(
+        "save_settings: old_projects=%s new_projects=%s removed=%s",
+        old_project_names,
+        new_project_names,
+        removed_projects,
+    )
 
     with db.lock:
         db.save_settings(existing)
@@ -1425,10 +1478,14 @@ def save_settings(body: dict):
             for name in removed_projects:
                 db.update_items_by_project(name, {"project_tag": None})
                 # Clear from intel rows too
-                for row in db.conn().execute(
-                    "SELECT id, project_tag FROM intel WHERE project_tag = ? OR project_tag LIKE ?",
-                    (name, f'%"{name}"%'),
-                ).fetchall():
+                for row in (
+                    db.conn()
+                    .execute(
+                        "SELECT id, project_tag FROM intel WHERE project_tag = ? OR project_tag LIKE ?",
+                        (name, f'%"{name}"%'),
+                    )
+                    .fetchall()
+                ):
                     tags = db.parse_project_tags(row["project_tag"])
                     tags = [t for t in tags if t != name]
                     db.conn().execute(
@@ -1504,13 +1561,12 @@ def delete_noise_filter(index: int):
 def count_filtered_items():
     """Return the number of items stored with category='filtered'."""
     with db.lock:
-        n = db.conn().execute(
-            "SELECT COUNT(*) FROM items WHERE category='filtered'"
-        ).fetchone()[0]
+        n = db.conn().execute("SELECT COUNT(*) FROM items WHERE category='filtered'").fetchone()[0]
     return {"count": n}
 
 
 # ── Ingest (POST target for host sidecar scripts) ─────────────────────────────
+
 
 class IngestRequest(BaseModel):
     """Request body for ``POST /ingest``.
@@ -1518,6 +1574,7 @@ class IngestRequest(BaseModel):
     :ivar items: List of raw item dicts.  Each dict must have an ``item_id``
                  key; all other fields correspond to ``RawItem`` fields.
     """
+
     items: list[dict]
 
 
@@ -1545,16 +1602,18 @@ def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         if iid not in fresh_ids or iid in seen:
             continue
         seen.add(iid)
-        raw.append(RawItem(
-            source    = i.get("source", "outlook"),
-            item_id   = iid,
-            title     = i.get("title", ""),
-            body      = i.get("body", ""),
-            url       = i.get("url", ""),
-            author    = i.get("author", ""),
-            timestamp = i.get("timestamp", now_iso()),
-            metadata  = i.get("metadata", {}),
-        ))
+        raw.append(
+            RawItem(
+                source=i.get("source", "outlook"),
+                item_id=iid,
+                title=i.get("title", ""),
+                body=i.get("body", ""),
+                url=i.get("url", ""),
+                author=i.get("author", ""),
+                timestamp=i.get("timestamp", now_iso()),
+                metadata=i.get("metadata", {}),
+            )
+        )
 
     if raw:
         background_tasks.add_task(orchestrator.process_ingest_items, raw)
@@ -1564,12 +1623,14 @@ def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
 
 # ── Scan ──────────────────────────────────────────────────────────────────────
 
+
 class ScanRequest(BaseModel):
     """Request body for ``POST /scan``.
 
     :ivar sources: Connector names to fetch from.  Defaults to all four
                    standard connectors.
     """
+
     sources: list[str] = ["slack", "github", "jira", "outlook"]
 
 
@@ -1654,11 +1715,12 @@ def reanalyze_count():
 
 # ── Todos ─────────────────────────────────────────────────────────────────────
 
+
 @app.get("/todos")
 def get_todos(
-    source:   str | None = None,
+    source: str | None = None,
     priority: str | None = None,
-    done:     bool          = False,
+    done: bool = False,
 ):
     """Return action-item todos, optionally filtered and sorted by priority.
 
@@ -1707,15 +1769,15 @@ def create_todo(body: dict):
     now = datetime.now(UTC).isoformat()
     data = {
         "description": description,
-        "priority":    priority,
-        "is_manual":   1,
-        "done":        0,
-        "status":      "open",
-        "created_at":  now,
-        "source":      "manual",
-        "title":       "",
-        "url":         "",
-        "owner":       "me",
+        "priority": priority,
+        "is_manual": 1,
+        "done": 0,
+        "status": "open",
+        "created_at": now,
+        "source": "manual",
+        "title": "",
+        "url": "",
+        "owner": "me",
     }
     if body.get("deadline"):
         data["deadline"] = body["deadline"]
@@ -1727,9 +1789,9 @@ def create_todo(body: dict):
         with db.lock:
             item = db.get_item(linked_item_id)
         if item:
-            data["source"]      = item.get("source", "manual")
-            data["title"]       = item.get("title", "")
-            data["url"]         = item.get("url", "")
+            data["source"] = item.get("source", "manual")
+            data["title"] = item.get("title", "")
+            data["url"] = item.get("url", "")
             data["project_tag"] = data.get("project_tag") or item.get("project_tag")
         with db.lock:
             doc_id = db.insert_todo(data)
@@ -1741,27 +1803,29 @@ def create_todo(body: dict):
     with db.lock:
         doc_id = db.insert_todo(data)
         new_item_id = f"manual_{doc_id}"
-        db.upsert_item({
-            "item_id":      new_item_id,
-            "source":       "manual",
-            "direction":    "received",
-            "title":        description[:200],
-            "author":       "",
-            "timestamp":    now,
-            "url":          "",
-            "has_action":   1,
-            "priority":     priority,
-            "category":     "task",
-            "summary":      "",
-            "action_items": "[]",
-            "hierarchy":    "general",
-            "project_tag":  data.get("project_tag"),
-            "goals":        "[]",
-            "key_dates":    "[]",
-            "information_items": "[]",
-            "body_preview": "",
-            "references":   "[]",
-        })
+        db.upsert_item(
+            {
+                "item_id": new_item_id,
+                "source": "manual",
+                "direction": "received",
+                "title": description[:200],
+                "author": "",
+                "timestamp": now,
+                "url": "",
+                "has_action": 1,
+                "priority": priority,
+                "category": "task",
+                "summary": "",
+                "action_items": "[]",
+                "hierarchy": "general",
+                "project_tag": data.get("project_tag"),
+                "goals": "[]",
+                "key_dates": "[]",
+                "information_items": "[]",
+                "body_preview": "",
+                "references": "[]",
+            }
+        )
         db.update_todo(doc_id, {"item_id": new_item_id})
     return {"ok": True, "doc_id": doc_id, "item_id": new_item_id}
 
@@ -1793,10 +1857,10 @@ def patch_todo(doc_id: int, body: dict):
     updates = {}
     if "status" in body and body["status"] in ("open", "done", "assigned"):
         updates["status"] = body["status"]
-        updates["done"]   = 1 if body["status"] == "done" else 0
+        updates["done"] = 1 if body["status"] == "done" else 0
     elif "done" in body:
         done = bool(body["done"])
-        updates["done"]   = 1 if done else 0
+        updates["done"] = 1 if done else 0
         updates["status"] = "done" if done else "open"
     if "assigned_to" in body:
         updates["assigned_to"] = body["assigned_to"] or None
@@ -1851,11 +1915,12 @@ def delete_todo(doc_id: int):
 
 # ── Intel ──────────────────────────────────────────────────────────────────────
 
+
 @app.get("/intel")
 def get_intel(
-    source:             str | None = None,
-    project:            str | None = None,
-    include_dismissed:  bool          = False,
+    source: str | None = None,
+    project: str | None = None,
+    include_dismissed: bool = False,
 ):
     """Return intel (information) items sorted by timestamp descending.
 
@@ -1907,6 +1972,7 @@ def patch_intel(doc_id: int, body: dict):
 
 # ── Briefing ──────────────────────────────────────────────────────────────────
 
+
 def _build_briefing(*, full: bool = False) -> dict:
     """Generate a project-status briefing using the LLM.
 
@@ -1919,14 +1985,16 @@ def _build_briefing(*, full: bool = False) -> dict:
     :rtype: dict
     """
     with db.lock:
-        last        = db.get_briefing()
-        all_intel   = db.get_all_intel(dismissed=False)
-        all_todos   = db.get_todos(done=False)
-        all_sits    = db.get_all_situations(include_dismissed=False)
-        all_items   = db.get_all_items()
+        last = db.get_briefing()
+        all_intel = db.get_all_intel(dismissed=False)
+        all_todos = db.get_todos(done=False)
+        all_sits = db.get_all_situations(include_dismissed=False)
+        all_items = db.get_all_items()
 
-    cutoff = "1970-01-01T00:00:00+00:00" if full else (
-        last["generated_at"] if last else "1970-01-01T00:00:00+00:00"
+    cutoff = (
+        "1970-01-01T00:00:00+00:00"
+        if full
+        else (last["generated_at"] if last else "1970-01-01T00:00:00+00:00")
     )
 
     # Collect project tags with activity since last briefing.
@@ -1957,45 +2025,77 @@ def _build_briefing(*, full: bool = False) -> dict:
 
     sections = []
     for project in sorted(active_projects):
-        intel_facts  = [i["fact"] for i in all_intel    if project in db.parse_project_tags(i.get("project_tag"))]
-        sit_lines    = [f"{s['title']} ({s.get('status','')}"
-                        f"{' — score '+str(round(s['score'],1)) if s.get('score') else ''})"
-                        for s in all_sits if project in db.parse_project_tags(s.get("project_tag"))]
-        item_ids     = {a["item_id"] for a in all_items if db.item_has_project(a, project)}
-        todo_descs   = [t["description"] for t in all_todos if t.get("item_id") in item_ids]
-        sit_refs     = [{"situation_id": s["situation_id"], "title": s["title"]}
-                        for s in all_sits if project in db.parse_project_tags(s.get("project_tag"))]
-        todo_refs    = [{"doc_id": t["id"], "description": t["description"],
-                         "priority": t.get("priority","medium")}
-                        for t in all_todos if t.get("item_id") in item_ids]
+        intel_facts = [
+            i["fact"] for i in all_intel if project in db.parse_project_tags(i.get("project_tag"))
+        ]
+        sit_lines = [
+            f"{s['title']} ({s.get('status', '')}"
+            f"{' — score ' + str(round(s['score'], 1)) if s.get('score') else ''})"
+            for s in all_sits
+            if project in db.parse_project_tags(s.get("project_tag"))
+        ]
+        item_ids = {a["item_id"] for a in all_items if db.item_has_project(a, project)}
+        todo_descs = [t["description"] for t in all_todos if t.get("item_id") in item_ids]
+        sit_refs = [
+            {"situation_id": s["situation_id"], "title": s["title"]}
+            for s in all_sits
+            if project in db.parse_project_tags(s.get("project_tag"))
+        ]
+        todo_refs = [
+            {
+                "doc_id": t["id"],
+                "description": t["description"],
+                "priority": t.get("priority", "medium"),
+            }
+            for t in all_todos
+            if t.get("item_id") in item_ids
+        ]
 
         summary = generate_project_briefing(project, intel_facts, sit_lines, todo_descs)
-        sections.append({
-            "project":    project,
-            "summary":    summary,
-            "situations": sit_refs,
-            "todos":      todo_refs,
-        })
+        sections.append(
+            {
+                "project": project,
+                "summary": summary,
+                "situations": sit_refs,
+                "todos": todo_refs,
+            }
+        )
 
     # Untagged pool — only if active.
     if has_untagged:
         untagged_items = {a["item_id"] for a in all_items if not db.item_has_any_project(a)}
-        intel_facts  = [i["fact"] for i in all_intel  if not db.parse_project_tags(i.get("project_tag"))]
-        sit_lines    = [f"{s['title']} ({s.get('status','')})"
-                        for s in all_sits if not db.parse_project_tags(s.get("project_tag"))]
-        todo_descs   = [t["description"] for t in all_todos if t.get("item_id") in untagged_items]
-        sit_refs     = [{"situation_id": s["situation_id"], "title": s["title"]}
-                        for s in all_sits if not db.parse_project_tags(s.get("project_tag"))]
-        todo_refs    = [{"doc_id": t["id"], "description": t["description"],
-                         "priority": t.get("priority","medium")}
-                        for t in all_todos if t.get("item_id") in untagged_items]
+        intel_facts = [
+            i["fact"] for i in all_intel if not db.parse_project_tags(i.get("project_tag"))
+        ]
+        sit_lines = [
+            f"{s['title']} ({s.get('status', '')})"
+            for s in all_sits
+            if not db.parse_project_tags(s.get("project_tag"))
+        ]
+        todo_descs = [t["description"] for t in all_todos if t.get("item_id") in untagged_items]
+        sit_refs = [
+            {"situation_id": s["situation_id"], "title": s["title"]}
+            for s in all_sits
+            if not db.parse_project_tags(s.get("project_tag"))
+        ]
+        todo_refs = [
+            {
+                "doc_id": t["id"],
+                "description": t["description"],
+                "priority": t.get("priority", "medium"),
+            }
+            for t in all_todos
+            if t.get("item_id") in untagged_items
+        ]
         summary = generate_project_briefing("General", intel_facts, sit_lines, todo_descs)
-        sections.append({
-            "project":    None,
-            "summary":    summary,
-            "situations": sit_refs,
-            "todos":      todo_refs,
-        })
+        sections.append(
+            {
+                "project": None,
+                "summary": summary,
+                "situations": sit_refs,
+                "todos": todo_refs,
+            }
+        )
 
     return {"sections": sections}
 
@@ -2019,6 +2119,7 @@ def generate_briefing(background_tasks: BackgroundTasks):
     :return: ``{"ok": True}``
     :rtype: dict
     """
+
     def _run():
         try:
             content = _build_briefing(full=True)
@@ -2035,6 +2136,7 @@ def generate_briefing(background_tasks: BackgroundTasks):
 
 
 # ── Passdown generator ───────────────────────────────────────────────────────
+
 
 def _build_passdown(hours: int = 12) -> dict:
     """Build a structured shift-handoff passdown from recent activity.
@@ -2056,89 +2158,104 @@ def _build_passdown(hours: int = 12) -> dict:
              ``{title, kind, items}``) and ``html`` (email-ready HTML).
     """
     from datetime import datetime, timedelta
+
     cutoff_dt = datetime.now(UTC) - timedelta(hours=max(1, int(hours)))
-    cutoff    = cutoff_dt.isoformat()
+    cutoff = cutoff_dt.isoformat()
 
     with db.lock:
         todos_open = db.get_todos(done=False)
-        sits       = db.get_all_situations(include_dismissed=False)
-        items      = db.get_all_items()
+        sits = db.get_all_situations(include_dismissed=False)
+        items = db.get_all_items()
 
     # ── Open action items (top 15 by priority) ────────────────────────────────
-    open_actions = [{
-        "description": t.get("description", ""),
-        "priority":    t.get("priority", "medium"),
-        "deadline":    t.get("deadline"),
-        "owner":       t.get("owner") or "me",
-        "project_tag": t.get("project_tag") or "",
-    } for t in todos_open[:15]]
+    open_actions = [
+        {
+            "description": t.get("description", ""),
+            "priority": t.get("priority", "medium"),
+            "deadline": t.get("deadline"),
+            "owner": t.get("owner") or "me",
+            "project_tag": t.get("project_tag") or "",
+        }
+        for t in todos_open[:15]
+    ]
 
     # ── Active situations (by score, cap 10) ──────────────────────────────────
     active_sits = sorted(
         [s for s in sits if s.get("status") not in ("resolved", "dismissed")],
         key=lambda s: -(s.get("score") or 0.0),
     )[:10]
-    active_situations = [{
-        "title":       s.get("title", ""),
-        "status":      s.get("status", ""),
-        "score":       round(s.get("score") or 0.0, 1),
-        "project_tag": s.get("project_tag") or "",
-    } for s in active_sits]
+    active_situations = [
+        {
+            "title": s.get("title", ""),
+            "status": s.get("status", ""),
+            "score": round(s.get("score") or 0.0, 1),
+            "project_tag": s.get("project_tag") or "",
+        }
+        for s in active_sits
+    ]
 
     # ── Upcoming deadlines (todos with deadline set, chronological) ───────────
     with_deadlines = [t for t in todos_open if t.get("deadline")]
     with_deadlines.sort(key=lambda t: t["deadline"])
-    upcoming_deadlines = [{
-        "description": t.get("description", ""),
-        "deadline":    t.get("deadline"),
-        "priority":    t.get("priority", "medium"),
-    } for t in with_deadlines[:10]]
+    upcoming_deadlines = [
+        {
+            "description": t.get("description", ""),
+            "deadline": t.get("deadline"),
+            "priority": t.get("priority", "medium"),
+        }
+        for t in with_deadlines[:10]
+    ]
 
     # ── Recent high-priority items (last N hours) ─────────────────────────────
     recent_hi = [
-        a for a in items
+        a
+        for a in items
         if (a.get("processed_at") or "") >= cutoff
         and (a.get("priority") == "high" or a.get("category") == "task")
         and a.get("category") != "noise"
     ]
     recent_hi.sort(key=lambda a: a.get("processed_at") or "", reverse=True)
-    recent_high_priority = [{
-        "title":       a.get("title", "")[:140],
-        "author":      a.get("author", ""),
-        "priority":    a.get("priority", "medium"),
-        "category":    a.get("category", ""),
-        "summary":     a.get("summary", ""),
-        "source":      a.get("source", ""),
-        "url":         a.get("url", ""),
-    } for a in recent_hi[:10]]
+    recent_high_priority = [
+        {
+            "title": a.get("title", "")[:140],
+            "author": a.get("author", ""),
+            "priority": a.get("priority", "medium"),
+            "category": a.get("category", ""),
+            "summary": a.get("summary", ""),
+            "source": a.get("source", ""),
+            "url": a.get("url", ""),
+        }
+        for a in recent_hi[:10]
+    ]
 
     # ── Recently replied items (last N hours) ─────────────────────────────────
-    recently_replied_items = [
-        a for a in items if (a.get("replied_at") or "") >= cutoff
-    ]
+    recently_replied_items = [a for a in items if (a.get("replied_at") or "") >= cutoff]
     recently_replied_items.sort(key=lambda a: a.get("replied_at") or "", reverse=True)
-    recently_replied = [{
-        "title":     a.get("title", "")[:140],
-        "replied_at": a.get("replied_at"),
-        "source":    a.get("source", ""),
-        "author":    a.get("author", ""),
-    } for a in recently_replied_items[:10]]
+    recently_replied = [
+        {
+            "title": a.get("title", "")[:140],
+            "replied_at": a.get("replied_at"),
+            "source": a.get("source", ""),
+            "author": a.get("author", ""),
+        }
+        for a in recently_replied_items[:10]
+    ]
 
     sections = [
-        {"title": "Open Action Items",        "kind": "actions",    "items": open_actions},
-        {"title": "Active Situations",        "kind": "situations", "items": active_situations},
-        {"title": "Upcoming Deadlines",       "kind": "deadlines",  "items": upcoming_deadlines},
-        {"title": "Recent High-Priority",     "kind": "items",      "items": recent_high_priority},
-        {"title": "Recently Replied",         "kind": "replied",    "items": recently_replied},
+        {"title": "Open Action Items", "kind": "actions", "items": open_actions},
+        {"title": "Active Situations", "kind": "situations", "items": active_situations},
+        {"title": "Upcoming Deadlines", "kind": "deadlines", "items": upcoming_deadlines},
+        {"title": "Recent High-Priority", "kind": "items", "items": recent_high_priority},
+        {"title": "Recently Replied", "kind": "replied", "items": recently_replied},
     ]
 
     generated_at = now_iso()
     html = _render_passdown_html(sections, generated_at, hours)
     return {
         "generated_at": generated_at,
-        "hours":        hours,
-        "sections":     sections,
-        "html":         html,
+        "hours": hours,
+        "sections": sections,
+        "html": html,
     }
 
 
@@ -2150,14 +2267,15 @@ def _render_passdown_html(sections: list[dict], generated_at: str, hours: int) -
     sending — this is a suggestion, not a final message.
     """
     from html import escape as _esc
+
     user = config.USER_NAME or "the team"
     parts: list[str] = []
     parts.append(
         f'<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222;max-width:760px">'
         f'<h2 style="margin:0 0 4px 0">Shift passdown</h2>'
         f'<div style="font-size:12px;color:#666;margin-bottom:14px">'
-        f'From {_esc(user)} — generated {_esc(generated_at)} — window: last {int(hours)}h'
-        f'</div>'
+        f"From {_esc(user)} — generated {_esc(generated_at)} — window: last {int(hours)}h"
+        f"</div>"
     )
 
     def _li(inner: str) -> str:
@@ -2169,59 +2287,97 @@ def _render_passdown_html(sections: list[dict], generated_at: str, hours: int) -
             continue
         parts.append(
             f'<h3 style="margin:16px 0 4px 0;border-bottom:1px solid #ddd;padding-bottom:2px">'
-            f'{_esc(sec["title"])}</h3>'
+            f"{_esc(sec['title'])}</h3>"
         )
         parts.append('<ul style="margin:4px 0 10px 18px;padding:0">')
         kind = sec.get("kind")
         for it in items:
             if kind == "actions":
                 meta = []
-                if it.get("priority"):    meta.append(_esc(it["priority"]))
-                if it.get("owner"):       meta.append(f'owner: {_esc(it["owner"])}')
-                if it.get("deadline"):    meta.append(f'due {_esc(str(it["deadline"]))}')
-                if it.get("project_tag"): meta.append(_esc(str(it["project_tag"])))
-                suffix = f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>' if meta else ""
-                parts.append(_li(f'{_esc(it.get("description",""))}{suffix}'))
+                if it.get("priority"):
+                    meta.append(_esc(it["priority"]))
+                if it.get("owner"):
+                    meta.append(f"owner: {_esc(it['owner'])}")
+                if it.get("deadline"):
+                    meta.append(f"due {_esc(str(it['deadline']))}")
+                if it.get("project_tag"):
+                    meta.append(_esc(str(it["project_tag"])))
+                suffix = (
+                    f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>'
+                    if meta
+                    else ""
+                )
+                parts.append(_li(f"{_esc(it.get('description', ''))}{suffix}"))
             elif kind == "situations":
                 meta = []
-                if it.get("status"): meta.append(_esc(it["status"]))
-                if it.get("score"):  meta.append(f'score {it["score"]}')
-                if it.get("project_tag"): meta.append(_esc(str(it["project_tag"])))
-                suffix = f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>' if meta else ""
-                parts.append(_li(f'{_esc(it.get("title",""))}{suffix}'))
+                if it.get("status"):
+                    meta.append(_esc(it["status"]))
+                if it.get("score"):
+                    meta.append(f"score {it['score']}")
+                if it.get("project_tag"):
+                    meta.append(_esc(str(it["project_tag"])))
+                suffix = (
+                    f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>'
+                    if meta
+                    else ""
+                )
+                parts.append(_li(f"{_esc(it.get('title', ''))}{suffix}"))
             elif kind == "deadlines":
-                parts.append(_li(
-                    f'<strong>{_esc(str(it.get("deadline","")))}</strong> — '
-                    f'{_esc(it.get("description",""))} '
-                    f'<span style="color:#888;font-size:12px">({_esc(it.get("priority","medium"))})</span>'
-                ))
+                parts.append(
+                    _li(
+                        f"<strong>{_esc(str(it.get('deadline', '')))}</strong> — "
+                        f"{_esc(it.get('description', ''))} "
+                        f'<span style="color:#888;font-size:12px">({_esc(it.get("priority", "medium"))})</span>'
+                    )
+                )
             elif kind == "items":
                 src = it.get("source") or ""
                 url = it.get("url") or ""
-                title_html = f'<a href="{_esc(url)}">{_esc(it.get("title",""))}</a>' if url else _esc(it.get("title",""))
+                title_html = (
+                    f'<a href="{_esc(url)}">{_esc(it.get("title", ""))}</a>'
+                    if url
+                    else _esc(it.get("title", ""))
+                )
                 meta = []
-                if src: meta.append(_esc(src))
-                if it.get("author"):   meta.append(_esc(it["author"]))
-                if it.get("priority"): meta.append(_esc(it["priority"]))
-                meta_html = f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>' if meta else ""
+                if src:
+                    meta.append(_esc(src))
+                if it.get("author"):
+                    meta.append(_esc(it["author"]))
+                if it.get("priority"):
+                    meta.append(_esc(it["priority"]))
+                meta_html = (
+                    f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>'
+                    if meta
+                    else ""
+                )
                 summary = it.get("summary") or ""
-                summary_html = f'<div style="color:#555;font-size:12px;margin-left:4px">{_esc(summary)}</div>' if summary else ""
-                parts.append(_li(f'{title_html}{meta_html}{summary_html}'))
+                summary_html = (
+                    f'<div style="color:#555;font-size:12px;margin-left:4px">{_esc(summary)}</div>'
+                    if summary
+                    else ""
+                )
+                parts.append(_li(f"{title_html}{meta_html}{summary_html}"))
             elif kind == "replied":
                 meta = []
-                if it.get("source"): meta.append(_esc(it["source"]))
-                if it.get("replied_at"): meta.append(f'at {_esc(str(it["replied_at"]))}')
-                meta_html = f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>' if meta else ""
-                parts.append(_li(f'{_esc(it.get("title",""))}{meta_html}'))
-        parts.append('</ul>')
+                if it.get("source"):
+                    meta.append(_esc(it["source"]))
+                if it.get("replied_at"):
+                    meta.append(f"at {_esc(str(it['replied_at']))}")
+                meta_html = (
+                    f' <span style="color:#888;font-size:12px">({" · ".join(meta)})</span>'
+                    if meta
+                    else ""
+                )
+                parts.append(_li(f"{_esc(it.get('title', ''))}{meta_html}"))
+        parts.append("</ul>")
 
     if all(not sec.get("items") for sec in sections):
         parts.append(
             '<p style="color:#888;font-style:italic">No activity in the look-back window. '
-            'Consider increasing the window or leaving a short free-form note.</p>'
+            "Consider increasing the window or leaving a short free-form note.</p>"
         )
 
-    parts.append('</div>')
+    parts.append("</div>")
     return "".join(parts)
 
 
@@ -2243,6 +2399,7 @@ def generate_passdown(body: dict | None = None):
 
 
 # ── Analyses ──────────────────────────────────────────────────────────────────
+
 
 def _deserialize_analysis(a: dict) -> dict:
     """Deserialize JSON-string fields and normalise legacy field names for the frontend.
@@ -2270,14 +2427,14 @@ def _deserialize_analysis(a: dict) -> dict:
 
 @app.get("/analyses")
 def get_analyses(
-    source:    str | None = None,
-    category:  str | None = None,
+    source: str | None = None,
+    category: str | None = None,
     hierarchy: str | None = None,
-    project:   str | None = None,
-    q:         str | None = None,
+    project: str | None = None,
+    q: str | None = None,
     from_date: str | None = None,
-    to_date:   str | None = None,
-    limit:     int = 1000,
+    to_date: str | None = None,
+    limit: int = 1000,
 ):
     """Return stored analysis records with optional filtering.
 
@@ -2313,10 +2470,14 @@ def get_analyses(
         results = [a for a in results if db.item_has_project(a, project)]
     if q:
         ql = q.lower()
-        results = [a for a in results if any(
-            ql in (a.get(f) or "").lower()
-            for f in ("title", "summary", "author", "body_preview")
-        )]
+        results = [
+            a
+            for a in results
+            if any(
+                ql in (a.get(f) or "").lower()
+                for f in ("title", "summary", "author", "body_preview")
+            )
+        ]
     if from_date:
         results = [a for a in results if (a.get("timestamp") or "") >= from_date]
     if to_date:
@@ -2334,17 +2495,18 @@ def get_analyses(
     if not cold:
         try:
             from embedder import get_all_item_vectors
+
             vectors_by_id = get_all_item_vectors()
         except Exception:
             vectors_by_id = {}
-    out  = []
+    out = []
     for a in sliced:
         rec = _deserialize_analysis(dict(a))
         if cold:
             rec["attention_score"] = 0.5
         else:
             try:
-                vec   = vectors_by_id.get(a.get("item_id", ""))
+                vec = vectors_by_id.get(a.get("item_id", ""))
                 score = _attn.compute_score(vec or [])
             except Exception:
                 score = 0.5
@@ -2354,17 +2516,17 @@ def get_analyses(
 
 
 _ACTIVE_LIFECYCLE = {"new", "investigating", "waiting"}
-_ALL_LIFECYCLE    = {"new", "investigating", "waiting", "resolved", "dismissed"}
+_ALL_LIFECYCLE = {"new", "investigating", "waiting", "resolved", "dismissed"}
 
 
 @app.get("/situations")
 def get_situations(
-    project:             str | None = None,
-    status:              str | None = None,
-    lifecycle_status:    str | None = None,
-    min_score:           float         = 0.0,
-    include_dismissed:   bool          = False,
-    include_resolved:    bool          = False,
+    project: str | None = None,
+    status: str | None = None,
+    lifecycle_status: str | None = None,
+    min_score: float = 0.0,
+    include_dismissed: bool = False,
+    include_resolved: bool = False,
 ):
     """Return situations, filtered and sorted by score descending.
 
@@ -2434,8 +2596,7 @@ def dismiss_situation(situation_id: str, body: dict = {}):
         prev = sit.get("lifecycle_status", "new")
         db.update_situation(
             situation_id,
-            {"dismissed": 1, "dismiss_reason": body.get("reason"),
-             "lifecycle_status": "dismissed"},
+            {"dismissed": 1, "dismiss_reason": body.get("reason"), "lifecycle_status": "dismissed"},
         )
         db.insert_situation_event(situation_id, prev, "dismissed", body.get("reason"))
     return {"ok": True}
@@ -2489,7 +2650,7 @@ def split_situation_endpoint(situation_id: str, body: dict):
                                would empty the source).
     :raises HTTPException 404: If the situation does not exist.
     """
-    item_ids  = body.get("item_ids") or []
+    item_ids = body.get("item_ids") or []
     new_title = body.get("new_title")
     if not isinstance(item_ids, list) or not item_ids:
         raise HTTPException(status_code=400, detail="item_ids must be a non-empty list")
@@ -2502,8 +2663,8 @@ def split_situation_endpoint(situation_id: str, body: dict):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {
-        "ok":                    True,
-        "new_situation_id":      new_sit_id,
+        "ok": True,
+        "new_situation_id": new_sit_id,
         "original_situation_id": situation_id,
     }
 
@@ -2592,7 +2753,7 @@ def transition_situation(situation_id: str, body: dict):
         sit = db.get_situation(situation_id)
         if not sit:
             raise HTTPException(status_code=404, detail="Situation not found")
-        prev    = sit.get("lifecycle_status", "new")
+        prev = sit.get("lifecycle_status", "new")
         updates = {"lifecycle_status": to_status}
         if to_status == "dismissed":
             updates["dismissed"] = 1
@@ -2605,8 +2766,13 @@ def transition_situation(situation_id: str, body: dict):
         item_ids = sit.get("item_ids", [])
 
     # Record attention signals for all items in this situation
-    action = "investigated_situation" if to_status == "investigating" else \
-             "dismissed_situation"     if to_status == "dismissed"    else None
+    action = (
+        "investigated_situation"
+        if to_status == "investigating"
+        else "dismissed_situation"
+        if to_status == "dismissed"
+        else None
+    )
     if action and item_ids:
         for iid in item_ids:
             _attn.record_action(iid, action)
@@ -2654,20 +2820,22 @@ def submit_deep_analysis(situation_id: str):
         items = [db.get_item(iid) for iid in item_ids if db.get_item(iid)]
 
     items_text = "\n".join(
-        f"- [{i.get('source','?')}] {i.get('title','')}: {i.get('summary','')}"
-        for i in items if i
+        f"- [{i.get('source', '?')}] {i.get('title', '')}: {i.get('summary', '')}"
+        for i in items
+        if i
     )
-    actions_text = "\n".join(
-        f"- {a.get('description','')}" for a in (sit.get("open_actions") or [])
-    ) or "None identified."
+    actions_text = (
+        "\n".join(f"- {a.get('description', '')}" for a in (sit.get("open_actions") or []))
+        or "None identified."
+    )
 
     prompt = (
         f"You are analysing an operational situation. Provide a deep, thorough analysis — "
         f"explore implications, root causes, risks, and recommended actions. "
         f"Do not summarize; go deeper than the existing summary.\n\n"
-        f"Situation: {sit.get('title','')}\n"
-        f"Summary: {sit.get('summary','')}\n"
-        f"Score: {sit.get('score', 0):.2f}  Priority: {sit.get('priority','unknown')}\n\n"
+        f"Situation: {sit.get('title', '')}\n"
+        f"Summary: {sit.get('summary', '')}\n"
+        f"Score: {sit.get('score', 0):.2f}  Priority: {sit.get('priority', 'unknown')}\n\n"
         f"Contributing items ({len(items)}):\n{items_text or 'None.'}\n\n"
         f"Open actions:\n{actions_text}"
     )
@@ -2677,8 +2845,8 @@ def submit_deep_analysis(situation_id: str):
             f"{config.MERLLM_URL}/api/batch/submit",
             json={
                 "source_app": "parsival",
-                "prompt":     prompt,
-                "model":      config.effective_model(),
+                "prompt": prompt,
+                "model": config.effective_model(),
                 # Deep-analysis wants prose, not bounded JSON, so num_predict
                 # is higher than the reanalyze path. think:false + num_ctx
                 # match the orchestrator convention (see feedback_reasoning
@@ -2687,9 +2855,9 @@ def submit_deep_analysis(situation_id: str):
                 # end up with a much larger cache loaded and run ~2× slower
                 # than the other on identical workloads.
                 "options": {
-                    "think":       False,
+                    "think": False,
                     "num_predict": 2048,
-                    "num_ctx":     8192,
+                    "num_ctx": 8192,
                     "temperature": 0.2,
                 },
             },
@@ -2729,9 +2897,7 @@ def save_deep_analysis(situation_id: str, body: dict):
         raise HTTPException(status_code=404, detail="Situation not found")
 
     try:
-        r = http_requests.get(
-            f"{config.MERLLM_URL}/api/batch/results/{job_id}", timeout=10
-        )
+        r = http_requests.get(f"{config.MERLLM_URL}/api/batch/results/{job_id}", timeout=10)
         if r.status_code == 404:
             raise HTTPException(status_code=404, detail="Job not found")
         if r.status_code == 409:
@@ -2746,14 +2912,16 @@ def save_deep_analysis(situation_id: str, body: dict):
     item_ids = sit.get("item_ids", [])
     anchor_item_id = item_ids[0] if item_ids else None
     with db.lock:
-        db.insert_intel({
-            "item_id":    anchor_item_id,
-            "source":     "deep_analysis",
-            "fact":       result_text,
-            "relevance":  f"Extended-context deep analysis of situation: {sit.get('title','')}",
-            "project_tag": sit.get("project_tag"),
-            "dismissed":  0,
-        })
+        db.insert_intel(
+            {
+                "item_id": anchor_item_id,
+                "source": "deep_analysis",
+                "fact": result_text,
+                "relevance": f"Extended-context deep analysis of situation: {sit.get('title', '')}",
+                "project_tag": sit.get("project_tag"),
+                "dismissed": 0,
+            }
+        )
 
     return {"ok": True}
 
@@ -2768,9 +2936,7 @@ def proxy_batch_status(job_id: str):
     :raises HTTPException 502: If merLLM is unreachable.
     """
     try:
-        r = http_requests.get(
-            f"{config.MERLLM_URL}/api/batch/status/{job_id}", timeout=5
-        )
+        r = http_requests.get(f"{config.MERLLM_URL}/api/batch/status/{job_id}", timeout=5)
         if r.status_code == 404:
             raise HTTPException(status_code=404, detail="Job not found")
         return r.json()
@@ -2782,6 +2948,7 @@ def proxy_batch_status(job_id: str):
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
+
 @app.get("/stats")
 def get_stats():
     """Return aggregate statistics for the dashboard summary bar.
@@ -2790,10 +2957,10 @@ def get_stats():
     :rtype: dict
     """
     with db.lock:
-        all_a      = db.get_all_items()
+        all_a = db.get_all_items()
         open_todos = db.get_todos(done=False)
         done_todos = db.get_todos(done=True)
-        logs       = db.get_all_scan_logs()
+        logs = db.get_all_scan_logs()
 
     by_source: dict[str, int] = {}
     for t in open_todos:
@@ -2806,29 +2973,31 @@ def get_stats():
         by_category[c] = by_category.get(c, 0) + 1
 
     with db.lock:
-        all_sits   = db.get_all_situations(include_dismissed=True)
+        all_sits = db.get_all_situations(include_dismissed=True)
         open_intel = db.get_all_intel(dismissed=False)
 
     last_scan = logs[0] if logs else None
 
     return {
-        "total_items":           len(all_a),
-        "open_todos":            len(open_todos),
-        "done_todos":            len([t for t in done_todos if t.get("done")]),
-        "high_priority":         sum(1 for t in open_todos if t.get("priority") == "high"),
-        "open_intel":            len(open_intel),
-        "by_source":             [{"source": k, "count": v} for k, v in by_source.items()],
-        "by_category":           [{"category": k, "count": v} for k, v in by_category.items()],
-        "last_scan":             last_scan,
-        "open_situations":       len([s for s in all_sits if not s.get("dismissed")]),
-        "high_score_situations": len([s for s in all_sits
-                                      if not s.get("dismissed") and s.get("score", 0) >= 1.5]),
+        "total_items": len(all_a),
+        "open_todos": len(open_todos),
+        "done_todos": len([t for t in done_todos if t.get("done")]),
+        "high_priority": sum(1 for t in open_todos if t.get("priority") == "high"),
+        "open_intel": len(open_intel),
+        "by_source": [{"source": k, "count": v} for k, v in by_source.items()],
+        "by_category": [{"category": k, "count": v} for k, v in by_category.items()],
+        "last_scan": last_scan,
+        "open_situations": len([s for s in all_sits if not s.get("dismissed")]),
+        "high_score_situations": len(
+            [s for s in all_sits if not s.get("dismissed") and s.get("score", 0) >= 1.5]
+        ),
     }
 
 
 # Warn at import time if OAuth tokens will be stored unencrypted.
 if not config.CREDENTIALS_KEY:
     import logging as _log
+
     _log.getLogger(__name__).warning(
         "CREDENTIALS_KEY is not set — OAuth tokens will be stored unencrypted in SQLite."
     )
@@ -2866,8 +3035,8 @@ def _clean_oauth_states() -> None:
 
 # ── Slack OAuth ────────────────────────────────────────────────────────────────
 
-_SLACK_REDIRECT_URI  = config.SLACK_REDIRECT_URI
-_SLACK_USER_SCOPES   = (
+_SLACK_REDIRECT_URI = config.SLACK_REDIRECT_URI
+_SLACK_USER_SCOPES = (
     "channels:history,channels:read,groups:history,groups:read,"
     "im:history,im:read,mpim:history,mpim:read,search:read,users:read"
 )
@@ -2881,7 +3050,9 @@ def slack_connect():
     :raises HTTPException 400: If ``SLACK_CLIENT_ID`` is not yet configured.
     """
     if not config.SLACK_CLIENT_ID:
-        raise HTTPException(status_code=400, detail="SLACK_CLIENT_ID not configured — save it in Settings first.")
+        raise HTTPException(
+            status_code=400, detail="SLACK_CLIENT_ID not configured — save it in Settings first."
+        )
     state = _new_oauth_state()
     url = (
         f"https://slack.com/oauth/v2/authorize"
@@ -2907,27 +3078,31 @@ def slack_callback(code: str = None, error: str = None, state: str = None):
     if error:
         return Response(status_code=302, headers={"Location": f"/page/?slack_error={error}"})
     if not _validate_oauth_state(state):
-        raise HTTPException(status_code=403, detail="Invalid or expired OAuth state — possible CSRF attempt.")
+        raise HTTPException(
+            status_code=403, detail="Invalid or expired OAuth state — possible CSRF attempt."
+        )
     if not code:
         raise HTTPException(status_code=400, detail="Missing OAuth code.")
 
     r = http_requests.post(
         "https://slack.com/api/oauth.v2.access",
         data={
-            "client_id":     config.SLACK_CLIENT_ID,
+            "client_id": config.SLACK_CLIENT_ID,
             "client_secret": config.SLACK_CLIENT_SECRET,
-            "code":          code,
-            "redirect_uri":  _SLACK_REDIRECT_URI,
+            "code": code,
+            "redirect_uri": _SLACK_REDIRECT_URI,
         },
         timeout=15,
     )
     r.raise_for_status()
     data = r.json()
-    print(f"[slack/callback] ok={data.get('ok')} error={data.get('error')} "
-          f"authed_user_keys={list(data.get('authed_user', {}).keys())}")
+    print(
+        f"[slack/callback] ok={data.get('ok')} error={data.get('error')} "
+        f"authed_user_keys={list(data.get('authed_user', {}).keys())}"
+    )
 
     if not data.get("ok"):
-        err = data.get('error', 'unknown')
+        err = data.get("error", "unknown")
         print(f"[slack/callback] OAuth failed: {err}")
         return Response(
             status_code=302,
@@ -2940,16 +3115,18 @@ def slack_callback(code: str = None, error: str = None, state: str = None):
         print(f"[slack/callback] No user token in response. authed_user={authed_user}")
         return Response(status_code=302, headers={"Location": "/page/?slack_error=no_user_token"})
 
-    team      = data.get("team", {})
+    team = data.get("team", {})
     workspace = {
-        "team":    team.get("name", "Unknown"),
+        "team": team.get("name", "Unknown"),
         "team_id": team.get("id", ""),
-        "token":   crypto.encrypt_secret(token),
+        "token": crypto.encrypt_secret(token),
     }
 
     with db.lock:
         existing = db.get_settings()
-    tokens = [t for t in existing.get("slack_user_tokens", []) if t.get("team_id") != workspace["team_id"]]
+    tokens = [
+        t for t in existing.get("slack_user_tokens", []) if t.get("team_id") != workspace["team_id"]
+    ]
     tokens.append(workspace)
     existing["slack_user_tokens"] = tokens
 
@@ -2994,7 +3171,7 @@ def disconnect_slack_workspace(team_id: str):
 # ── Teams OAuth ────────────────────────────────────────────────────────────────
 
 _TEAMS_REDIRECT_URI = config.TEAMS_REDIRECT_URI
-_TEAMS_SCOPES       = "Chat.Read ChannelMessage.Read.All Channel.ReadBasic.All offline_access"
+_TEAMS_SCOPES = "Chat.Read ChannelMessage.Read.All Channel.ReadBasic.All offline_access"
 
 
 @app.get("/teams/connect")
@@ -3005,7 +3182,9 @@ def teams_connect():
     :raises HTTPException 400: If ``TEAMS_CLIENT_ID`` is not yet configured.
     """
     if not config.TEAMS_CLIENT_ID:
-        raise HTTPException(status_code=400, detail="TEAMS_CLIENT_ID not configured — save it in Settings first.")
+        raise HTTPException(
+            status_code=400, detail="TEAMS_CLIENT_ID not configured — save it in Settings first."
+        )
     state = _new_oauth_state()
     url = (
         "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
@@ -3020,7 +3199,9 @@ def teams_connect():
 
 
 @app.get("/teams/callback")
-def teams_callback(code: str = None, error: str = None, error_description: str = None, state: str = None):
+def teams_callback(
+    code: str = None, error: str = None, error_description: str = None, state: str = None
+):
     """Handle the Microsoft Teams OAuth2 redirect callback.
 
     :param code: Authorization code returned by Microsoft.
@@ -3034,19 +3215,21 @@ def teams_callback(code: str = None, error: str = None, error_description: str =
     if error:
         return Response(status_code=302, headers={"Location": f"/page/?teams_error={error}"})
     if not _validate_oauth_state(state):
-        raise HTTPException(status_code=403, detail="Invalid or expired OAuth state — possible CSRF attempt.")
+        raise HTTPException(
+            status_code=403, detail="Invalid or expired OAuth state — possible CSRF attempt."
+        )
     if not code:
         raise HTTPException(status_code=400, detail="Missing OAuth code.")
 
     r = http_requests.post(
         "https://login.microsoftonline.com/common/oauth2/v2.0/token",
         data={
-            "grant_type":    "authorization_code",
-            "code":          code,
-            "redirect_uri":  _TEAMS_REDIRECT_URI,
-            "client_id":     config.TEAMS_CLIENT_ID,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": _TEAMS_REDIRECT_URI,
+            "client_id": config.TEAMS_CLIENT_ID,
             "client_secret": config.TEAMS_CLIENT_SECRET,
-            "scope":         _TEAMS_SCOPES,
+            "scope": _TEAMS_SCOPES,
         },
         timeout=15,
     )
@@ -3059,7 +3242,7 @@ def teams_callback(code: str = None, error: str = None, error_description: str =
             headers={"Location": f"/page/?teams_error={data.get('error', 'unknown')}"},
         )
 
-    access_token  = data.get("access_token")
+    access_token = data.get("access_token")
     refresh_token = data.get("refresh_token")
     if not access_token:
         return Response(status_code=302, headers={"Location": "/page/?teams_error=no_access_token"})
@@ -3074,18 +3257,18 @@ def teams_callback(code: str = None, error: str = None, error_description: str =
         me_r.raise_for_status()
         me = me_r.json()
         display_name = me.get("displayName", "Unknown")
-        account_id   = me.get("id", "")
-        tenant       = me.get("userPrincipalName", "").split("@")[-1] or "teams"
+        account_id = me.get("id", "")
+        tenant = me.get("userPrincipalName", "").split("@")[-1] or "teams"
     except Exception:
         display_name = "Unknown"
-        account_id   = ""
-        tenant       = "teams"
+        account_id = ""
+        tenant = "teams"
 
     account = {
-        "display_name":  display_name,
-        "account_id":    account_id,
-        "tenant":        tenant,
-        "access_token":  crypto.encrypt_secret(access_token),
+        "display_name": display_name,
+        "account_id": account_id,
+        "tenant": tenant,
+        "access_token": crypto.encrypt_secret(access_token),
         "refresh_token": crypto.encrypt_secret(refresh_token or ""),
     }
 
@@ -3114,7 +3297,11 @@ def get_teams_workspaces():
         existing = db.get_settings()
     tokens = existing.get("teams_user_tokens", [])
     return [
-        {"display_name": t.get("display_name", "Unknown"), "account_id": t.get("account_id", ""), "tenant": t.get("tenant", "")}
+        {
+            "display_name": t.get("display_name", "Unknown"),
+            "account_id": t.get("account_id", ""),
+            "tenant": t.get("tenant", ""),
+        }
         for t in tokens
     ]
 
@@ -3138,6 +3325,7 @@ def disconnect_teams_account(account_id: str):
 
 
 # ── Seed endpoints ─────────────────────────────────────────────────────────────
+
 
 @app.post("/seed")
 async def seed_preview(request: Request):
@@ -3229,6 +3417,7 @@ def merllm_status():
 # but the contact record should outlive the email.  Every field is manually
 # editable so the user can correct or enrich anything the scraper got wrong.
 
+
 @app.get("/contacts")
 def list_contacts(query: str | None = None, limit: int = 500):
     """List contacts, most-recently-seen first, optionally filtered.
@@ -3270,7 +3459,7 @@ def create_contact(body: dict):
     body["is_manual"] = True
     with db.lock:
         contact_id = db.insert_contact(body)
-        contact    = db.get_contact(contact_id)
+        contact = db.get_contact(contact_id)
     return contact
 
 
@@ -3295,10 +3484,10 @@ def patch_contact(contact_id: int, body: dict):
         # Editable text fields → matching *_source columns.  When the user
         # sets one of these via the UI we lock it from the parser.
         editable_to_source = {
-            "name":             "name_source",
-            "phone":            "phone_source",
-            "employer":         "employer_source",
-            "title":            "title_source",
+            "name": "name_source",
+            "phone": "phone_source",
+            "employer": "employer_source",
+            "title": "title_source",
             "employer_address": "address_source",
         }
         existing_locks = list(existing.get("manually_edited_fields") or [])
@@ -3339,7 +3528,7 @@ def add_contact_email(contact_id: int, body: dict):
     :raises HTTPException 409: If the email is already attached to a different
                                 contact (caller can merge manually).
     """
-    email      = (body or {}).get("email", "").strip()
+    email = (body or {}).get("email", "").strip()
     is_primary = bool((body or {}).get("is_primary"))
     if not email:
         raise HTTPException(status_code=400, detail="email is required")
@@ -3422,11 +3611,21 @@ import uuid as _uuid
 
 def _card_input(body: dict, *, require_all: bool = False) -> dict:
     """Validate and normalise a card create/update payload."""
-    allowed = ("title", "project", "assignee", "start_date", "start_shift_num",
-               "end_date", "end_shift_num", "status", "notes",
-               "work_days",
-               "linked_procedure_doc",
-               "template_instance_id", "template_task_local_id")
+    allowed = (
+        "title",
+        "project",
+        "assignee",
+        "start_date",
+        "start_shift_num",
+        "end_date",
+        "end_shift_num",
+        "status",
+        "notes",
+        "work_days",
+        "linked_procedure_doc",
+        "template_instance_id",
+        "template_task_local_id",
+    )
     data = {k: body[k] for k in allowed if k in body}
     if "work_days" in data:
         data["work_days"] = (data["work_days"] or "").strip()
@@ -3451,9 +3650,9 @@ def _card_input(body: dict, *, require_all: bool = False) -> dict:
 
 
 @app.get("/lookahead/cards")
-def lookahead_list_cards(project: str | None = None,
-                          start: str | None   = None,
-                          end:   str | None   = None):
+def lookahead_list_cards(
+    project: str | None = None, start: str | None = None, end: str | None = None
+):
     """List cards, optionally filtered by project tag and overlapping date window."""
     with db.lock:
         return db.list_lookahead_cards(project=project, start_date=start, end_date=end)
@@ -3480,16 +3679,16 @@ def _card_todo_payload(card: dict) -> dict:
     status = "done" if card.get("status") == "done" else "open"
     return {
         "description": desc,
-        "priority":    "medium",
-        "is_manual":   1,
-        "done":        1 if status == "done" else 0,
-        "status":      status,
-        "created_at":  datetime.now(UTC).isoformat(),
-        "source":      "lookahead",
-        "title":       desc,
-        "url":         "",
-        "owner":       card.get("assignee") or "me",
-        "deadline":    deadline,
+        "priority": "medium",
+        "is_manual": 1,
+        "done": 1 if status == "done" else 0,
+        "status": status,
+        "created_at": datetime.now(UTC).isoformat(),
+        "source": "lookahead",
+        "title": desc,
+        "url": "",
+        "owner": card.get("assignee") or "me",
+        "deadline": deadline,
         "project_tag": project,
     }
 
@@ -3581,7 +3780,7 @@ def lookahead_update_card(card_id: str, body: dict):
         if "title" in data:
             new_desc = (data["title"] or "").strip() or f"Card {card_id}"
             todo_updates["description"] = new_desc
-            todo_updates["title"]       = new_desc
+            todo_updates["title"] = new_desc
         if "end_date" in data:
             todo_updates["deadline"] = data["end_date"] or None
         if "project" in data:
@@ -3590,7 +3789,7 @@ def lookahead_update_card(card_id: str, body: dict):
             todo_updates["owner"] = data["assignee"] or "me"
         if "status" in data:
             new_done = 1 if data["status"] == "done" else 0
-            todo_updates["done"]   = new_done
+            todo_updates["done"] = new_done
             todo_updates["status"] = "done" if new_done else "open"
         if todo_updates:
             db.update_todo(todo_id, todo_updates)
@@ -3631,6 +3830,7 @@ def lookahead_set_card_resource_status(card_id: str, resource_id: int, body: dic
 
 
 # ── Resources ────────────────────────────────────────────────────────────────
+
 
 @app.get("/lookahead/resources")
 def lookahead_list_resources(type: str | None = None):
@@ -3687,6 +3887,7 @@ def lookahead_delete_resource(resource_id: int):
 
 # ── Project shifts ────────────────────────────────────────────────────────────
 
+
 @app.get("/lookahead/shifts")
 def lookahead_list_shifts(project: str | None = None):
     """List per-project shift schedules, optionally for one project only."""
@@ -3721,6 +3922,7 @@ def lookahead_delete_shift(project_tag: str, shift_num: int):
 
 # ── Overview (cross-project) ─────────────────────────────────────────────────
 
+
 @app.get("/lookahead/overview")
 def lookahead_overview(start: str | None = None, end: str | None = None):
     """Return one row per project with cards overlapping the window.
@@ -3738,11 +3940,13 @@ def lookahead_overview(start: str | None = None, end: str | None = None):
         if not project:
             continue
         project_cards.sort(key=lambda c: (c["start_date"], c["start_shift_num"]))
-        rows.append({
-            "project":  project,
-            "cards":    project_cards,
-            "earliest": project_cards[0]["start_date"] if project_cards else None,
-        })
+        rows.append(
+            {
+                "project": project,
+                "cards": project_cards,
+                "earliest": project_cards[0]["start_date"] if project_cards else None,
+            }
+        )
     rows.sort(key=lambda r: r["earliest"] or "")
     return rows
 
@@ -3755,6 +3959,7 @@ def lookahead_overview(start: str | None = None, end: str | None = None):
 # resource requirements.  Instantiating a template with a ``start_date``
 # materialises cards on the board; they remember their instance so the whole
 # cohort can be rescheduled with a single date change.
+
 
 def _validate_template_body(body: dict, *, require_name: bool) -> None:
     name = (body.get("name") or "").strip()
@@ -3850,20 +4055,20 @@ def lookahead_instantiate_template(template_id: str, body: dict):
     if not start_date:
         raise HTTPException(status_code=400, detail="start_date is required")
     project = (body.get("project_tag") or "").strip()
-    owner   = (body.get("owner") or "").strip()
+    owner = (body.get("owner") or "").strip()
     with db.lock:
         inst = db.instantiate_template(template_id, start_date, project, owner)
     if not inst:
         raise HTTPException(status_code=404, detail="template not found")
     if not inst["project_tag"]:
-        raise HTTPException(status_code=400,
-                            detail="project_tag is required (template has no default)")
+        raise HTTPException(
+            status_code=400, detail="project_tag is required (template has no default)"
+        )
     return inst
 
 
 @app.get("/lookahead/instances")
-def lookahead_list_instances(project: str | None = None,
-                              status:  str | None = None):
+def lookahead_list_instances(project: str | None = None, status: str | None = None):
     """List template instances, optionally filtered by project and status.
 
     Rows carry the outdated flag the UI renders as an "upgrade available" badge.
@@ -3925,8 +4130,7 @@ def lookahead_upgrade_instance(instance_id: str):
     with db.lock:
         inst = db.upgrade_instance(instance_id)
     if not inst:
-        raise HTTPException(status_code=404,
-                            detail="instance or template not found")
+        raise HTTPException(status_code=404, detail="instance or template not found")
     return inst
 
 
@@ -3969,49 +4173,56 @@ def _parse_llm_json_array(text: str) -> list:
         if text.startswith("json"):
             text = text[4:]
     start = text.find("[")
-    end   = text.rfind("]")
+    end = text.rfind("]")
     if start == -1 or end == -1 or end < start:
         return []
     try:
-        parsed = _json.loads(text[start:end + 1])
+        parsed = _json.loads(text[start : end + 1])
     except Exception:
         return []
     return parsed if isinstance(parsed, list) else []
 
 
-def _annotate_card(card: dict, *, max_candidates: int = 40,
-                   max_suggestions: int = 5) -> list[dict]:
+def _annotate_card(card: dict, *, max_candidates: int = 40, max_suggestions: int = 5) -> list[dict]:
     """Run the LLM annotator on one card.  Returns newly-created suggestion rows."""
     if not card.get("project"):
         return []
     candidates = db.candidate_items_for_card(
-        card["project"], card["start_date"], card["end_date"], limit=max_candidates)
+        card["project"], card["start_date"], card["end_date"], limit=max_candidates
+    )
     if not candidates:
         return []
     # Never re-suggest already-linked items.
     already_linked = {(l["type"], str(l["id"])) for l in card.get("links", [])}
     # Nor already-proposed ones (pending or decided) — dedup is per target.
-    seen = {(r["link_type"], r["target_id"])
-            for r in db.list_card_suggestions(card["id"], include_decided=True)}
+    seen = {
+        (r["link_type"], r["target_id"])
+        for r in db.list_card_suggestions(card["id"], include_decided=True)
+    }
 
     # Trim item rows for the prompt.  No body content — titles and summaries
     # are enough signal and keep context small.
-    trimmed = [{
-        "item_id":    i["item_id"],
-        "source":     i.get("source", ""),
-        "timestamp":  (i.get("timestamp") or "")[:10],
-        "title":      (i.get("title") or "")[:160],
-        "summary":    (i.get("summary") or "")[:240],
-    } for i in candidates]
+    trimmed = [
+        {
+            "item_id": i["item_id"],
+            "source": i.get("source", ""),
+            "timestamp": (i.get("timestamp") or "")[:10],
+            "title": (i.get("title") or "")[:160],
+            "summary": (i.get("summary") or "")[:240],
+        }
+        for i in candidates
+    ]
 
-    card_brief = _json.dumps({
-        "title":      card["title"],
-        "project":    card["project"],
-        "start_date": card["start_date"],
-        "end_date":   card["end_date"],
-        "assignee":   card.get("assignee", ""),
-        "notes":      card.get("notes", ""),
-    })
+    card_brief = _json.dumps(
+        {
+            "title": card["title"],
+            "project": card["project"],
+            "start_date": card["start_date"],
+            "end_date": card["end_date"],
+            "assignee": card.get("assignee", ""),
+            "notes": card.get("notes", ""),
+        }
+    )
     prompt = (
         "You help a user correlate planned work with the messages that motivate it.\n"
         f"Card: {card_brief}\n"
@@ -4024,9 +4235,9 @@ def _annotate_card(card: dict, *, max_candidates: int = 40,
         "If nothing fits, reply with [] and nothing else."
     )
     try:
-        raw = _llm.generate(prompt, format="json",
-                            num_predict=512, temperature=0.1,
-                            priority="background")
+        raw = _llm.generate(
+            prompt, format="json", num_predict=512, temperature=0.1, priority="background"
+        )
     except Exception as exc:
         logging.warning("annotator LLM call failed for card %s: %s", card["id"], exc)
         return []
@@ -4039,16 +4250,15 @@ def _annotate_card(card: dict, *, max_candidates: int = 40,
         if not tid or ("item", tid) in already_linked or ("item", tid) in seen:
             continue
         row = db.add_card_suggestion(
-            card["id"], "item", tid,
-            reason=(entry.get("reason") or "").strip()[:200])
+            card["id"], "item", tid, reason=(entry.get("reason") or "").strip()[:200]
+        )
         if row:
             created.append(row)
     return created
 
 
 @app.get("/lookahead/cards/{card_id}/suggestions")
-def lookahead_list_suggestions(card_id: str,
-                                include_decided: bool = False):
+def lookahead_list_suggestions(card_id: str, include_decided: bool = False):
     """List the LLM's proposed cross-system links for one card.
 
     Pending proposals only by default; ``include_decided`` also returns ones
@@ -4068,9 +4278,9 @@ def lookahead_list_suggestions(card_id: str,
         if r["link_type"] == "item":
             item = db.get_item(r["target_id"])
             if item:
-                enriched["target_title"]  = item.get("title") or item.get("summary", "")[:80]
+                enriched["target_title"] = item.get("title") or item.get("summary", "")[:80]
                 enriched["target_source"] = item.get("source", "")
-                enriched["target_url"]    = item.get("url", "")
+                enriched["target_url"] = item.get("url", "")
         out.append(enriched)
     return out
 
@@ -4096,14 +4306,14 @@ def lookahead_annotate_project(body: dict):
     accident.
     """
     project = (body.get("project") or "").strip()
-    start   = (body.get("start")   or "").strip()
-    end     = (body.get("end")     or "").strip()
+    start = (body.get("start") or "").strip()
+    end = (body.get("end") or "").strip()
     if not project:
         raise HTTPException(status_code=400, detail="project is required")
     with db.lock:
-        cards = db.list_lookahead_cards(project=project,
-                                        start_date=start or None,
-                                        end_date=end or None)
+        cards = db.list_lookahead_cards(
+            project=project, start_date=start or None, end_date=end or None
+        )
     total_new = 0
     processed = 0
     for card in cards:
@@ -4147,6 +4357,7 @@ def lookahead_reject_suggestion(suggestion_id: int):
 
 
 # ── lancellmot document linking (parsival#43) ────────────────────────────────────
+
 
 @app.get("/lancellmot/aliases")
 def list_lancellmot_aliases_route():
@@ -4200,9 +4411,7 @@ def docs_for_tag(tag: str, limit: int = 5):
     if alias is None:
         return {"status": "unmapped", "tag": tag}
     try:
-        docs = lancellmot_client.list_documents(
-            alias["lancellmot_project_id"], limit=limit
-        )
+        docs = lancellmot_client.list_documents(alias["lancellmot_project_id"], limit=limit)
     except lancellmot_client.LancellmotUnavailable:
         return {"status": "unreachable", "tag": tag}
     return {

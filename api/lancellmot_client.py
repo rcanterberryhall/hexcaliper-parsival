@@ -14,6 +14,7 @@ body. That is why non-JSON is treated as unavailable here — without it, a
 misconfigured base URL would surface as an unhandled decode error rather
 than the chip's unreachable state.
 """
+
 import requests
 
 import config

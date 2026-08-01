@@ -1,4 +1,5 @@
 """tests/test_situations.py — Tests for the situation layer endpoints."""
+
 import uuid
 from datetime import UTC
 
@@ -11,31 +12,39 @@ Q = Query()
 def _sit(sit_id=None, score=1.5, dismissed=False, item_ids=None, sources=None):
     sit_id = sit_id or str(uuid.uuid4())
     return {
-        "situation_id":     sit_id,
-        "title":            "Test Situation",
-        "summary":          "Things are happening.",
-        "status":           "in_progress",
-        "item_ids":         item_ids or ["a1", "a2"],
-        "sources":          sources or ["jira", "slack"],
-        "project_tag":      None,
-        "score":            score,
-        "priority":         "medium",
-        "open_actions":     [],
-        "references":       [],
-        "key_context":      None,
-        "last_updated":     "2026-03-17T10:00:00+00:00",
-        "created_at":       "2026-03-17T10:00:00+00:00",
+        "situation_id": sit_id,
+        "title": "Test Situation",
+        "summary": "Things are happening.",
+        "status": "in_progress",
+        "item_ids": item_ids or ["a1", "a2"],
+        "sources": sources or ["jira", "slack"],
+        "project_tag": None,
+        "score": score,
+        "priority": "medium",
+        "open_actions": [],
+        "references": [],
+        "key_context": None,
+        "last_updated": "2026-03-17T10:00:00+00:00",
+        "created_at": "2026-03-17T10:00:00+00:00",
         "score_updated_at": "2026-03-17T10:00:00+00:00",
-        "dismissed":        dismissed,
+        "dismissed": dismissed,
     }
 
 
 def _analysis(item_id, source="jira"):
     return {
-        "item_id": item_id, "source": source, "title": f"Item {item_id}",
-        "author": "a", "timestamp": "2026-03-17T10:00:00+00:00", "url": "",
-        "has_action": False, "priority": "medium", "category": "fyi",
-        "summary": "S", "urgency": None, "action_items": "[]",
+        "item_id": item_id,
+        "source": source,
+        "title": f"Item {item_id}",
+        "author": "a",
+        "timestamp": "2026-03-17T10:00:00+00:00",
+        "url": "",
+        "has_action": False,
+        "priority": "medium",
+        "category": "fyi",
+        "summary": "S",
+        "urgency": None,
+        "action_items": "[]",
         "processed_at": "2026-03-17T10:00:00+00:00",
     }
 
@@ -125,8 +134,9 @@ def test_split_situation_happy_path(client):
     analyses.insert(_analysis("sp-b", source="slack"))
     analyses.insert(_analysis("sp-c", source="teams"))
     situations_tbl.insert(_sit(sit_id="sp-1", item_ids=["sp-a", "sp-b", "sp-c"]))
-    r = client.post("/situations/sp-1/split",
-                    json={"item_ids": ["sp-c"], "new_title": "Broken out"})
+    r = client.post(
+        "/situations/sp-1/split", json={"item_ids": ["sp-c"], "new_title": "Broken out"}
+    )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True
@@ -143,8 +153,7 @@ def test_split_situation_rejects_emptying_source(client):
     analyses.insert(_analysis("sp2-a"))
     analyses.insert(_analysis("sp2-b"))
     situations_tbl.insert(_sit(sit_id="sp-2", item_ids=["sp2-a", "sp2-b"]))
-    r = client.post("/situations/sp-2/split",
-                    json={"item_ids": ["sp2-a", "sp2-b"]})
+    r = client.post("/situations/sp-2/split", json={"item_ids": ["sp2-a", "sp2-b"]})
     assert r.status_code == 400
 
 
@@ -168,8 +177,7 @@ def test_merge_situations_happy_path(client):
     analyses.insert(_analysis("mg-c", source="teams"))
     situations_tbl.insert(_sit(sit_id="mg-tgt", item_ids=["mg-a"]))
     situations_tbl.insert(_sit(sit_id="mg-src", item_ids=["mg-b", "mg-c"]))
-    r = client.post("/situations/mg-tgt/merge",
-                    json={"source_situation_id": "mg-src"})
+    r = client.post("/situations/mg-tgt/merge", json={"source_situation_id": "mg-src"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True
@@ -184,15 +192,13 @@ def test_merge_situations_happy_path(client):
 
 def test_merge_situations_404(client):
     situations_tbl.insert(_sit(sit_id="mg-only"))
-    r = client.post("/situations/mg-only/merge",
-                    json={"source_situation_id": "doesntexist"})
+    r = client.post("/situations/mg-only/merge", json={"source_situation_id": "doesntexist"})
     assert r.status_code == 404
 
 
 def test_merge_situations_self_merge_rejected(client):
     situations_tbl.insert(_sit(sit_id="mg-self"))
-    r = client.post("/situations/mg-self/merge",
-                    json={"source_situation_id": "mg-self"})
+    r = client.post("/situations/mg-self/merge", json={"source_situation_id": "mg-self"})
     assert r.status_code == 400
 
 
@@ -212,6 +218,7 @@ def test_stale_flag_none_for_fresh_situation(client):
     sit["lifecycle_status"] = "waiting"
     # last_updated is just now (set by _sit fixture to a recent date)
     from datetime import datetime
+
     sit["last_updated"] = datetime.now(UTC).isoformat()
     situations_tbl.insert(sit)
     r = client.get("/situations/st-fresh")
@@ -221,6 +228,7 @@ def test_stale_flag_none_for_fresh_situation(client):
 
 def test_stale_flag_waiting_after_threshold(client):
     from datetime import datetime, timedelta
+
     analyses.insert(_analysis("st2-a"))
     analyses.insert(_analysis("st2-b", source="slack"))
     sit = _sit(sit_id="st-old", item_ids=["st2-a", "st2-b"])
@@ -235,6 +243,7 @@ def test_stale_flag_waiting_after_threshold(client):
 
 def test_stale_flag_investigating_requires_longer_threshold(client):
     from datetime import datetime, timedelta
+
     analyses.insert(_analysis("st3-a"))
     analyses.insert(_analysis("st3-b", source="slack"))
     # 10 days old: past waiting threshold (7) but not investigating (14)
@@ -256,6 +265,7 @@ def test_stale_flag_investigating_requires_longer_threshold(client):
 
 def test_stale_flag_ignored_for_new_status(client):
     from datetime import datetime, timedelta
+
     analyses.insert(_analysis("st4-a"))
     analyses.insert(_analysis("st4-b", source="slack"))
     sit = _sit(sit_id="st-new-old", item_ids=["st4-a", "st4-b"])

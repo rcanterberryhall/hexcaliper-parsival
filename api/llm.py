@@ -13,6 +13,7 @@ Ollama calls use ``stream=True`` so that merLLM can display live token
 activity in its GPU status cards.  Qwen3 ``<think>`` blocks are stripped
 automatically so callers always receive the final answer text only.
 """
+
 import json
 import logging
 import re
@@ -52,7 +53,7 @@ def _strip_untagged_think(text: str) -> str:
         m = _UNTAGGED_COT_RE.match(stripped)
         if not m:
             break
-        stripped = stripped[m.end():].strip()
+        stripped = stripped[m.end() :].strip()
     return stripped if stripped else text.strip()
 
 
@@ -119,20 +120,32 @@ def generate(
     provider = config.ESCALATION_PROVIDER or "ollama"
 
     if provider == "claude":
-        text = _claude(prompt, temperature=temperature,
-                       max_tokens=num_predict, timeout=timeout,
-                       json_mode=format == "json")
+        text = _claude(
+            prompt,
+            temperature=temperature,
+            max_tokens=num_predict,
+            timeout=timeout,
+            json_mode=format == "json",
+        )
     elif provider == "ollama_cloud":
-        text = _ollama_cloud(prompt, format=format,
-                             temperature=temperature,
-                             num_predict=num_predict,
-                             num_ctx=num_ctx, timeout=timeout)
+        text = _ollama_cloud(
+            prompt,
+            format=format,
+            temperature=temperature,
+            num_predict=num_predict,
+            num_ctx=num_ctx,
+            timeout=timeout,
+        )
     else:
-        text = _ollama_local(prompt, format=format,
-                             temperature=temperature,
-                             num_predict=num_predict,
-                             num_ctx=num_ctx, timeout=timeout,
-                             priority=priority)
+        text = _ollama_local(
+            prompt,
+            format=format,
+            temperature=temperature,
+            num_predict=num_predict,
+            num_ctx=num_ctx,
+            timeout=timeout,
+            priority=priority,
+        )
 
     # For free-text (non-JSON) responses, strip untagged chain-of-thought
     # that Qwen3 emits when it ignores the think:false option.
@@ -142,16 +155,26 @@ def generate(
 
 
 def _ollama_local(
-    prompt: str, *, format: str | None, temperature: float,
-    num_predict: int, num_ctx: int, timeout: int, priority: str,
+    prompt: str,
+    *,
+    format: str | None,
+    temperature: float,
+    num_predict: int,
+    num_ctx: int,
+    timeout: int,
+    priority: str,
 ) -> str:
     """Call Ollama via the local merLLM proxy (streaming)."""
     body: dict = {
-        "model":   config.effective_model(),
-        "prompt":  prompt,
-        "stream":  True,
-        "options": {"temperature": temperature, "num_predict": num_predict,
-                    "num_ctx": num_ctx, "think": False},
+        "model": config.effective_model(),
+        "prompt": prompt,
+        "stream": True,
+        "options": {
+            "temperature": temperature,
+            "num_predict": num_predict,
+            "num_ctx": num_ctx,
+            "think": False,
+        },
     }
     if format:
         body["format"] = format
@@ -168,8 +191,13 @@ def _ollama_local(
 
 
 def _ollama_cloud(
-    prompt: str, *, format: str | None, temperature: float,
-    num_predict: int, num_ctx: int, timeout: int,
+    prompt: str,
+    *,
+    format: str | None,
+    temperature: float,
+    num_predict: int,
+    num_ctx: int,
+    timeout: int,
 ) -> str:
     """Call Ollama paid cloud API (streaming)."""
     url = config.ESCALATION_API_URL or config.OLLAMA_URL
@@ -178,11 +206,15 @@ def _ollama_cloud(
         headers["Authorization"] = f"Bearer {config.ESCALATION_API_KEY}"
 
     body: dict = {
-        "model":   config.effective_model(),
-        "prompt":  prompt,
-        "stream":  True,
-        "options": {"temperature": temperature, "num_predict": num_predict,
-                    "num_ctx": num_ctx, "think": False},
+        "model": config.effective_model(),
+        "prompt": prompt,
+        "stream": True,
+        "options": {
+            "temperature": temperature,
+            "num_predict": num_predict,
+            "num_ctx": num_ctx,
+            "think": False,
+        },
     }
     if format:
         body["format"] = format
@@ -199,8 +231,12 @@ def _ollama_cloud(
 
 
 def _claude(
-    prompt: str, *, temperature: float, max_tokens: int,
-    timeout: int, json_mode: bool,
+    prompt: str,
+    *,
+    temperature: float,
+    max_tokens: int,
+    timeout: int,
+    json_mode: bool,
 ) -> str:
     """Call the Anthropic Claude Messages API."""
     api_key = config.ESCALATION_API_KEY

@@ -7,6 +7,7 @@ field is not in ``manually_edited_fields``.  These tests cover both halves
 and the apply rules (provenance stamping, manual-edit lockout, name fill-only-
 when-empty, idempotent re-parse).
 """
+
 import db
 import signatures
 
@@ -82,6 +83,7 @@ confidential and proprietary information.
 
 # ── extract_signature_block ──────────────────────────────────────────────────
 
+
 def test_extract_block_with_signoff_anchors_after_thanks():
     block = signatures.extract_signature_block(CLASSIC_WITH_SIGNOFF)
     # The block must NOT contain salutation or message body — only the lines
@@ -116,7 +118,7 @@ def test_extract_block_handles_forwarded_header():
     block = signatures.extract_signature_block(FORWARDED_THREAD)
     assert "Pat Black" in block
     assert "(212) 555-0001" in block
-    assert "Tom Smith" not in block      # forwarded header chopped
+    assert "Tom Smith" not in block  # forwarded header chopped
     assert "this is Tom" not in block
 
 
@@ -134,12 +136,13 @@ def test_extract_block_empty_body():
 
 # ── parse_signature ──────────────────────────────────────────────────────────
 
+
 def test_parse_classic_signature_extracts_all_fields():
-    block  = signatures.extract_signature_block(CLASSIC_WITH_SIGNOFF)
+    block = signatures.extract_signature_block(CLASSIC_WITH_SIGNOFF)
     fields = signatures.parse_signature(block, sender_domain="acme.com")
-    assert fields.name     == "Jane Doe"
-    assert fields.phone    == "(555) 123-4567"
-    assert fields.title    == "Senior Engineer"
+    assert fields.name == "Jane Doe"
+    assert fields.phone == "(555) 123-4567"
+    assert fields.title == "Senior Engineer"
     assert fields.employer == "Acme Corp"
     assert "Springfield" in fields.employer_address
     assert fields.phone_conf >= 0.9
@@ -147,9 +150,9 @@ def test_parse_classic_signature_extracts_all_fields():
 
 
 def test_parse_rfc_signature_extracts_phone_title_employer():
-    block  = signatures.extract_signature_block(RFC_DASHES)
+    block = signatures.extract_signature_block(RFC_DASHES)
     fields = signatures.parse_signature(block, sender_domain="globex.com")
-    assert fields.name     == "Mike Jones"
+    assert fields.name == "Mike Jones"
     assert "555" in fields.phone
     assert "Director" in fields.title
     assert "Globex" in fields.employer
@@ -158,15 +161,15 @@ def test_parse_rfc_signature_extracts_phone_title_employer():
 
 
 def test_parse_quoted_reply_extracts_signature_above_quote():
-    block  = signatures.extract_signature_block(QUOTED_REPLY_BELOW_SIG)
+    block = signatures.extract_signature_block(QUOTED_REPLY_BELOW_SIG)
     fields = signatures.parse_signature(block, sender_domain="initech.com")
-    assert fields.name  == "Sarah Lee"
+    assert fields.name == "Sarah Lee"
     assert fields.phone == "555.222.3344"
 
 
 def test_parse_greeting_only_below_threshold():
     """A bare 'Thanks, John' must NOT score high enough to write a name."""
-    block  = signatures.extract_signature_block(GREETING_ONLY)
+    block = signatures.extract_signature_block(GREETING_ONLY)
     fields = signatures.parse_signature(block, sender_domain="acme.com")
     # Even if the heuristic picks up "John" as a name candidate, the
     # confidence (0.65 by design) must be strictly below the default
@@ -178,16 +181,23 @@ def test_parse_greeting_only_below_threshold():
 
 def test_parse_disclaimer_only_yields_no_phone():
     """A pure disclaimer body must produce no phone hit and an empty address."""
-    block  = signatures.extract_signature_block(DISCLAIMER_ONLY)
+    block = signatures.extract_signature_block(DISCLAIMER_ONLY)
     fields = signatures.parse_signature(block, sender_domain="acme.com")
     assert fields.phone == ""
     assert fields.employer_address == ""
 
 
 def test_parse_freemail_domain_yields_no_employer_guess():
-    fields = signatures.parse_signature("\n".join([
-        "Jane Doe", "Engineer", "(555) 123-4567",
-    ]), sender_domain="gmail.com")
+    fields = signatures.parse_signature(
+        "\n".join(
+            [
+                "Jane Doe",
+                "Engineer",
+                "(555) 123-4567",
+            ]
+        ),
+        sender_domain="gmail.com",
+    )
     # Gmail is in the freemail blocklist — no domain-based employer guess.
     # The third line "(555) 123-4567" is filtered out as a phone, so
     # employer falls back to None and stays empty.
@@ -196,6 +206,7 @@ def test_parse_freemail_domain_yields_no_employer_guess():
 
 # ── apply_to_contact: provenance + manual-edit guardrails ───────────────────
 
+
 def _seed_contact_via_header(name, email, item_id="i1"):
     """Helper: create a contact the same way the live ingestion path does."""
     return db.upsert_contact_from_header(name, email, item_id=item_id)
@@ -203,7 +214,7 @@ def _seed_contact_via_header(name, email, item_id="i1"):
 
 def test_apply_writes_high_confidence_fields_with_signature_provenance():
     cid = _seed_contact_via_header("Jane Doe", "jane@acme.com")
-    block  = signatures.extract_signature_block(CLASSIC_WITH_SIGNOFF)
+    block = signatures.extract_signature_block(CLASSIC_WITH_SIGNOFF)
     fields = signatures.parse_signature(block, sender_domain="acme.com")
     result = signatures.apply_to_contact(cid, fields)
 
@@ -211,17 +222,17 @@ def test_apply_writes_high_confidence_fields_with_signature_provenance():
     assert "phone" in result["fields"]
 
     contact = db.get_contact(cid)
-    assert contact["phone"]            == "(555) 123-4567"
-    assert contact["phone_source"]     == "signature"
-    assert contact["title"]            == "Senior Engineer"
-    assert contact["title_source"]     == "signature"
-    assert contact["employer"]         == "Acme Corp"
-    assert contact["employer_source"]  == "signature"
+    assert contact["phone"] == "(555) 123-4567"
+    assert contact["phone_source"] == "signature"
+    assert contact["title"] == "Senior Engineer"
+    assert contact["title_source"] == "signature"
+    assert contact["employer"] == "Acme Corp"
+    assert contact["employer_source"] == "signature"
     assert "Springfield" in contact["employer_address"]
-    assert contact["address_source"]   == "signature"
+    assert contact["address_source"] == "signature"
     # Header-sourced name must be preserved (signature parser must NOT
     # overwrite a name that came from headers).
-    assert contact["name"]        == "Jane Doe"
+    assert contact["name"] == "Jane Doe"
     assert contact["name_source"] == "header"
     # Confidence map persisted for the UI.
     assert contact["signature_confidence"]["phone"] >= 0.9
@@ -230,8 +241,10 @@ def test_apply_writes_high_confidence_fields_with_signature_provenance():
 def test_apply_skips_below_threshold_fields():
     cid = _seed_contact_via_header("Jane Doe", "jane@acme.com")
     fields = signatures.SignatureFields(
-        phone="555-1212", phone_conf=0.5,        # below 0.7
-        title="Engineer", title_conf=0.4,
+        phone="555-1212",
+        phone_conf=0.5,  # below 0.7
+        title="Engineer",
+        title_conf=0.4,
     )
     result = signatures.apply_to_contact(cid, fields)
     assert result["updated"] is False
@@ -252,16 +265,18 @@ def test_apply_respects_manually_edited_fields(client):
 
     # Now run the signature parser at full confidence.
     fields = signatures.SignatureFields(
-        phone="(555) 999-9999", phone_conf=1.0,
-        title="VP", title_conf=1.0,
+        phone="(555) 999-9999",
+        phone_conf=1.0,
+        title="VP",
+        title_conf=1.0,
     )
     signatures.apply_to_contact(cid, fields)
 
     contact = db.get_contact(cid)
-    assert contact["phone"]        == "555-MANUAL"   # locked
+    assert contact["phone"] == "555-MANUAL"  # locked
     assert contact["phone_source"] == "manual"
     # Title was not locked, so it should still get written.
-    assert contact["title"]        == "VP"
+    assert contact["title"] == "VP"
     assert contact["title_source"] == "signature"
 
 
@@ -282,7 +297,7 @@ def test_apply_fills_empty_name_only_once():
 
 def test_apply_is_idempotent():
     cid = _seed_contact_via_header("Jane Doe", "jane@acme.com")
-    block  = signatures.extract_signature_block(CLASSIC_WITH_SIGNOFF)
+    block = signatures.extract_signature_block(CLASSIC_WITH_SIGNOFF)
     fields = signatures.parse_signature(block, sender_domain="acme.com")
 
     r1 = signatures.apply_to_contact(cid, fields)
@@ -297,38 +312,45 @@ def test_apply_is_idempotent():
 
 # ── parse_item_body: live ingestion glue ─────────────────────────────────────
 
+
 def _seed_item_with_body(item_id, author, body, to_field=""):
-    db.upsert_item({
-        "item_id":      item_id,
-        "source":       "outlook",
-        "author":       author,
-        "to_field":     to_field,
-        "cc_field":     "",
-        "timestamp":    "2026-04-10T12:00:00",
-        "title":        "test",
-        "summary":      "test",
-        "body_preview": body,
-    })
+    db.upsert_item(
+        {
+            "item_id": item_id,
+            "source": "outlook",
+            "author": author,
+            "to_field": to_field,
+            "cc_field": "",
+            "timestamp": "2026-04-10T12:00:00",
+            "title": "test",
+            "summary": "test",
+            "body_preview": body,
+        }
+    )
 
 
 def test_parse_item_body_no_op_when_contact_missing():
     """If header scraping has not yet created the contact, parse_item_body
     must do nothing (and return a falsy 'applied')."""
-    result = signatures.parse_item_body({
-        "item_id":      "x",
-        "author":       "Jane <jane@acme.com>",
-        "body_preview": CLASSIC_WITH_SIGNOFF,
-    })
+    result = signatures.parse_item_body(
+        {
+            "item_id": "x",
+            "author": "Jane <jane@acme.com>",
+            "body_preview": CLASSIC_WITH_SIGNOFF,
+        }
+    )
     assert result["applied"] is False
 
 
 def test_parse_item_body_enriches_existing_contact():
     cid = db.upsert_contact_from_header("Jane Doe", "jane@acme.com", item_id="i1")
-    result = signatures.parse_item_body({
-        "item_id":      "i1",
-        "author":       "Jane Doe <jane@acme.com>",
-        "body_preview": CLASSIC_WITH_SIGNOFF,
-    })
+    result = signatures.parse_item_body(
+        {
+            "item_id": "i1",
+            "author": "Jane Doe <jane@acme.com>",
+            "body_preview": CLASSIC_WITH_SIGNOFF,
+        }
+    )
     assert result["applied"] is True
     assert result["contact_id"] == cid
     contact = db.get_contact(cid)
@@ -337,11 +359,13 @@ def test_parse_item_body_enriches_existing_contact():
 
 def test_parse_item_body_no_op_when_no_body():
     cid = db.upsert_contact_from_header("Jane Doe", "jane@acme.com", item_id="i1")
-    result = signatures.parse_item_body({
-        "item_id":      "i1",
-        "author":       "Jane Doe <jane@acme.com>",
-        "body_preview": "",
-    })
+    result = signatures.parse_item_body(
+        {
+            "item_id": "i1",
+            "author": "Jane Doe <jane@acme.com>",
+            "body_preview": "",
+        }
+    )
     assert result["applied"] is False
     # Contact should be untouched.
     assert db.get_contact(cid)["phone"] == ""
@@ -349,25 +373,26 @@ def test_parse_item_body_no_op_when_no_body():
 
 # ── End-to-end via the live save path / endpoints ───────────────────────────
 
+
 def test_reparse_endpoint_walks_existing_items(client):
     """Seed an item + matching contact, then call /contacts/reparse-signatures
     and verify it enriches the contact row."""
     cid = db.upsert_contact_from_header("Jane Doe", "jane@acme.com", item_id="item-1")
     _seed_item_with_body(
         "item-1",
-        author='Jane Doe <jane@acme.com>',
+        author="Jane Doe <jane@acme.com>",
         body=CLASSIC_WITH_SIGNOFF,
     )
     r = client.post("/contacts/reparse-signatures")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
-    assert body["items_scanned"]  >= 1
-    assert body["items_applied"]  >= 1
+    assert body["items_scanned"] >= 1
+    assert body["items_applied"] >= 1
     assert body["fields_written"] >= 1
 
     contact = db.get_contact(cid)
-    assert contact["phone"]        == "(555) 123-4567"
+    assert contact["phone"] == "(555) 123-4567"
     assert contact["phone_source"] == "signature"
 
 
@@ -375,7 +400,7 @@ def test_reparse_endpoint_does_not_overwrite_manual_edits(client):
     cid = db.upsert_contact_from_header("Jane Doe", "jane@acme.com", item_id="item-1")
     _seed_item_with_body(
         "item-1",
-        author='Jane Doe <jane@acme.com>',
+        author="Jane Doe <jane@acme.com>",
         body=CLASSIC_WITH_SIGNOFF,
     )
     # Lock the phone field via PATCH.
@@ -385,10 +410,10 @@ def test_reparse_endpoint_does_not_overwrite_manual_edits(client):
     assert r.status_code == 200
 
     contact = db.get_contact(cid)
-    assert contact["phone"]        == "555-LOCKED"
+    assert contact["phone"] == "555-LOCKED"
     assert contact["phone_source"] == "manual"
     # Other fields should still be enriched.
-    assert contact["title"]        == "Senior Engineer"
+    assert contact["title"] == "Senior Engineer"
     assert contact["title_source"] == "signature"
 
 
@@ -396,10 +421,13 @@ def test_patch_contact_stamps_manual_provenance(client):
     """Direct test of the PATCH stamping contract: any editable field in
     the request body must flip to source='manual' and join
     manually_edited_fields."""
-    r = client.post("/contacts", json={
-        "name":  "Jane",
-        "emails": ["jane@acme.com"],
-    })
+    r = client.post(
+        "/contacts",
+        json={
+            "name": "Jane",
+            "emails": ["jane@acme.com"],
+        },
+    )
     cid = r.json()["contact_id"]
     # Manual create already locked 'name'.
     assert "name" in r.json()["manually_edited_fields"]
@@ -409,6 +437,6 @@ def test_patch_contact_stamps_manual_provenance(client):
     r2 = client.patch(f"/contacts/{cid}", json={"phone": "555-1212"})
     assert r2.status_code == 200
     locks = set(r2.json()["manually_edited_fields"])
-    assert "name"  in locks
+    assert "name" in locks
     assert "phone" in locks
     assert r2.json()["phone_source"] == "manual"

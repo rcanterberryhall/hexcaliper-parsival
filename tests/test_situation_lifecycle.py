@@ -4,6 +4,7 @@ test_situation_lifecycle.py — B5: situation lifecycle workflow.
 Tests for lifecycle_status enum, follow_up_date, notes, situation_events,
 and the new transition + events endpoints.
 """
+
 import uuid
 
 from app import situations_tbl
@@ -15,29 +16,30 @@ Q = Query()
 def _sit(sit_id=None, lifecycle_status="new", follow_up_date=None, notes="", dismissed=False):
     sit_id = sit_id or str(uuid.uuid4())
     return {
-        "situation_id":     sit_id,
-        "title":            "Test",
-        "summary":          "Summary",
-        "status":           "in_progress",
-        "item_ids":         [],
-        "sources":          ["jira"],
-        "project_tag":      None,
-        "score":            1.0,
-        "priority":         "medium",
-        "open_actions":     [],
-        "references":       [],
-        "key_context":      None,
-        "last_updated":     "2026-04-05T00:00:00+00:00",
-        "created_at":       "2026-04-05T00:00:00+00:00",
+        "situation_id": sit_id,
+        "title": "Test",
+        "summary": "Summary",
+        "status": "in_progress",
+        "item_ids": [],
+        "sources": ["jira"],
+        "project_tag": None,
+        "score": 1.0,
+        "priority": "medium",
+        "open_actions": [],
+        "references": [],
+        "key_context": None,
+        "last_updated": "2026-04-05T00:00:00+00:00",
+        "created_at": "2026-04-05T00:00:00+00:00",
         "score_updated_at": "2026-04-05T00:00:00+00:00",
-        "dismissed":        dismissed,
+        "dismissed": dismissed,
         "lifecycle_status": lifecycle_status,
-        "follow_up_date":   follow_up_date,
-        "notes":            notes,
+        "follow_up_date": follow_up_date,
+        "notes": notes,
     }
 
 
 # ── GET /situations lifecycle filter ─────────────────────────────────────────
+
 
 def test_default_filter_excludes_resolved_and_dismissed(client):
     """Default view returns only new/investigating/waiting."""
@@ -77,9 +79,16 @@ def test_lifecycle_status_filter(client):
 
 # ── Response includes new fields ─────────────────────────────────────────────
 
+
 def test_response_includes_lifecycle_fields(client):
-    situations_tbl.insert(_sit(sit_id="lf1", lifecycle_status="investigating",
-                                follow_up_date="2099-01-01", notes="keep an eye on this"))
+    situations_tbl.insert(
+        _sit(
+            sit_id="lf1",
+            lifecycle_status="investigating",
+            follow_up_date="2099-01-01",
+            notes="keep an eye on this",
+        )
+    )
     r = client.get("/situations/lf1")
     body = r.json()
     assert body["lifecycle_status"] == "investigating"
@@ -89,6 +98,7 @@ def test_response_includes_lifecycle_fields(client):
 
 
 # ── PATCH /situations supports new fields ────────────────────────────────────
+
 
 def test_patch_lifecycle_status(client):
     situations_tbl.insert(_sit(sit_id="pl1"))
@@ -122,6 +132,7 @@ def test_patch_follow_up_date(client):
 
 # ── POST /situations/{id}/transition ─────────────────────────────────────────
 
+
 def test_transition_changes_lifecycle_status(client):
     situations_tbl.insert(_sit(sit_id="tr1"))
     r = client.post("/situations/tr1/transition", json={"to_status": "investigating"})
@@ -153,9 +164,12 @@ def test_transition_404(client):
 
 # ── GET /situations/{id}/events ───────────────────────────────────────────────
 
+
 def test_events_recorded_on_transition(client):
     situations_tbl.insert(_sit(sit_id="ev1"))
-    client.post("/situations/ev1/transition", json={"to_status": "investigating", "note": "starting"})
+    client.post(
+        "/situations/ev1/transition", json={"to_status": "investigating", "note": "starting"}
+    )
     client.post("/situations/ev1/transition", json={"to_status": "waiting"})
     r = client.get("/situations/ev1/events")
     assert r.status_code == 200

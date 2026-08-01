@@ -28,6 +28,7 @@ returning 429s (or its tracked queue blocking) — not a parsival-side
 pre-throttle that has to be kept in sync by hand every time the GPU
 topology changes.
 """
+
 import logging
 import os
 import threading
@@ -55,19 +56,19 @@ from models import RawItem
 _TIMING_WINDOW = 10  # rolling average over last N items
 
 CONNECTORS = {
-    "slack":   connector_slack,
-    "github":  connector_github,
-    "jira":    connector_jira,
+    "slack": connector_slack,
+    "github": connector_github,
+    "jira": connector_jira,
     "outlook": connector_outlook,
-    "teams":   connector_teams,
+    "teams": connector_teams,
 }
 
 # ── Module-level references, set by init() ────────────────────────────────────
 
-_scan_state:          dict = {}
-_save_analysis              = None
-_spawn_situation_task       = None
-_generate_briefing          = None
+_scan_state: dict = {}
+_save_analysis = None
+_spawn_situation_task = None
+_generate_briefing = None
 
 # Item IDs accepted by /ingest but not yet persisted by process_ingest_items.
 # Consulted alongside db.get_item so a sidecar re-run before the background
@@ -75,6 +76,7 @@ _generate_briefing          = None
 # only: on restart we lose the set, but lost items then reappear via the
 # sidecar's normal lookback window, which is the correct behaviour.
 _in_flight_ids: set[str] = set()
+
 
 # Fan-out for /ingest: number of items analysed concurrently so merLLM's
 # scheduler sees more than one parsival job at a time and can distribute
@@ -88,18 +90,17 @@ def _ingest_concurrency() -> int:
     return max(1, n)
 
 
-def init(scan_state: dict, save_analysis_fn, spawn_situation_fn,
-         generate_briefing_fn=None) -> None:
+def init(scan_state: dict, save_analysis_fn, spawn_situation_fn, generate_briefing_fn=None) -> None:
     """Inject shared state and callables from app.py.
 
     Must be called once at startup before any scan or ingest endpoints
     are invoked.
     """
     global _scan_state, _save_analysis, _spawn_situation_task, _generate_briefing
-    _scan_state           = scan_state
-    _save_analysis        = save_analysis_fn
+    _scan_state = scan_state
+    _save_analysis = save_analysis_fn
     _spawn_situation_task = spawn_situation_fn
-    _generate_briefing    = generate_briefing_fn
+    _generate_briefing = generate_briefing_fn
 
 
 def _now_iso() -> str:
@@ -107,6 +108,7 @@ def _now_iso() -> str:
 
 
 # ── Noise filter helpers ───────────────────────────────────────────────────────
+
 
 def _get_noise_rules() -> list[dict]:
     """Return the current noise filter rules from settings."""
@@ -124,31 +126,32 @@ def _save_filtered_item(item: RawItem, matched_rule: str) -> None:
     if existing:
         return  # already stored (possibly from a previous scan)
     with db.lock:
-        db.upsert_item({
-            "item_id":         item.item_id,
-            "source":          item.source,
-            "title":           item.title,
-            "author":          item.author,
-            "timestamp":       item.timestamp,
-            "url":             item.url,
-            "has_action":      0,
-            "priority":        "low",
-            "category":        "filtered",
-            "summary":         f"[filtered by {matched_rule}]",
-            "urgency":         None,
-            "action_items":    "[]",
-            "processed_at":    _now_iso(),
-        })
+        db.upsert_item(
+            {
+                "item_id": item.item_id,
+                "source": item.source,
+                "title": item.title,
+                "author": item.author,
+                "timestamp": item.timestamp,
+                "url": item.url,
+                "has_action": 0,
+                "priority": "low",
+                "category": "filtered",
+                "summary": f"[filtered by {matched_rule}]",
+                "urgency": None,
+                "action_items": "[]",
+                "processed_at": _now_iso(),
+            }
+        )
 
 
 # ── merLLM batch helpers ───────────────────────────────────────────────────────
 
+
 def _merllm_batch_available() -> bool:
     """Return True if merLLM is reachable and can accept batch jobs."""
     try:
-        r = http_requests.get(
-            f"{config.MERLLM_URL}/api/merllm/status", timeout=5
-        )
+        r = http_requests.get(f"{config.MERLLM_URL}/api/merllm/status", timeout=5)
         r.raise_for_status()
         return True
     except Exception:
@@ -178,12 +181,12 @@ def _submit_batch_job(prompt: str) -> str | None:
             f"{config.MERLLM_URL}/api/batch/submit",
             json={
                 "source_app": "parsival",
-                "prompt":     prompt,
-                "model":      config.effective_model(),
-                "options":    {
-                    "think":       False,
+                "prompt": prompt,
+                "model": config.effective_model(),
+                "options": {
+                    "think": False,
                     "num_predict": 768,
-                    "num_ctx":     8192,
+                    "num_ctx": 8192,
                     "temperature": 0.1,
                 },
             },
@@ -206,23 +209,23 @@ def _raw_item_from_record(rec: dict) -> RawItem:
     helper reads.
     """
     return RawItem(
-        source    = rec.get("source", "") or "",
-        item_id   = rec["item_id"],
-        title     = rec.get("title", "") or "",
-        body      = rec.get("body_preview", "") or "",
-        url       = rec.get("url", "") or "",
-        author    = rec.get("author", "") or "",
-        timestamp = rec.get("timestamp") or _now_iso(),
-        metadata  = {
-            "to":                 rec.get("to_field", "") or "",
-            "cc":                 rec.get("cc_field", "") or "",
-            "is_replied":         bool(rec.get("is_replied", False)),
-            "replied_at":         rec.get("replied_at"),
-            "hierarchy":          rec.get("hierarchy", "general") or "general",
-            "direction":          rec.get("direction", "received") or "received",
-            "conversation_id":    rec.get("conversation_id"),
+        source=rec.get("source", "") or "",
+        item_id=rec["item_id"],
+        title=rec.get("title", "") or "",
+        body=rec.get("body_preview", "") or "",
+        url=rec.get("url", "") or "",
+        author=rec.get("author", "") or "",
+        timestamp=rec.get("timestamp") or _now_iso(),
+        metadata={
+            "to": rec.get("to_field", "") or "",
+            "cc": rec.get("cc_field", "") or "",
+            "is_replied": bool(rec.get("is_replied", False)),
+            "replied_at": rec.get("replied_at"),
+            "hierarchy": rec.get("hierarchy", "general") or "general",
+            "direction": rec.get("direction", "received") or "received",
+            "conversation_id": rec.get("conversation_id"),
             "conversation_topic": rec.get("conversation_topic"),
-            "project_tag":        rec.get("project_tag"),
+            "project_tag": rec.get("project_tag"),
         },
     )
 
@@ -317,7 +320,9 @@ def _poll_batch_once() -> None:
                 with db.lock:
                     db.set_batch_job_id(rec["item_id"], None)
             except Exception as clear_err:
-                log.error("failed to clear stuck batch_job_id for %s: %s", rec["item_id"], clear_err)
+                log.error(
+                    "failed to clear stuck batch_job_id for %s: %s", rec["item_id"], clear_err
+                )
 
 
 def _poll_batch_jobs() -> None:
@@ -345,6 +350,7 @@ def _ensure_batch_poll_thread() -> None:
 
 # ── Pipeline functions ─────────────────────────────────────────────────────────
 
+
 def _generate_briefing_bg() -> None:
     """Call the injected briefing generator in a background thread.
 
@@ -356,7 +362,7 @@ def _generate_briefing_bg() -> None:
         content = _generate_briefing()
         with db.lock:
             db.save_briefing(content)
-        log.info("briefing generated %d sections", len(content.get('sections', [])))
+        log.info("briefing generated %d sections", len(content.get("sections", [])))
     except Exception as e:
         log.error("briefing error: %s", e)
 
@@ -378,13 +384,20 @@ def run_scan(sources: list[str]) -> None:
                     ``["slack", "github", "jira"]``.
     :type sources: list[str]
     """
-    _scan_state.update({
-        "running": True, "cancelled": False, "mode": "scan",
-        "progress": 0, "total": 0, "message": "Starting...",
-        "total_items": 0, "completed_items": 0,
-        "estimated_minutes_remaining": 0,
-    })
-    started   = _now_iso()
+    _scan_state.update(
+        {
+            "running": True,
+            "cancelled": False,
+            "mode": "scan",
+            "progress": 0,
+            "total": 0,
+            "message": "Starting...",
+            "total_items": 0,
+            "completed_items": 0,
+            "estimated_minutes_remaining": 0,
+        }
+    )
+    started = _now_iso()
     all_items: list[RawItem] = []
 
     for src in sources:
@@ -395,25 +408,27 @@ def run_scan(sources: list[str]) -> None:
         if connector:
             all_items.extend(connector.fetch())
 
-    _scan_state["total"]       = len(all_items)
+    _scan_state["total"] = len(all_items)
     _scan_state["total_items"] = len(all_items)
-    _scan_state["message"]     = f"Analyzing {len(all_items)} items..."
+    _scan_state["message"] = f"Analyzing {len(all_items)} items..."
 
     results = []
     _timing: deque = deque(maxlen=_TIMING_WINDOW)
-    noise_rules    = _get_noise_rules()
+    noise_rules = _get_noise_rules()
     filtered_count = 0
     try:
         for i, item in enumerate(all_items):
             if _scan_state["cancelled"]:
                 break
-            _scan_state.update({
-                "progress":       i,
-                "completed_items": i,
-                "current_source": item.source,
-                "current_item":   item.title[:60],
-                "message":        f"[{item.source}] {i + 1}/{len(all_items)}: {item.title[:60]}",
-            })
+            _scan_state.update(
+                {
+                    "progress": i,
+                    "completed_items": i,
+                    "current_source": item.source,
+                    "current_item": item.title[:60],
+                    "message": f"[{item.source}] {i + 1}/{len(all_items)}: {item.title[:60]}",
+                }
+            )
             matched, rule_type = _nf.should_filter(item, noise_rules)
             if matched:
                 _save_filtered_item(item, rule_type)
@@ -438,14 +453,16 @@ def run_scan(sources: list[str]) -> None:
         status = "cancelled" if _scan_state["cancelled"] else "success"
         filter_note = f", {filtered_count} filtered" if filtered_count else ""
         with db.lock:
-            db.insert_scan_log({
-                "started_at":    started,
-                "finished_at":   _now_iso(),
-                "sources":       ",".join(sources),
-                "items_scanned": len(results),
-                "actions_found": actions,
-                "status":        status,
-            })
+            db.insert_scan_log(
+                {
+                    "started_at": started,
+                    "finished_at": _now_iso(),
+                    "sources": ",".join(sources),
+                    "items_scanned": len(results),
+                    "actions_found": actions,
+                    "status": status,
+                }
+            )
         if _scan_state["cancelled"]:
             _scan_state["message"] = (
                 f"Stopped — {actions} action items found in "
@@ -460,25 +477,27 @@ def run_scan(sources: list[str]) -> None:
                 _generate_briefing_bg()
     except Exception as e:
         with db.lock:
-            db.insert_scan_log({
-                "started_at":    started,
-                "finished_at":   _now_iso(),
-                "sources":       ",".join(sources),
-                "items_scanned": len(results),
-                "actions_found": 0,
-                "status":        f"error: {e}",
-            })
+            db.insert_scan_log(
+                {
+                    "started_at": started,
+                    "finished_at": _now_iso(),
+                    "sources": ",".join(sources),
+                    "items_scanned": len(results),
+                    "actions_found": 0,
+                    "status": f"error: {e}",
+                }
+            )
         _scan_state["message"] = f"Error: {e}"
     finally:
-        _scan_state["running"]                    = False
+        _scan_state["running"] = False
         # Clear the cancellation flag so a subsequent ingest/scan/reanalyze
         # is not poisoned by a cancel that belonged to this run.
         # process_ingest_items shares _scan_state and aborts if it sees
         # cancelled=True, so leaking the flag silently breaks the next
         # fresh-item analyze path.
-        _scan_state["cancelled"]                  = False
-        _scan_state["progress"]                   = _scan_state["total"]
-        _scan_state["completed_items"]            = _scan_state["total_items"]
+        _scan_state["cancelled"] = False
+        _scan_state["progress"] = _scan_state["total"]
+        _scan_state["completed_items"] = _scan_state["total_items"]
         _scan_state["estimated_minutes_remaining"] = 0
 
 
@@ -492,12 +511,19 @@ def run_reanalyze() -> None:
     Situation formation is re-triggered for each item after save.
     Reuses ``scan_state`` for progress reporting.
     """
-    _scan_state.update({
-        "running": True, "cancelled": False, "mode": "reanalyze",
-        "progress": 0, "total": 0, "message": "Loading stored items...",
-        "total_items": 0, "completed_items": 0,
-        "estimated_minutes_remaining": 0,
-    })
+    _scan_state.update(
+        {
+            "running": True,
+            "cancelled": False,
+            "mode": "reanalyze",
+            "progress": 0,
+            "total": 0,
+            "message": "Loading stored items...",
+            "total_items": 0,
+            "completed_items": 0,
+            "estimated_minutes_remaining": 0,
+        }
+    )
     started = _now_iso()
     try:
         with db.lock:
@@ -517,13 +543,11 @@ def run_reanalyze() -> None:
             reverse=True,
         )
         all_records.sort(key=lambda r: 0 if r.get("is_passdown") else 1)
-        all_records.sort(
-            key=lambda r: _HIER_RANK.get(r.get("hierarchy", "general"), 3)
-        )
+        all_records.sort(key=lambda r: _HIER_RANK.get(r.get("hierarchy", "general"), 3))
 
-        _scan_state["total"]       = len(all_records)
+        _scan_state["total"] = len(all_records)
         _scan_state["total_items"] = len(all_records)
-        _scan_state["message"]     = f"Re-analyzing {len(all_records)} items..."
+        _scan_state["message"] = f"Re-analyzing {len(all_records)} items..."
 
         # Reanalyze is durable-only (squire#47). Previously a missing merLLM
         # triggered a sync /api/generate fallback that merLLM does not
@@ -531,10 +555,7 @@ def run_reanalyze() -> None:
         # the whole run loudly instead; re-running reanalyze once merLLM is
         # back up is cheap and preferable to hidden data loss.
         if not _merllm_batch_available():
-            msg = (
-                "Re-analysis cannot start — merLLM is unreachable. "
-                "Retry once merLLM is back up."
-            )
+            msg = "Re-analysis cannot start — merLLM is unreachable. Retry once merLLM is back up."
             _scan_state["message"] = msg
             log.error("reanalyze: %s", msg)
             return
@@ -545,28 +566,30 @@ def run_reanalyze() -> None:
         for i, rec in enumerate(all_records):
             if _scan_state["cancelled"]:
                 break
-            _scan_state.update({
-                "progress":       i,
-                "completed_items": i,
-                "current_source": rec.get("source", ""),
-                "current_item":   (rec.get("title") or "")[:60],
-                "message":        f"[{rec.get('source','')}] {i + 1}/{len(all_records)}: {(rec.get('title') or '')[:60]}",
-            })
+            _scan_state.update(
+                {
+                    "progress": i,
+                    "completed_items": i,
+                    "current_source": rec.get("source", ""),
+                    "current_item": (rec.get("title") or "")[:60],
+                    "message": f"[{rec.get('source', '')}] {i + 1}/{len(all_records)}: {(rec.get('title') or '')[:60]}",
+                }
+            )
             item = RawItem(
-                source    = rec.get("source", ""),
-                item_id   = rec.get("item_id", ""),
-                title     = rec.get("title", ""),
-                body      = rec.get("body_preview", "") or rec.get("title", ""),
-                url       = rec.get("url", ""),
-                author    = rec.get("author", ""),
-                timestamp = rec.get("timestamp", _now_iso()),
-                metadata  = {
-                    "to":              rec.get("to_field", ""),
-                    "cc":              rec.get("cc_field", ""),
-                    "is_replied":      rec.get("is_replied", False),
-                    "replied_at":      rec.get("replied_at"),
-                    "project_tag":     rec.get("project_tag"),
-                    "hierarchy":       rec.get("hierarchy"),
+                source=rec.get("source", ""),
+                item_id=rec.get("item_id", ""),
+                title=rec.get("title", ""),
+                body=rec.get("body_preview", "") or rec.get("title", ""),
+                url=rec.get("url", ""),
+                author=rec.get("author", ""),
+                timestamp=rec.get("timestamp", _now_iso()),
+                metadata={
+                    "to": rec.get("to_field", ""),
+                    "cc": rec.get("cc_field", ""),
+                    "is_replied": rec.get("is_replied", False),
+                    "replied_at": rec.get("replied_at"),
+                    "project_tag": rec.get("project_tag"),
+                    "hierarchy": rec.get("hierarchy"),
                     "conversation_id": rec.get("conversation_id"),
                 },
             )
@@ -602,14 +625,16 @@ def run_reanalyze() -> None:
 
         status = "cancelled" if _scan_state["cancelled"] else "success"
         with db.lock:
-            db.insert_scan_log({
-                "started_at":    started,
-                "finished_at":   _now_iso(),
-                "sources":       "reanalyze",
-                "items_scanned": batch_submitted,
-                "actions_found": 0,   # counted as results stream in from the batch poller
-                "status":        status,
-            })
+            db.insert_scan_log(
+                {
+                    "started_at": started,
+                    "finished_at": _now_iso(),
+                    "sources": "reanalyze",
+                    "items_scanned": batch_submitted,
+                    "actions_found": 0,  # counted as results stream in from the batch poller
+                    "status": status,
+                }
+            )
         _scan_state["message"] = (
             f"Re-analysis queued — {batch_submitted} items sent to batch. "
             f"Results apply automatically as merLLM returns them."
@@ -624,13 +649,13 @@ def run_reanalyze() -> None:
         _scan_state["message"] = f"Re-analysis error: {e}"
         log.error("reanalyze: %s", e)
     finally:
-        _scan_state["running"]                    = False
+        _scan_state["running"] = False
         # Clear the cancellation flag so a subsequent ingest/scan/reanalyze
         # is not poisoned by a cancel that belonged to this run. See the
         # matching comment in run_scan() for the full rationale.
-        _scan_state["cancelled"]                  = False
-        _scan_state["progress"]                   = _scan_state["total"]
-        _scan_state["completed_items"]            = _scan_state["total_items"]
+        _scan_state["cancelled"] = False
+        _scan_state["progress"] = _scan_state["total"]
+        _scan_state["completed_items"] = _scan_state["total_items"]
         _scan_state["estimated_minutes_remaining"] = 0
 
 
@@ -706,9 +731,7 @@ def process_ingest_items(raw: list[RawItem]) -> None:
 
     def _mark_done(item: RawItem) -> None:
         with db.lock:
-            _scan_state["ingest_pending"] = max(
-                0, _scan_state["ingest_pending"] - 1
-            )
+            _scan_state["ingest_pending"] = max(0, _scan_state["ingest_pending"] - 1)
             _in_flight_ids.discard(item.item_id)
 
     def _handle_item(item: RawItem) -> None:
@@ -730,9 +753,7 @@ def process_ingest_items(raw: list[RawItem]) -> None:
                     thread_todos = db.get_open_todos_for_conversation(
                         conv_id, before_timestamp=item.timestamp
                     )
-            result = analyze(
-                item, priority="short", thread_todos=thread_todos
-            )
+            result = analyze(item, priority="short", thread_todos=thread_todos)
             _save_analysis(result)
             graph.index_item(result)
             _spawn_situation_task(result.item_id)
@@ -750,9 +771,7 @@ def process_ingest_items(raw: list[RawItem]) -> None:
     if not groups:
         return
     max_workers = min(_ingest_concurrency(), max(1, len(groups)))
-    with ThreadPoolExecutor(
-        max_workers=max_workers, thread_name_prefix="ingest"
-    ) as ex:
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ingest") as ex:
         futures = [ex.submit(_handle_group, items) for items in groups]
         for fut in as_completed(futures):
             # Exceptions are already caught per-item inside _handle_item;
@@ -772,7 +791,7 @@ _sched_log = _logging.getLogger("parsival.scheduler")
 _schedule: dict = {}
 _schedule_lock = threading.Lock()
 
-SCHEDULABLE_SOURCES = list(CONNECTORS.keys())   # ["slack","github","jira","outlook","teams"]
+SCHEDULABLE_SOURCES = list(CONNECTORS.keys())  # ["slack","github","jira","outlook","teams"]
 
 
 def _fire_auto_scan(source: str) -> None:
@@ -827,9 +846,9 @@ def scheduler_update(schedule_dict: dict) -> None:
         with _schedule_lock:
             _schedule[source] = {
                 "interval_min": interval_min,
-                "next_run":     None,
-                "last_run":     None,
-                "timer":        None,
+                "next_run": None,
+                "last_run": None,
+                "timer": None,
             }
         if interval_min > 0:
             interval_sec = interval_min * 60
@@ -852,7 +871,11 @@ def get_schedule_status() -> dict:
             last_run = entry.get("last_run")
             result[source] = {
                 "interval_min": entry["interval_min"],
-                "next_run":     datetime.fromtimestamp(next_run, tz=UTC).isoformat() if next_run else None,
-                "last_run":     datetime.fromtimestamp(last_run, tz=UTC).isoformat() if last_run else None,
+                "next_run": datetime.fromtimestamp(next_run, tz=UTC).isoformat()
+                if next_run
+                else None,
+                "last_run": datetime.fromtimestamp(last_run, tz=UTC).isoformat()
+                if last_run
+                else None,
             }
         return result

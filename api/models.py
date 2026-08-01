@@ -19,6 +19,7 @@ Category schema (4 categories + task_type):
   fyi       — informational only; no action required
   noise     — automated or irrelevant; no action required
 """
+
 from dataclasses import dataclass, field
 
 
@@ -36,14 +37,15 @@ class RawItem:
     :ivar metadata: Arbitrary source-specific key/value pairs (channel, status,
                     conversation_id, direction, etc.).
     """
-    source:    str
-    item_id:   str
-    title:     str
-    body:      str
-    url:       str
-    author:    str
+
+    source: str
+    item_id: str
+    title: str
+    body: str
+    url: str
+    author: str
     timestamp: str
-    metadata:  dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -54,9 +56,10 @@ class ActionItem:
     :ivar deadline: ISO 8601 date string if a due date was identified, else ``None``.
     :ivar owner: Who is responsible — ``"me"`` or a named person.
     """
+
     description: str
-    deadline:    str | None
-    owner:       str
+    deadline: str | None
+    owner: str
 
 
 @dataclass
@@ -102,34 +105,35 @@ class Analysis:
     :ivar information_items: Factual observations and completed-action notes
                              extracted by the LLM that are not tasks for the user.
     """
-    item_id:        str
-    source:         str
-    title:          str
-    author:         str
-    timestamp:      str
-    url:            str
-    has_action:     bool
-    priority:       str
-    category:       str
-    action_items:   list[ActionItem]
-    summary:        str
+
+    item_id: str
+    source: str
+    title: str
+    author: str
+    timestamp: str
+    url: str
+    has_action: bool
+    priority: str
+    category: str
+    action_items: list[ActionItem]
+    summary: str
     urgency_reason: str | None
     # Context-aware enrichment fields
-    task_type:         str | None   = None   # "review" | "reply" | None
-    hierarchy:         str             = "general"
-    is_passdown:       bool            = False
-    project_tag:       str | None   = None
-    direction:         str             = "received"   # "received" | "sent"
-    conversation_id:   str | None   = None
-    conversation_topic: str | None  = None
-    goals:             list[str]       = field(default_factory=list)
-    key_dates:         list[dict]      = field(default_factory=list)
-    body_preview:      str             = ""
-    to_field:          str             = ""
-    cc_field:          str             = ""
-    is_replied:        bool            = False
-    replied_at:        str | None   = None
-    information_items: list[dict]      = field(default_factory=list)
+    task_type: str | None = None  # "review" | "reply" | None
+    hierarchy: str = "general"
+    is_passdown: bool = False
+    project_tag: str | None = None
+    direction: str = "received"  # "received" | "sent"
+    conversation_id: str | None = None
+    conversation_topic: str | None = None
+    goals: list[str] = field(default_factory=list)
+    key_dates: list[dict] = field(default_factory=list)
+    body_preview: str = ""
+    to_field: str = ""
+    cc_field: str = ""
+    is_replied: bool = False
+    replied_at: str | None = None
+    information_items: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -153,18 +157,19 @@ class Situation:
     :ivar created_at: ISO timestamp when this situation was first formed.
     :ivar score_updated_at: ISO timestamp of last score recomputation.
     """
-    situation_id:     str
-    title:            str
-    summary:          str
-    status:           str
-    item_ids:         list
-    sources:          list
-    project_tag:      str | None
-    score:            float
-    priority:         str
-    open_actions:     list
-    references:       list
-    key_context:      str | None
-    last_updated:     str
-    created_at:       str
+
+    situation_id: str
+    title: str
+    summary: str
+    status: str
+    item_ids: list
+    sources: list
+    project_tag: str | None
+    score: float
+    priority: str
+    open_actions: list
+    references: list
+    key_context: str | None
+    last_updated: str
+    created_at: str
     score_updated_at: str

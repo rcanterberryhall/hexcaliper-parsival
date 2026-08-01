@@ -42,17 +42,18 @@ from agent import extract_emails
 
 # ── Scoring constants ──────────────────────────────────────────────────────────
 
-HALF_LIFE_DAYS = 14.0   # recency half-life in days
+HALF_LIFE_DAYS = 14.0  # recency half-life in days
 
 EDGE_WEIGHTS = {
     "in_conversation": 1.00,
-    "in_situation":    0.80,
-    "tagged_to":       0.55,
-    "authored_by":     0.40,
+    "in_situation": 0.80,
+    "tagged_to": 0.55,
+    "authored_by": 0.40,
 }
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -106,6 +107,7 @@ def _item_id_node(item_id: str) -> str:
 
 # ── Indexing ───────────────────────────────────────────────────────────────────
 
+
 def index_item(analysis) -> None:
     """Ingest a saved Analysis object into the knowledge graph.
 
@@ -119,14 +121,14 @@ def index_item(analysis) -> None:
 
     # Item node
     db.upsert_node(
-        node_id   = item_node,
-        node_type = "item",
-        label     = analysis.title[:80],
-        properties = {
-            "source":    analysis.source,
+        node_id=item_node,
+        node_type="item",
+        label=analysis.title[:80],
+        properties={
+            "source": analysis.source,
             "timestamp": analysis.timestamp,
-            "priority":  analysis.priority,
-            "category":  analysis.category,
+            "priority": analysis.priority,
+            "category": analysis.category,
         },
     )
 
@@ -136,31 +138,31 @@ def index_item(analysis) -> None:
     if primary_email:
         person_node = _person_id(primary_email)
         db.upsert_node(
-            node_id   = person_node,
-            node_type = "person",
-            label     = analysis.author[:80],
-            properties = {"email": primary_email},
+            node_id=person_node,
+            node_type="person",
+            label=analysis.author[:80],
+            properties={"email": primary_email},
         )
         db.upsert_edge(
-            src_id    = item_node,
-            dst_id    = person_node,
-            edge_type = "authored_by",
-            weight    = EDGE_WEIGHTS["authored_by"],
+            src_id=item_node,
+            dst_id=person_node,
+            edge_type="authored_by",
+            weight=EDGE_WEIGHTS["authored_by"],
         )
 
     # Project edges (one per tag for multi-tagged items)
     for ptag in db.parse_project_tags(analysis.project_tag):
         proj_node = _project_id(ptag)
         db.upsert_node(
-            node_id   = proj_node,
-            node_type = "project",
-            label     = ptag,
+            node_id=proj_node,
+            node_type="project",
+            label=ptag,
         )
         db.upsert_edge(
-            src_id    = item_node,
-            dst_id    = proj_node,
-            edge_type = "tagged_to",
-            weight    = EDGE_WEIGHTS["tagged_to"],
+            src_id=item_node,
+            dst_id=proj_node,
+            edge_type="tagged_to",
+            weight=EDGE_WEIGHTS["tagged_to"],
         )
 
     # Conversation edge
@@ -168,26 +170,26 @@ def index_item(analysis) -> None:
         conv_node = _conversation_id_node(analysis.conversation_id)
         label = analysis.conversation_topic or analysis.title[:80]
         db.upsert_node(
-            node_id   = conv_node,
-            node_type = "conversation",
-            label     = label,
-            properties = {"topic": analysis.conversation_topic or ""},
+            node_id=conv_node,
+            node_type="conversation",
+            label=label,
+            properties={"topic": analysis.conversation_topic or ""},
         )
         db.upsert_edge(
-            src_id    = item_node,
-            dst_id    = conv_node,
-            edge_type = "in_conversation",
-            weight    = EDGE_WEIGHTS["in_conversation"],
+            src_id=item_node,
+            dst_id=conv_node,
+            edge_type="in_conversation",
+            weight=EDGE_WEIGHTS["in_conversation"],
         )
 
     # Situation edge (if already grouped)
     if getattr(analysis, "situation_id", None):
         sit_node = _situation_id_node(analysis.situation_id)
         db.upsert_edge(
-            src_id    = item_node,
-            dst_id    = sit_node,
-            edge_type = "in_situation",
-            weight    = EDGE_WEIGHTS["in_situation"],
+            src_id=item_node,
+            dst_id=sit_node,
+            edge_type="in_situation",
+            weight=EDGE_WEIGHTS["in_situation"],
         )
 
 
@@ -198,14 +200,15 @@ def index_item_situation(item_id: str, situation_id: str) -> None:
     :param situation_id: The situation's ID.
     """
     db.upsert_edge(
-        src_id    = _item_id_node(item_id),
-        dst_id    = _situation_id_node(situation_id),
-        edge_type = "in_situation",
-        weight    = EDGE_WEIGHTS["in_situation"],
+        src_id=_item_id_node(item_id),
+        dst_id=_situation_id_node(situation_id),
+        edge_type="in_situation",
+        weight=EDGE_WEIGHTS["in_situation"],
     )
 
 
 # ── Context query ──────────────────────────────────────────────────────────────
+
 
 def _candidates_via_edge_type(
     hub_node: str,
@@ -224,14 +227,16 @@ def _candidates_via_edge_type(
         other_item_node = e["src_id"]
         if not other_item_node.startswith("item:"):
             continue
-        other_item_id = other_item_node[len("item:"):]
+        other_item_id = other_item_node[len("item:") :]
         if other_item_id == exclude_item_id:
             continue
-        candidates.append({
-            "item_id":    other_item_id,
-            "edge_type":  edge_type,
-            "base_weight": base_weight,
-        })
+        candidates.append(
+            {
+                "item_id": other_item_id,
+                "edge_type": edge_type,
+                "base_weight": base_weight,
+            }
+        )
 
     return candidates
 
@@ -259,14 +264,14 @@ def get_context(item, max_n: int = 5) -> list[dict]:
 
     # Extract connection keys from either RawItem (uses .metadata) or Analysis
     if hasattr(item, "metadata"):
-        meta         = item.metadata
+        meta = item.metadata
         conversation = meta.get("conversation_id", "")
-        author_raw   = item.author
-        project_tag  = meta.get("project_tag", "")
+        author_raw = item.author
+        project_tag = meta.get("project_tag", "")
     else:
         conversation = getattr(item, "conversation_id", "") or ""
-        author_raw   = getattr(item, "author", "")
-        project_tag  = getattr(item, "project_tag", "") or ""
+        author_raw = getattr(item, "author", "")
+        project_tag = getattr(item, "project_tag", "") or ""
 
     scored: dict[str, dict] = {}  # item_id → best score so far
 
@@ -282,7 +287,7 @@ def get_context(item, max_n: int = 5) -> list[dict]:
                 scored[c["item_id"]] = {
                     **row,
                     "context_score": round(score, 4),
-                    "context_edge":  edge_type,
+                    "context_edge": edge_type,
                 }
 
     # 1. Same email thread (highest signal)
@@ -306,6 +311,7 @@ def get_context(item, max_n: int = 5) -> list[dict]:
 
 # ── Prompt formatting ──────────────────────────────────────────────────────────
 
+
 def format_context(context_items: list[dict]) -> str:
     """Render a list of context items as a human-readable prompt section.
 
@@ -321,20 +327,20 @@ def format_context(context_items: list[dict]) -> str:
 
     _EDGE_LABELS = {
         "in_conversation": "same email thread",
-        "in_situation":    "related situation",
-        "tagged_to":       "same project",
-        "authored_by":     "same author",
+        "in_situation": "related situation",
+        "tagged_to": "same project",
+        "authored_by": "same author",
     }
 
     lines = ["Prior context from related items:"]
     for c in context_items:
         edge_label = _EDGE_LABELS.get(c.get("context_edge", ""), "related")
-        source     = c.get("source", "")
-        title      = c.get("title", "")[:70]
-        summary    = c.get("summary", "")[:120]
-        priority   = c.get("priority", "")
-        ts         = (c.get("timestamp") or "")[:10]
-        score      = c.get("context_score", 0.0)
+        source = c.get("source", "")
+        title = c.get("title", "")[:70]
+        summary = c.get("summary", "")[:120]
+        priority = c.get("priority", "")
+        ts = (c.get("timestamp") or "")[:10]
+        score = c.get("context_score", 0.0)
 
         lines.append(
             f"  [{edge_label}] [{source}] {title} "

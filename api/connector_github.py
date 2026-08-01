@@ -9,6 +9,7 @@ Pulls three categories of actionable items for the configured user:
 All items are filtered to the lookback window defined in
 ``config.LOOKBACK_HOURS`` and deduplicated by GitHub object ID.
 """
+
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -29,8 +30,8 @@ def _h() -> dict:
     :rtype: dict
     """
     return {
-        "Authorization":        f"Bearer {config.GITHUB_PAT}",
-        "Accept":               "application/vnd.github+json",
+        "Authorization": f"Bearer {config.GITHUB_PAT}",
+        "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
@@ -121,50 +122,57 @@ def fetch() -> list[RawItem]:
 
     cutoff = datetime.now(UTC) - timedelta(hours=config.LOOKBACK_HOURS)
     items: list[RawItem] = []
-    seen:  set[str]      = set()
+    seen: set[str] = set()
 
     # ── 1. Notifications (mentions, review requests, assignments, CI) ─────────
     try:
-        for n in _get_paginated("/notifications",
-                                {"all": False, "participating": True},
-                                max_items=config.GITHUB_MAX_NOTIFICATIONS):
+        for n in _get_paginated(
+            "/notifications",
+            {"all": False, "participating": True},
+            max_items=config.GITHUB_MAX_NOTIFICATIONS,
+        ):
             if datetime.fromisoformat(_ts(n["updated_at"])) < cutoff:
                 continue
-            subj     = n.get("subject", {})
-            repo     = n["repository"]["full_name"]
-            reason   = n.get("reason", "")
-            body     = f"Repo: {repo}\nReason: {reason}\nTitle: {subj.get('title', '')}"
+            subj = n.get("subject", {})
+            repo = n["repository"]["full_name"]
+            reason = n.get("reason", "")
+            body = f"Repo: {repo}\nReason: {reason}\nTitle: {subj.get('title', '')}"
             html_url = ""
             try:
                 url = subj.get("url", "")
                 if url:
-                    detail   = _get(url.replace(BASE, ""))
-                    body     = f"Repo: {repo}\nReason: {reason}\n\n{detail.get('body') or body}"
+                    detail = _get(url.replace(BASE, ""))
+                    body = f"Repo: {repo}\nReason: {reason}\n\n{detail.get('body') or body}"
                     html_url = detail.get("html_url", "")
             except Exception:
                 pass
             nid = str(n["id"])
             seen.add(nid)
-            items.append(RawItem(
-                source    = "github",
-                item_id   = nid,
-                title     = f"[{repo}] {subj.get('title', '')}",
-                body      = body[:3000],
-                url       = html_url or "https://github.com/notifications",
-                author    = repo,
-                timestamp = _ts(n["updated_at"]),
-                metadata  = {"reason": reason, "type": subj.get("type", ""), "repo": repo},
-            ))
+            items.append(
+                RawItem(
+                    source="github",
+                    item_id=nid,
+                    title=f"[{repo}] {subj.get('title', '')}",
+                    body=body[:3000],
+                    url=html_url or "https://github.com/notifications",
+                    author=repo,
+                    timestamp=_ts(n["updated_at"]),
+                    metadata={"reason": reason, "type": subj.get("type", ""), "repo": repo},
+                )
+            )
     except Exception as e:
         log.error("notifications: %s", e)
 
     # ── 2. Open PRs requesting my review ─────────────────────────────────────
     try:
-        results = _get("/search/issues", {
-            "q":        f"is:open is:pr review-requested:{config.GITHUB_USERNAME}",
-            "per_page": 20,
-            "sort":     "updated",
-        }).get("items", [])
+        results = _get(
+            "/search/issues",
+            {
+                "q": f"is:open is:pr review-requested:{config.GITHUB_USERNAME}",
+                "per_page": 20,
+                "sort": "updated",
+            },
+        ).get("items", [])
         for pr in results:
             if datetime.fromisoformat(_ts(pr["updated_at"])) < cutoff:
                 continue
@@ -172,27 +180,32 @@ def fetch() -> list[RawItem]:
             if pid in seen:
                 continue
             seen.add(pid)
-            items.append(RawItem(
-                source    = "github",
-                item_id   = pid,
-                title     = f"[PR] {pr['title']}",
-                body      = f"PR #{pr['number']}\n\n{pr.get('body') or ''}",
-                url       = pr["html_url"],
-                author    = pr["user"]["login"],
-                timestamp = _ts(pr["updated_at"]),
-                metadata  = {"type": "pull_request", "number": pr["number"]},
-            ))
+            items.append(
+                RawItem(
+                    source="github",
+                    item_id=pid,
+                    title=f"[PR] {pr['title']}",
+                    body=f"PR #{pr['number']}\n\n{pr.get('body') or ''}",
+                    url=pr["html_url"],
+                    author=pr["user"]["login"],
+                    timestamp=_ts(pr["updated_at"]),
+                    metadata={"type": "pull_request", "number": pr["number"]},
+                )
+            )
     except Exception as e:
         log.error("PR search: %s", e)
 
     # ── 3. Open issues assigned to me ────────────────────────────────────────
     try:
-        for issue in _get("/issues", {
-            "filter":   "assigned",
-            "state":    "open",
-            "per_page": 30,
-            "sort":     "updated",
-        }):
+        for issue in _get(
+            "/issues",
+            {
+                "filter": "assigned",
+                "state": "open",
+                "per_page": 30,
+                "sort": "updated",
+            },
+        ):
             if datetime.fromisoformat(_ts(issue["updated_at"])) < cutoff:
                 continue
             iid = f"issue_{issue['id']}"
@@ -200,16 +213,18 @@ def fetch() -> list[RawItem]:
                 continue
             seen.add(iid)
             repo = issue.get("repository", {}).get("full_name", "")
-            items.append(RawItem(
-                source    = "github",
-                item_id   = iid,
-                title     = f"[Issue] {issue['title']}",
-                body      = f"Issue #{issue['number']}\nRepo: {repo}\n\n{issue.get('body') or ''}",
-                url       = issue["html_url"],
-                author    = issue["user"]["login"],
-                timestamp = _ts(issue["updated_at"]),
-                metadata  = {"type": "issue", "repo": repo},
-            ))
+            items.append(
+                RawItem(
+                    source="github",
+                    item_id=iid,
+                    title=f"[Issue] {issue['title']}",
+                    body=f"Issue #{issue['number']}\nRepo: {repo}\n\n{issue.get('body') or ''}",
+                    url=issue["html_url"],
+                    author=issue["user"]["login"],
+                    timestamp=_ts(issue["updated_at"]),
+                    metadata={"type": "issue", "repo": repo},
+                )
+            )
     except Exception as e:
         log.error("issues: %s", e)
 

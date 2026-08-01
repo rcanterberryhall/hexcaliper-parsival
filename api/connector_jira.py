@@ -8,6 +8,7 @@ the analysis pipeline.
 Requires ``config.JIRA_EMAIL``, ``config.JIRA_TOKEN``, and
 ``config.JIRA_DOMAIN`` to be set.
 """
+
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -80,29 +81,29 @@ def fetch() -> list[RawItem]:
     try:
         r = requests.get(
             f"{_base()}/search",
-            auth    = _auth(),
-            params  = {
-                "jql":        config.JIRA_JQL,
+            auth=_auth(),
+            params={
+                "jql": config.JIRA_JQL,
                 "maxResults": 50,
-                "fields":     "summary,description,status,priority,reporter,updated,duedate,comment,issuetype,project",
+                "fields": "summary,description,status,priority,reporter,updated,duedate,comment,issuetype,project",
             },
-            headers = {"Accept": "application/json"},
-            timeout = 15,
+            headers={"Accept": "application/json"},
+            timeout=15,
         )
         r.raise_for_status()
 
         for issue in r.json().get("issues", []):
-            f        = issue["fields"]
-            updated  = datetime.fromisoformat(f["updated"].replace("Z", "+00:00"))
-            desc     = _text(f.get("description"))
-            status   = f.get("status", {}).get("name", "")
+            f = issue["fields"]
+            updated = datetime.fromisoformat(f["updated"].replace("Z", "+00:00"))
+            desc = _text(f.get("description"))
+            status = f.get("status", {}).get("name", "")
             priority = f.get("priority", {}).get("name", "Medium")
-            due      = f.get("duedate", "")
-            project  = f.get("project", {}).get("name", "")
+            due = f.get("duedate", "")
+            project = f.get("project", {}).get("name", "")
             reporter = f.get("reporter", {}).get("displayName", "")
 
             # Append the most recent comment for additional context.
-            comments     = f.get("comment", {}).get("comments", [])
+            comments = f.get("comment", {}).get("comments", [])
             last_comment = ""
             if comments:
                 lc = comments[-1]
@@ -118,22 +119,24 @@ def fetch() -> list[RawItem]:
                 f"{desc}{last_comment}"
             )
 
-            items.append(RawItem(
-                source    = "jira",
-                item_id   = issue["key"],
-                title     = f"[{issue['key']}] {f.get('summary', '')}",
-                body      = body[:3000],
-                url       = f"https://{config.JIRA_DOMAIN}/browse/{issue['key']}",
-                author    = reporter,
-                timestamp = f["updated"],
-                metadata  = {
-                    "status":    status,
-                    "priority":  priority,
-                    "due":       due,
-                    "project":   project,
-                    "is_recent": updated > cutoff,
-                },
-            ))
+            items.append(
+                RawItem(
+                    source="jira",
+                    item_id=issue["key"],
+                    title=f"[{issue['key']}] {f.get('summary', '')}",
+                    body=body[:3000],
+                    url=f"https://{config.JIRA_DOMAIN}/browse/{issue['key']}",
+                    author=reporter,
+                    timestamp=f["updated"],
+                    metadata={
+                        "status": status,
+                        "priority": priority,
+                        "due": due,
+                        "project": project,
+                        "is_recent": updated > cutoff,
+                    },
+                )
+            )
 
     except Exception as e:
         log.error("error: %s", e)

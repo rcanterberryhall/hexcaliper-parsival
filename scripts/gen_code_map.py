@@ -49,9 +49,7 @@ def discover_subpackages(root: Path) -> list[Path]:
         (
             p
             for p in root.iterdir()
-            if p.is_dir()
-            and not p.name.startswith("_")
-            and (p / "__init__.py").is_file()
+            if p.is_dir() and not p.name.startswith("_") and (p / "__init__.py").is_file()
         ),
         key=lambda p: p.name,
     )
@@ -119,9 +117,7 @@ def _is_public(name: str, dunder_all_filter: list[str] | None) -> bool:
     return not name.startswith("_")
 
 
-def extract_module_symbols(
-    module_path: Path, dunder_all_filter: list[str] | None
-) -> list[Symbol]:
+def extract_module_symbols(module_path: Path, dunder_all_filter: list[str] | None) -> list[Symbol]:
     """Walk ``module_path`` with ``ast`` and return its public symbols in source order.
 
     ``dunder_all_filter`` mirrors the package's ``__all__``: when not None, only
@@ -477,9 +473,7 @@ def render_package_index_table(
     """
     rows: list[str] = ["| Package | Role | README |", "|---|---|---|"]
     for pkg_dir in discover_packages(src_root, flat=flat):
-        init_doc = (
-            ast.get_docstring(ast.parse((pkg_dir / "__init__.py").read_text())) or ""
-        )
+        init_doc = ast.get_docstring(ast.parse((pkg_dir / "__init__.py").read_text())) or ""
         role = init_doc.splitlines()[0] if init_doc else "(no package docstring)"
         readme = readme_path_template.format(pkg=pkg_dir.name)
         dotted = (
@@ -500,9 +494,7 @@ INDEX_END = "<!-- END: AUTO-GENERATED PACKAGE INDEX -->"
 def package_readme_template(*, package_dotted: str, auto_generated_inner: str) -> str:
     """Return the bootstrap content for a per-package README with _TODO_ placeholders."""
     inner = (
-        auto_generated_inner
-        if auto_generated_inner.endswith("\n")
-        else auto_generated_inner + "\n"
+        auto_generated_inner if auto_generated_inner.endswith("\n") else auto_generated_inner + "\n"
     )
     return (
         f"# {package_dotted}\n"
@@ -531,9 +523,7 @@ def package_readme_template(*, package_dotted: str, auto_generated_inner: str) -
 def code_map_template(*, project_name: str, auto_generated_inner: str) -> str:
     """Return the bootstrap content for the code map with _TODO_ placeholders."""
     inner = (
-        auto_generated_inner
-        if auto_generated_inner.endswith("\n")
-        else auto_generated_inner + "\n"
+        auto_generated_inner if auto_generated_inner.endswith("\n") else auto_generated_inner + "\n"
     )
     return (
         f"# {project_name} code map\n"
@@ -578,12 +568,8 @@ def main(argv: list[str] | None = None, repo_root: Path | None = None) -> int:
         default="docs",
         help="path (relative to repo root) of the docs directory for code_map.md (default: docs)",
     )
-    parser.add_argument(
-        "--check", action="store_true", help="exit 1 if anything would change"
-    )
-    parser.add_argument(
-        "--init", action="store_true", help="create missing READMEs from template"
-    )
+    parser.add_argument("--check", action="store_true", help="exit 1 if anything would change")
+    parser.add_argument("--init", action="store_true", help="create missing READMEs from template")
     parser.add_argument(
         "--flat",
         action="store_true",
@@ -597,9 +583,7 @@ def main(argv: list[str] | None = None, repo_root: Path | None = None) -> int:
     docs_dir = repo_root / ns.docs_dir
     package_name = src_root.name
     if not src_root.is_dir() or not (src_root / "__init__.py").is_file():
-        print(
-            f"❌ --src-root {ns.src_root!r} is not a package directory", file=sys.stderr
-        )
+        print(f"❌ --src-root {ns.src_root!r} is not a package directory", file=sys.stderr)
         return 2
 
     packages = discover_packages(src_root, flat=ns.flat)
@@ -706,9 +690,7 @@ def render_package_readme(
     """
     inner = render_package_public_api(package_dir, package_dotted=package_dotted)
     if existing_content is None:
-        return package_readme_template(
-            package_dotted=package_dotted, auto_generated_inner=inner
-        )
+        return package_readme_template(package_dotted=package_dotted, auto_generated_inner=inner)
     return replace_marked_block(
         content=existing_content,
         begin_marker=PKG_BEGIN,

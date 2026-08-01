@@ -1,8 +1,10 @@
 """tests/test_embedder.py — Tests for the embedding-based project classifier."""
+
 import numpy as np
 import pytest
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture(autouse=True)
 def mock_model(monkeypatch):
@@ -25,8 +27,10 @@ def mock_model(monkeypatch):
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
+
 def test_embed_returns_384_floats():
     import embedder
+
     vec = embedder.embed("some text")
     assert len(vec) == 384
     assert all(isinstance(f, float) for f in vec)
@@ -34,6 +38,7 @@ def test_embed_returns_384_floats():
 
 def test_embed_unit_normalized():
     import embedder
+
     vec = embedder.embed("some text")
     norm = np.linalg.norm(vec)
     assert abs(norm - 1.0) < 1e-5
@@ -42,6 +47,7 @@ def test_embed_unit_normalized():
 def test_update_project_creates_record():
     import embedder
     from tinydb import Query
+
     vec = np.random.randn(384)
     vec /= np.linalg.norm(vec)
     embedder.update_project("Alpha", "item1", vec.tolist(), "task", "user", "github", "high")
@@ -54,8 +60,11 @@ def test_update_project_creates_record():
 def test_update_project_recomputes_centroid():
     import embedder
     from tinydb import Query
-    v1 = np.zeros(384); v1[0] = 1.0
-    v2 = np.zeros(384); v2[1] = 1.0
+
+    v1 = np.zeros(384)
+    v1[0] = 1.0
+    v2 = np.zeros(384)
+    v2[1] = 1.0
     embedder.update_project("Beta", "item1", v1.tolist(), "task", "user", "slack", "medium")
     embedder.update_project("Beta", "item2", v2.tolist(), "task", "user", "slack", "medium")
     rec = embedder._get_tbl().get(Query().project == "Beta")
@@ -68,11 +77,13 @@ def test_update_project_recomputes_centroid():
 def test_update_project_moves_between_projects():
     import embedder
     from tinydb import Query
+
     vec = np.random.randn(384)
     vec /= np.linalg.norm(vec)
     embedder.update_project("ProjA", "item1", vec.tolist(), "task", "user", "github", "high")
-    embedder.update_project("ProjB", "item1", vec.tolist(), "task", "user", "github", "high",
-                            old_project="ProjA")
+    embedder.update_project(
+        "ProjB", "item1", vec.tolist(), "task", "user", "github", "high", old_project="ProjA"
+    )
     tbl = embedder._get_tbl()
     rec_a = tbl.get(Query().project == "ProjA")
     rec_b = tbl.get(Query().project == "ProjB")
@@ -84,11 +95,13 @@ def test_update_project_moves_between_projects():
 def test_update_project_moves_between_subdivisions():
     import embedder
     from tinydb import Query
+
     vec = np.random.randn(384)
     vec /= np.linalg.norm(vec)
     embedder.update_project("Gamma", "item1", vec.tolist(), "task", "user", "github", "high")
-    embedder.update_project("Gamma", "item1", vec.tolist(), "fyi", "user", "github", "low",
-                            old_category="task")
+    embedder.update_project(
+        "Gamma", "item1", vec.tolist(), "fyi", "user", "github", "low", old_category="task"
+    )
     rec = embedder._get_tbl().get(Query().project == "Gamma")
     assert "task" not in rec["centroids"]
     assert "fyi" in rec["centroids"]
@@ -97,6 +110,7 @@ def test_update_project_moves_between_subdivisions():
 
 def test_score_item_returns_empty_below_min_count():
     import embedder
+
     vec = np.random.randn(384)
     vec /= np.linalg.norm(vec)
     for i in range(2):
@@ -109,12 +123,17 @@ def test_score_item_returns_empty_below_min_count():
 
 def test_score_item_returns_correct_ranking():
     import embedder
-    target = np.zeros(384); target[0] = 1.0
 
-    close_vec = np.zeros(384); close_vec[0] = 0.9; close_vec[1] = 0.1
+    target = np.zeros(384)
+    target[0] = 1.0
+
+    close_vec = np.zeros(384)
+    close_vec[0] = 0.9
+    close_vec[1] = 0.1
     close_vec /= np.linalg.norm(close_vec)
 
-    far_vec = np.zeros(384); far_vec[1] = 1.0
+    far_vec = np.zeros(384)
+    far_vec[1] = 1.0
 
     for i in range(3):
         v = close_vec + np.random.randn(384) * 0.01
@@ -135,8 +154,11 @@ def test_score_item_returns_correct_ranking():
 def test_remove_item_removes_and_recomputes():
     import embedder
     from tinydb import Query
-    v1 = np.zeros(384); v1[0] = 1.0
-    v2 = np.zeros(384); v2[1] = 1.0
+
+    v1 = np.zeros(384)
+    v1[0] = 1.0
+    v2 = np.zeros(384)
+    v2[1] = 1.0
     embedder.update_project("Echo", "item1", v1.tolist(), "task", "user", "github", "high")
     embedder.update_project("Echo", "item2", v2.tolist(), "task", "user", "github", "high")
     embedder.remove_item("item1", "Echo")
@@ -148,11 +170,13 @@ def test_remove_item_removes_and_recomputes():
 
 def test_get_project_stats():
     import embedder
+
     for i in range(3):
         v = np.random.randn(384)
         v /= np.linalg.norm(v)
-        embedder.update_project("Stats", f"item{i}", v.tolist(),
-                                "task" if i < 2 else "fyi", "user", "github", "high")
+        embedder.update_project(
+            "Stats", f"item{i}", v.tolist(), "task" if i < 2 else "fyi", "user", "github", "high"
+        )
     stats = embedder.get_project_stats()
     assert "Stats" in stats
     assert stats["Stats"]["total_items"] == 3
@@ -163,19 +187,20 @@ def test_get_all_item_vectors_returns_map_across_projects():
     """get_all_item_vectors should one-pass the embeddings table and return
     every item_id → vector across all projects in a single dict."""
     import embedder
+
     vecs = {}
     for i in range(4):
         v = np.random.randn(384)
         v /= np.linalg.norm(v)
         vecs[f"p1-{i}"] = v.tolist()
-        embedder.update_project("ProjA", f"p1-{i}", vecs[f"p1-{i}"],
-                                "task", "user", "slack", "low")
+        embedder.update_project("ProjA", f"p1-{i}", vecs[f"p1-{i}"], "task", "user", "slack", "low")
     for i in range(2):
         v = np.random.randn(384)
         v /= np.linalg.norm(v)
         vecs[f"p2-{i}"] = v.tolist()
-        embedder.update_project("ProjB", f"p2-{i}", vecs[f"p2-{i}"],
-                                "fyi", "project", "github", "medium")
+        embedder.update_project(
+            "ProjB", f"p2-{i}", vecs[f"p2-{i}"], "fyi", "project", "github", "medium"
+        )
 
     all_vectors = embedder.get_all_item_vectors()
     assert set(all_vectors.keys()) == set(vecs.keys())
@@ -185,4 +210,5 @@ def test_get_all_item_vectors_returns_map_across_projects():
 
 def test_get_all_item_vectors_empty_when_no_embeddings():
     import embedder
+
     assert embedder.get_all_item_vectors() == {}

@@ -4,6 +4,7 @@ Validates that items flow through the pipeline and land in the database
 correctly. The existing scan tests in test_app.py only check HTTP status
 codes and conflict detection; these tests assert on what gets persisted.
 """
+
 from unittest.mock import MagicMock, patch
 
 import db
@@ -17,7 +18,7 @@ from app import (
 )
 from models import ActionItem, Analysis, RawItem
 
-_run_scan     = orchestrator.run_scan
+_run_scan = orchestrator.run_scan
 _run_reanalyze = orchestrator.run_reanalyze
 
 
@@ -33,43 +34,52 @@ def _raw(source="outlook", item_id="x1", title="Test item"):
     )
 
 
-def _analysis(item_id="x1", source="outlook", has_action=False,
-              priority="medium", category="fyi"):
+def _analysis(item_id="x1", source="outlook", has_action=False, priority="medium", category="fyi"):
     return Analysis(
-        item_id=item_id, source=source, title="Test item",
-        author="alice", timestamp="2026-03-17T10:00:00+00:00",
-        url="", has_action=has_action, priority=priority,
-        category=category, action_items=[], summary="S",
+        item_id=item_id,
+        source=source,
+        title="Test item",
+        author="alice",
+        timestamp="2026-03-17T10:00:00+00:00",
+        url="",
+        has_action=has_action,
+        priority=priority,
+        category=category,
+        action_items=[],
+        summary="S",
         urgency_reason=None,
     )
 
 
-def _all_connectors_patched(outlook_items=None, github_items=None,
-                            slack_items=None, jira_items=None,
-                            teams_items=None):
+def _all_connectors_patched(
+    outlook_items=None, github_items=None, slack_items=None, jira_items=None, teams_items=None
+):
     """Return a context-manager stack that patches all five connector fetch()
     methods.  Unspecified connectors return []."""
     from contextlib import ExitStack
+
     stack = ExitStack()
-    stack.enter_context(patch("orchestrator.connector_outlook.fetch",
-                              return_value=outlook_items or []))
-    stack.enter_context(patch("orchestrator.connector_github.fetch",
-                              return_value=github_items or []))
-    stack.enter_context(patch("orchestrator.connector_slack.fetch",
-                              return_value=slack_items or []))
-    stack.enter_context(patch("orchestrator.connector_jira.fetch",
-                              return_value=jira_items or []))
-    stack.enter_context(patch("orchestrator.connector_teams.fetch",
-                              return_value=teams_items or []))
+    stack.enter_context(
+        patch("orchestrator.connector_outlook.fetch", return_value=outlook_items or [])
+    )
+    stack.enter_context(
+        patch("orchestrator.connector_github.fetch", return_value=github_items or [])
+    )
+    stack.enter_context(patch("orchestrator.connector_slack.fetch", return_value=slack_items or []))
+    stack.enter_context(patch("orchestrator.connector_jira.fetch", return_value=jira_items or []))
+    stack.enter_context(patch("orchestrator.connector_teams.fetch", return_value=teams_items or []))
     return stack
 
 
 # ── _run_scan ─────────────────────────────────────────────────────────────────
 
+
 def test_run_scan_saves_analysis_to_db():
-    with _all_connectors_patched(outlook_items=[_raw()]), \
-         patch("orchestrator.analyze", return_value=_analysis()), \
-         patch("situation_manager._spawn_situation_task"):
+    with (
+        _all_connectors_patched(outlook_items=[_raw()]),
+        patch("orchestrator.analyze", return_value=_analysis()),
+        patch("situation_manager._spawn_situation_task"),
+    ):
         _run_scan(["outlook"])
 
     assert analyses.get(Q.item_id == "x1") is not None
@@ -79,15 +89,25 @@ def test_run_scan_saves_analysis_to_db():
 def test_run_scan_creates_todo_for_action_item():
     action = ActionItem(description="Review the PR", deadline=None, owner="me")
     result = Analysis(
-        item_id="x1", source="outlook", title="Test item",
-        author="alice", timestamp="2026-03-17T10:00:00+00:00",
-        url="", has_action=True, priority="medium", category="task",
-        action_items=[action], summary="S", urgency_reason=None,
+        item_id="x1",
+        source="outlook",
+        title="Test item",
+        author="alice",
+        timestamp="2026-03-17T10:00:00+00:00",
+        url="",
+        has_action=True,
+        priority="medium",
+        category="task",
+        action_items=[action],
+        summary="S",
+        urgency_reason=None,
     )
 
-    with _all_connectors_patched(outlook_items=[_raw()]), \
-         patch("orchestrator.analyze", return_value=result), \
-         patch("situation_manager._spawn_situation_task"):
+    with (
+        _all_connectors_patched(outlook_items=[_raw()]),
+        patch("orchestrator.analyze", return_value=result),
+        patch("situation_manager._spawn_situation_task"),
+    ):
         _run_scan(["outlook"])
 
     todo = todos.get(Q.item_id == "x1")
@@ -96,9 +116,11 @@ def test_run_scan_creates_todo_for_action_item():
 
 
 def test_run_scan_writes_log_on_success():
-    with _all_connectors_patched(github_items=[_raw(source="github")]), \
-         patch("orchestrator.analyze", return_value=_analysis(source="github")), \
-         patch("situation_manager._spawn_situation_task"):
+    with (
+        _all_connectors_patched(github_items=[_raw(source="github")]),
+        patch("orchestrator.analyze", return_value=_analysis(source="github")),
+        patch("situation_manager._spawn_situation_task"),
+    ):
         _run_scan(["github"])
 
     logs = scan_logs.all()
@@ -120,9 +142,11 @@ def test_run_scan_handles_analyze_exception_gracefully():
             raise Exception("timeout")
         return _analysis(item.item_id)
 
-    with _all_connectors_patched(outlook_items=items), \
-         patch("orchestrator.analyze", side_effect=flaky_analyze), \
-         patch("situation_manager._spawn_situation_task"):
+    with (
+        _all_connectors_patched(outlook_items=items),
+        patch("orchestrator.analyze", side_effect=flaky_analyze),
+        patch("situation_manager._spawn_situation_task"),
+    ):
         _run_scan(["outlook"])
 
     assert scan_state["running"] is False
@@ -139,9 +163,11 @@ def test_run_scan_respects_cancellation():
         return _analysis(item.item_id)
 
     try:
-        with _all_connectors_patched(outlook_items=items), \
-             patch("orchestrator.analyze", side_effect=cancelling_analyze), \
-             patch("situation_manager._spawn_situation_task"):
+        with (
+            _all_connectors_patched(outlook_items=items),
+            patch("orchestrator.analyze", side_effect=cancelling_analyze),
+            patch("situation_manager._spawn_situation_task"),
+        ):
             _run_scan(["outlook"])
 
         saved = analyses.all()
@@ -155,9 +181,11 @@ def test_run_scan_respects_cancellation():
 
 
 def test_run_scan_sets_running_false_after_completion():
-    with _all_connectors_patched(), \
-         patch("orchestrator.analyze", return_value=_analysis()), \
-         patch("situation_manager._spawn_situation_task"):
+    with (
+        _all_connectors_patched(),
+        patch("orchestrator.analyze", return_value=_analysis()),
+        patch("situation_manager._spawn_situation_task"),
+    ):
         _run_scan(["slack"])
 
     assert scan_state["running"] is False
@@ -165,31 +193,39 @@ def test_run_scan_sets_running_false_after_completion():
 
 # ── _run_reanalyze ────────────────────────────────────────────────────────────
 
-def _insert_minimal(item_id, source="jira", priority=None, category=None,
-                    is_passdown=False,
-                    timestamp="2026-03-17T10:00:00+00:00",
-                    conversation_id=None):
+
+def _insert_minimal(
+    item_id,
+    source="jira",
+    priority=None,
+    category=None,
+    is_passdown=False,
+    timestamp="2026-03-17T10:00:00+00:00",
+    conversation_id=None,
+):
     """Insert a bare-minimum analysis record for reanalysis tests."""
-    analyses.insert({
-        "item_id":         item_id,
-        "source":          source,
-        "title":           f"Item {item_id}",
-        "author":          "alice",
-        "timestamp":       timestamp,
-        "url":             "",
-        "body_preview":    f"body of {item_id}",
-        "priority":        priority,
-        "category":        category,
-        "has_action":      False,
-        "is_passdown":     is_passdown,
-        "project_tag":     None,
-        "hierarchy":       "general",
-        "to_field":        "",
-        "cc_field":        "",
-        "is_replied":      False,
-        "replied_at":      None,
-        "conversation_id": conversation_id,
-    })
+    analyses.insert(
+        {
+            "item_id": item_id,
+            "source": source,
+            "title": f"Item {item_id}",
+            "author": "alice",
+            "timestamp": timestamp,
+            "url": "",
+            "body_preview": f"body of {item_id}",
+            "priority": priority,
+            "category": category,
+            "has_action": False,
+            "is_passdown": is_passdown,
+            "project_tag": None,
+            "hierarchy": "general",
+            "to_field": "",
+            "cc_field": "",
+            "is_replied": False,
+            "replied_at": None,
+            "conversation_id": conversation_id,
+        }
+    )
 
 
 def _apply_fake_batch_result(item_id, payload):
@@ -200,11 +236,11 @@ def _apply_fake_batch_result(item_id, payload):
     ``_apply_batch_result`` → ``_save_analysis(reanalyze=True)``.
     """
     import json as _json
+
     with db.lock:
         rec = db.get_item(item_id)
     assert rec is not None
-    with patch("situation_manager._spawn_situation_task"), \
-         patch("orchestrator.graph.index_item"):
+    with patch("situation_manager._spawn_situation_task"), patch("orchestrator.graph.index_item"):
         orchestrator._apply_batch_result(rec, _json.dumps(payload))
 
 
@@ -226,6 +262,7 @@ def test_reanalyze_apply_preserves_user_edited_fields():
     """A field explicitly marked as user-edited must survive reanalysis even
     when the LLM returns a different value.  Non-edited fields should update."""
     import json as _json
+
     _insert_minimal("u1", priority="high")
     with db.lock:
         db.update_item("u1", {"user_edited_fields": _json.dumps(["priority"])})
@@ -240,8 +277,7 @@ def test_reanalyze_apply_updates_non_edited_fields():
     (with project awareness) takes effect."""
     _insert_minimal("u2", priority="low", category="fyi")
 
-    _apply_fake_batch_result("u2", {"priority": "high", "category": "task",
-                                     "task_type": "review"})
+    _apply_fake_batch_result("u2", {"priority": "high", "category": "task", "task_type": "review"})
 
     result = analyses.get(Q.item_id == "u2")
     assert result["priority"] == "high"
@@ -252,49 +288,57 @@ def test_reanalyze_apply_deletes_stale_todos_before_reinserting():
     """_save_analysis(reanalyze=True) should remove the old todo and insert a
     new one with the updated description — not accumulate duplicates."""
     import json as _json
-    analyses.insert({
-        "item_id":      "t1",
-        "source":       "jira",
-        "title":        "Item t1",
-        "author":       "alice",
-        "timestamp":    "2026-03-17T10:00:00+00:00",
-        "url":          "",
-        "body_preview": "body",
-        "has_action":   True,
-        "priority":     "medium",
-        "category":     "task",
-        "action_items": _json.dumps([
-            {"description": "old action", "deadline": None, "owner": "me"}
-        ]),
-        "is_passdown":  False,
-        "project_tag":  None,
-        "hierarchy":    "general",
-        "to_field":     "",
-        "cc_field":     "",
-        "is_replied":   False,
-        "replied_at":   None,
-    })
-    todos.insert({
-        "item_id":     "t1",
-        "source":      "jira",
-        "title":       "Item t1",
-        "url":         "",
-        "description": "old action",
-        "deadline":    None,
-        "owner":       "me",
-        "priority":    "medium",
-        "done":        False,
-        "created_at":  "2026-03-17T10:00:00+00:00",
-    })
 
-    _apply_fake_batch_result("t1", {
-        "has_action":   True,
-        "priority":     "medium",
-        "category":     "task",
-        "task_type":    "review",
-        "action_items": [{"description": "new action", "deadline": None, "owner": "me"}],
-        "summary":      "S",
-    })
+    analyses.insert(
+        {
+            "item_id": "t1",
+            "source": "jira",
+            "title": "Item t1",
+            "author": "alice",
+            "timestamp": "2026-03-17T10:00:00+00:00",
+            "url": "",
+            "body_preview": "body",
+            "has_action": True,
+            "priority": "medium",
+            "category": "task",
+            "action_items": _json.dumps(
+                [{"description": "old action", "deadline": None, "owner": "me"}]
+            ),
+            "is_passdown": False,
+            "project_tag": None,
+            "hierarchy": "general",
+            "to_field": "",
+            "cc_field": "",
+            "is_replied": False,
+            "replied_at": None,
+        }
+    )
+    todos.insert(
+        {
+            "item_id": "t1",
+            "source": "jira",
+            "title": "Item t1",
+            "url": "",
+            "description": "old action",
+            "deadline": None,
+            "owner": "me",
+            "priority": "medium",
+            "done": False,
+            "created_at": "2026-03-17T10:00:00+00:00",
+        }
+    )
+
+    _apply_fake_batch_result(
+        "t1",
+        {
+            "has_action": True,
+            "priority": "medium",
+            "category": "task",
+            "task_type": "review",
+            "action_items": [{"description": "new action", "deadline": None, "owner": "me"}],
+            "summary": "S",
+        },
+    )
 
     all_todos = todos.all()
     assert len(all_todos) == 1
@@ -303,35 +347,44 @@ def test_reanalyze_apply_deletes_stale_todos_before_reinserting():
 
 # ── _poll_batch_once (batch result application) ──────────────────────────────
 
-def _seed_pending_batch(item_id="b1", job_id="job1", source="outlook",
-                        title="Pending item", to_field="user@co.com",
-                        cc_field=""):
+
+def _seed_pending_batch(
+    item_id="b1",
+    job_id="job1",
+    source="outlook",
+    title="Pending item",
+    to_field="user@co.com",
+    cc_field="",
+):
     """Insert an item with a batch_job_id set, mimicking a row that submitted
     its prompt to merLLM and is awaiting the result."""
-    analyses.insert({
-        "item_id":      item_id,
-        "source":       source,
-        "title":        title,
-        "author":       "boss@co.com",
-        "timestamp":    "2026-04-10T10:00:00+00:00",
-        "url":          "",
-        "body_preview": "please ship the release today",
-        "priority":     "low",
-        "category":     "fyi",
-        "has_action":   False,
-        "is_passdown":  False,
-        "project_tag":  None,
-        "hierarchy":    "general",
-        "to_field":     to_field,
-        "cc_field":     cc_field,
-        "is_replied":   False,
-        "replied_at":   None,
-        "batch_job_id": job_id,
-    })
+    analyses.insert(
+        {
+            "item_id": item_id,
+            "source": source,
+            "title": title,
+            "author": "boss@co.com",
+            "timestamp": "2026-04-10T10:00:00+00:00",
+            "url": "",
+            "body_preview": "please ship the release today",
+            "priority": "low",
+            "category": "fyi",
+            "has_action": False,
+            "is_passdown": False,
+            "project_tag": None,
+            "hierarchy": "general",
+            "to_field": to_field,
+            "cc_field": cc_field,
+            "is_replied": False,
+            "replied_at": None,
+            "batch_job_id": job_id,
+        }
+    )
 
 
 def _merllm_ok_response(payload: dict) -> MagicMock:
     import json as _json
+
     m = MagicMock()
     m.status_code = 200
     m.json.return_value = {"result": _json.dumps(payload)}
@@ -345,14 +398,19 @@ def test_poll_batch_once_applies_completed_result():
     _seed_pending_batch(item_id="b1", job_id="job-success")
 
     payload = {
-        "has_action": True, "priority": "high", "category": "task",
+        "has_action": True,
+        "priority": "high",
+        "category": "task",
         "task_type": "review",
         "action_items": [{"description": "Ship the release", "deadline": None, "owner": "me"}],
-        "summary": "Ship the release", "urgency_reason": "deadline today",
+        "summary": "Ship the release",
+        "urgency_reason": "deadline today",
     }
 
-    with patch("orchestrator.http_requests.get", return_value=_merllm_ok_response(payload)), \
-         patch("orchestrator._spawn_situation_task"):
+    with (
+        patch("orchestrator.http_requests.get", return_value=_merllm_ok_response(payload)),
+        patch("orchestrator._spawn_situation_task"),
+    ):
         orchestrator._poll_batch_once()
 
     row = analyses.get(Q.item_id == "b1")
@@ -374,8 +432,10 @@ def test_poll_batch_once_clears_job_id_on_malformed_payload():
     bad.json.return_value = {"result": "{not valid json"}
     bad.raise_for_status.return_value = None
 
-    with patch("orchestrator.http_requests.get", return_value=bad), \
-         patch("orchestrator._spawn_situation_task"):
+    with (
+        patch("orchestrator.http_requests.get", return_value=bad),
+        patch("orchestrator._spawn_situation_task"),
+    ):
         # Even with bad JSON, the helper now treats it as defaults — so this
         # is actually a *successful* apply with empty fields.  Either way the
         # item must not be left wedged with the old job id.
@@ -392,9 +452,11 @@ def test_poll_batch_once_clears_job_id_when_save_fails():
 
     payload = {"category": "task", "priority": "medium"}
 
-    with patch("orchestrator.http_requests.get", return_value=_merllm_ok_response(payload)), \
-         patch("orchestrator.graph.index_item", side_effect=RuntimeError("graph down")), \
-         patch("orchestrator._spawn_situation_task"):
+    with (
+        patch("orchestrator.http_requests.get", return_value=_merllm_ok_response(payload)),
+        patch("orchestrator.graph.index_item", side_effect=RuntimeError("graph down")),
+        patch("orchestrator._spawn_situation_task"),
+    ):
         orchestrator._poll_batch_once()
 
     row = analyses.get(Q.item_id == "b3")
@@ -455,6 +517,7 @@ def test_poll_batch_once_uses_shared_helper(monkeypatch):
     _seed_pending_batch(item_id="b7", job_id="job-helper")
 
     import agent
+
     real_helper = agent.build_analysis_from_llm_json
     calls = []
 
@@ -464,11 +527,16 @@ def test_poll_batch_once_uses_shared_helper(monkeypatch):
 
     monkeypatch.setattr(agent, "build_analysis_from_llm_json", spy)
 
-    payload = {"category": "task", "priority": "medium",
-               "action_items": [{"description": "do thing", "owner": "me"}]}
+    payload = {
+        "category": "task",
+        "priority": "medium",
+        "action_items": [{"description": "do thing", "owner": "me"}],
+    }
 
-    with patch("orchestrator.http_requests.get", return_value=_merllm_ok_response(payload)), \
-         patch("orchestrator._spawn_situation_task"):
+    with (
+        patch("orchestrator.http_requests.get", return_value=_merllm_ok_response(payload)),
+        patch("orchestrator._spawn_situation_task"),
+    ):
         orchestrator._poll_batch_once()
 
     assert len(calls) == 1
@@ -498,17 +566,20 @@ def test_run_reanalyze_sorts_passdowns_first():
         submit_order.append(item.item_id)
         return f"prompt for {item.item_id}"
 
-    with patch("orchestrator._merllm_batch_available", return_value=True), \
-         patch("orchestrator._submit_batch_job", return_value="job-x"), \
-         patch("orchestrator.build_prompt", side_effect=fake_build_prompt), \
-         patch("orchestrator._ensure_batch_poll_thread"), \
-         patch("orchestrator._generate_briefing_bg"):
+    with (
+        patch("orchestrator._merllm_batch_available", return_value=True),
+        patch("orchestrator._submit_batch_job", return_value="job-x"),
+        patch("orchestrator.build_prompt", side_effect=fake_build_prompt),
+        patch("orchestrator._ensure_batch_poll_thread"),
+        patch("orchestrator._generate_briefing_bg"),
+    ):
         _run_reanalyze()
 
     assert submit_order[0] == "p1"
 
 
 # ── claim_ingest_items (parsival#58) ──────────────────────────────────────────
+
 
 def test_claim_ingest_items_returns_all_fresh_ids_on_first_call():
     claimed = orchestrator.claim_ingest_items(["a", "b", "c"])
@@ -543,10 +614,12 @@ def test_release_ingest_item_allows_reclaim():
 
 def test_process_ingest_items_releases_claim_on_success():
     orchestrator.claim_ingest_items(["x1"])
-    with patch("orchestrator.analyze", return_value=_analysis("x1")), \
-         patch("orchestrator._save_analysis"), \
-         patch("orchestrator.graph.index_item"), \
-         patch("orchestrator._spawn_situation_task"):
+    with (
+        patch("orchestrator.analyze", return_value=_analysis("x1")),
+        patch("orchestrator._save_analysis"),
+        patch("orchestrator.graph.index_item"),
+        patch("orchestrator._spawn_situation_task"),
+    ):
         orchestrator.process_ingest_items([_raw(item_id="x1")])
 
     assert "x1" not in orchestrator._in_flight_ids
@@ -554,8 +627,10 @@ def test_process_ingest_items_releases_claim_on_success():
 
 def test_process_ingest_items_releases_claim_on_analyze_exception():
     orchestrator.claim_ingest_items(["boom"])
-    with patch("orchestrator.analyze", side_effect=RuntimeError("boom")), \
-         patch("orchestrator._spawn_situation_task"):
+    with (
+        patch("orchestrator.analyze", side_effect=RuntimeError("boom")),
+        patch("orchestrator._spawn_situation_task"),
+    ):
         orchestrator.process_ingest_items([_raw(item_id="boom")])
 
     assert "boom" not in orchestrator._in_flight_ids
@@ -571,15 +646,19 @@ def test_process_ingest_items_releases_remaining_claims_on_cancel():
         return _analysis(item.item_id)
 
     try:
-        with patch("orchestrator.analyze", side_effect=cancelling_analyze), \
-             patch("orchestrator._save_analysis"), \
-             patch("orchestrator.graph.index_item"), \
-             patch("orchestrator._spawn_situation_task"):
-            orchestrator.process_ingest_items([
-                _raw(item_id="x1"),
-                _raw(item_id="x2"),
-                _raw(item_id="x3"),
-            ])
+        with (
+            patch("orchestrator.analyze", side_effect=cancelling_analyze),
+            patch("orchestrator._save_analysis"),
+            patch("orchestrator.graph.index_item"),
+            patch("orchestrator._spawn_situation_task"),
+        ):
+            orchestrator.process_ingest_items(
+                [
+                    _raw(item_id="x1"),
+                    _raw(item_id="x2"),
+                    _raw(item_id="x3"),
+                ]
+            )
         assert orchestrator._in_flight_ids == set()
     finally:
         scan_state["cancelled"] = False
@@ -587,23 +666,36 @@ def test_process_ingest_items_releases_remaining_claims_on_cancel():
 
 # ── Thread-aware analysis (parsival#79) ───────────────────────────────────────
 
-def _raw_conv(item_id, conversation_id, timestamp,
-              body="body text", source="outlook"):
+
+def _raw_conv(item_id, conversation_id, timestamp, body="body text", source="outlook"):
     return RawItem(
-        source=source, item_id=item_id, title=f"Item {item_id}",
-        body=body, url="", author="alice@example.com", timestamp=timestamp,
+        source=source,
+        item_id=item_id,
+        title=f"Item {item_id}",
+        body=body,
+        url="",
+        author="alice@example.com",
+        timestamp=timestamp,
         metadata={"conversation_id": conversation_id},
     )
 
 
-def _analysis_with_action(item_id, conversation_id, description,
-                          timestamp="2026-04-01T10:00:00+00:00"):
+def _analysis_with_action(
+    item_id, conversation_id, description, timestamp="2026-04-01T10:00:00+00:00"
+):
     a = Analysis(
-        item_id=item_id, source="outlook", title=f"Item {item_id}",
-        author="alice", timestamp=timestamp, url="",
-        has_action=True, priority="medium", category="task",
+        item_id=item_id,
+        source="outlook",
+        title=f"Item {item_id}",
+        author="alice",
+        timestamp=timestamp,
+        url="",
+        has_action=True,
+        priority="medium",
+        category="task",
         action_items=[ActionItem(description=description, deadline=None, owner="me")],
-        summary="S", urgency_reason=None,
+        summary="S",
+        urgency_reason=None,
     )
     a.conversation_id = conversation_id
     return a
@@ -618,13 +710,17 @@ def test_process_ingest_items_sorts_and_passes_thread_todos_within_conversation(
     calls = []
 
     def fake_analyze(item, **kwargs):
-        calls.append({
-            "item_id": item.item_id,
-            "thread_todos": list(kwargs.get("thread_todos") or []),
-        })
+        calls.append(
+            {
+                "item_id": item.item_id,
+                "thread_todos": list(kwargs.get("thread_todos") or []),
+            }
+        )
         return _analysis_with_action(
-            item.item_id, "conv-A",
-            f"Task from {item.item_id}", timestamp=item.timestamp,
+            item.item_id,
+            "conv-A",
+            f"Task from {item.item_id}",
+            timestamp=item.timestamp,
         )
 
     # Input order is intentionally shuffled — orchestrator must sort.
@@ -634,9 +730,11 @@ def test_process_ingest_items_sorts_and_passes_thread_todos_within_conversation(
         _raw_conv("m2", "conv-A", "2026-04-01T11:00:00+00:00"),
     ]
 
-    with patch("orchestrator.analyze", side_effect=fake_analyze), \
-         patch("orchestrator.graph.index_item"), \
-         patch("orchestrator._spawn_situation_task"):
+    with (
+        patch("orchestrator.analyze", side_effect=fake_analyze),
+        patch("orchestrator.graph.index_item"),
+        patch("orchestrator._spawn_situation_task"),
+    ):
         orchestrator.process_ingest_items(items)
 
     assert [c["item_id"] for c in calls] == ["m1", "m2", "m3"]
@@ -654,28 +752,34 @@ def test_process_ingest_items_isolates_thread_todos_between_conversations():
     calls = []
 
     def fake_analyze(item, **kwargs):
-        calls.append({
-            "item_id": item.item_id,
-            "thread_todos": list(kwargs.get("thread_todos") or []),
-        })
+        calls.append(
+            {
+                "item_id": item.item_id,
+                "thread_todos": list(kwargs.get("thread_todos") or []),
+            }
+        )
         conv = item.metadata.get("conversation_id", "")
         return _analysis_with_action(
-            item.item_id, conv, f"Task from {item.item_id}",
+            item.item_id,
+            conv,
+            f"Task from {item.item_id}",
             timestamp=item.timestamp,
         )
 
-    with patch("orchestrator.analyze", side_effect=fake_analyze), \
-         patch("orchestrator.graph.index_item"), \
-         patch("orchestrator._spawn_situation_task"):
-        orchestrator.process_ingest_items([
-            _raw_conv("a1", "conv-A", "2026-04-01T10:00:00+00:00"),
-            _raw_conv("b1", "conv-B", "2026-04-01T10:00:00+00:00"),
-        ])
+    with (
+        patch("orchestrator.analyze", side_effect=fake_analyze),
+        patch("orchestrator.graph.index_item"),
+        patch("orchestrator._spawn_situation_task"),
+    ):
+        orchestrator.process_ingest_items(
+            [
+                _raw_conv("a1", "conv-A", "2026-04-01T10:00:00+00:00"),
+                _raw_conv("b1", "conv-B", "2026-04-01T10:00:00+00:00"),
+            ]
+        )
 
     for c in calls:
-        assert c["thread_todos"] == [], (
-            f"{c['item_id']} saw thread_todos from another conversation"
-        )
+        assert c["thread_todos"] == [], f"{c['item_id']} saw thread_todos from another conversation"
 
 
 def test_run_reanalyze_fetches_thread_todos_for_conversation_items():
@@ -683,36 +787,50 @@ def test_run_reanalyze_fetches_thread_todos_for_conversation_items():
     that belong to a conversation, scoped to before the item's timestamp
     so an item does not self-suppress on its own todos (parsival#79)."""
     _insert_minimal(
-        "msg-1", source="outlook",
+        "msg-1",
+        source="outlook",
         timestamp="2026-04-01T09:00:00+00:00",
         conversation_id="conv-X",
     )
     _insert_minimal(
-        "msg-2", source="outlook",
+        "msg-2",
+        source="outlook",
         timestamp="2026-04-01T11:00:00+00:00",
         conversation_id="conv-X",
     )
-    todos.insert({
-        "item_id": "msg-1", "source": "outlook", "title": "T", "url": "",
-        "description": "Review spec", "deadline": None, "owner": "me",
-        "priority": "medium", "done": False,
-        "created_at": "2026-04-01T09:05:00+00:00",
-    })
+    todos.insert(
+        {
+            "item_id": "msg-1",
+            "source": "outlook",
+            "title": "T",
+            "url": "",
+            "description": "Review spec",
+            "deadline": None,
+            "owner": "me",
+            "priority": "medium",
+            "done": False,
+            "created_at": "2026-04-01T09:05:00+00:00",
+        }
+    )
 
     captured = []
 
     def fake_build_prompt(item, **kwargs):
-        captured.append({
-            "item_id": item.item_id,
-            "thread_todos": list(kwargs.get("thread_todos") or []),
-        })
+        captured.append(
+            {
+                "item_id": item.item_id,
+                "thread_todos": list(kwargs.get("thread_todos") or []),
+            }
+        )
         return f"prompt for {item.item_id}"
 
-    with patch("orchestrator._merllm_batch_available", return_value=True), \
-         patch("orchestrator._submit_batch_job", return_value="job-x"), \
-         patch("orchestrator.build_prompt", side_effect=fake_build_prompt), \
-         patch("orchestrator._ensure_batch_poll_thread"), \
-         patch("orchestrator._generate_briefing_bg"):
+    with (
+        patch("orchestrator._merllm_batch_available", return_value=True),
+        patch("orchestrator._submit_batch_job", return_value="job-x"),
+        patch("orchestrator.build_prompt", side_effect=fake_build_prompt),
+        patch("orchestrator._ensure_batch_poll_thread"),
+        patch("orchestrator._generate_briefing_bg"),
+    ):
         _run_reanalyze()
 
     by_id = {c["item_id"]: c for c in captured}
@@ -733,15 +851,22 @@ def test_process_ingest_items_empty_thread_todos_for_standalone_items():
         return _analysis("s1")
 
     slack_item = RawItem(
-        source="slack", item_id="s1", title="DM",
-        body="hi", url="", author="alice",
-        timestamp="2026-04-01T10:00:00+00:00", metadata={},
+        source="slack",
+        item_id="s1",
+        title="DM",
+        body="hi",
+        url="",
+        author="alice",
+        timestamp="2026-04-01T10:00:00+00:00",
+        metadata={},
     )
 
-    with patch("orchestrator.analyze", side_effect=fake_analyze), \
-         patch("orchestrator._save_analysis"), \
-         patch("orchestrator.graph.index_item"), \
-         patch("orchestrator._spawn_situation_task"):
+    with (
+        patch("orchestrator.analyze", side_effect=fake_analyze),
+        patch("orchestrator._save_analysis"),
+        patch("orchestrator.graph.index_item"),
+        patch("orchestrator._spawn_situation_task"),
+    ):
         orchestrator.process_ingest_items([slack_item])
 
     assert captured["thread_todos"] == []
@@ -753,9 +878,11 @@ def test_run_reanalyze_aborts_when_merllm_unavailable():
     _insert_minimal("a1")
     _insert_minimal("a2")
 
-    with patch("orchestrator._merllm_batch_available", return_value=False), \
-         patch("orchestrator._submit_batch_job") as submit, \
-         patch("orchestrator._generate_briefing_bg"):
+    with (
+        patch("orchestrator._merllm_batch_available", return_value=False),
+        patch("orchestrator._submit_batch_job") as submit,
+        patch("orchestrator._generate_briefing_bg"),
+    ):
         _run_reanalyze()
 
     submit.assert_not_called()
@@ -773,34 +900,43 @@ def test_apply_batch_result_preserves_delegated_owner():
     paths (sync analyze() + batch _apply_batch_result) funnel through
     build_analysis_from_llm_json, which no longer runs postprocess_action_items."""
     # Seed the item row _raw_item_from_record will hydrate
-    db.upsert_item({
-        "item_id":          "batch-rv17-83",
-        "source":           "outlook",
-        "direction":        "received",
-        "title":            "RE: 4/15/2026",
-        "author":           "Alex Washington <alex@dubscontrols.com>",
-        "timestamp":        "2026-04-17T08:42:35",
-        "url":              "",
-        "body_preview":     "Logan, did we get started on CV/LiDAR testing?",
-        "to_field":         "Logan Souza <Logan.Souza@universalorlando.com>; Reid Hall <reid.hall@prismsystems.com>",
-        "cc_field":         "",
-        "hierarchy":        "general",
-        "conversation_id":  "conv-2",
-    })
+    db.upsert_item(
+        {
+            "item_id": "batch-rv17-83",
+            "source": "outlook",
+            "direction": "received",
+            "title": "RE: 4/15/2026",
+            "author": "Alex Washington <alex@dubscontrols.com>",
+            "timestamp": "2026-04-17T08:42:35",
+            "url": "",
+            "body_preview": "Logan, did we get started on CV/LiDAR testing?",
+            "to_field": "Logan Souza <Logan.Souza@universalorlando.com>; Reid Hall <reid.hall@prismsystems.com>",
+            "cc_field": "",
+            "hierarchy": "general",
+            "conversation_id": "conv-2",
+        }
+    )
 
-    _apply_fake_batch_result("batch-rv17-83", {
-        "category":    "task",
-        "priority":    "medium",
-        "has_action":  True,
-        "summary":     "Follow up on CV/LiDAR testing",
-        "hierarchy":   "project",
-        "action_items": [
-            {"description": "Follow up on whether CV/LiDAR testing started",
-             "deadline": None, "owner": "Logan Souza"}
-        ],
-        "information_items": [],
-        "goals": [], "key_dates": [],
-    })
+    _apply_fake_batch_result(
+        "batch-rv17-83",
+        {
+            "category": "task",
+            "priority": "medium",
+            "has_action": True,
+            "summary": "Follow up on CV/LiDAR testing",
+            "hierarchy": "project",
+            "action_items": [
+                {
+                    "description": "Follow up on whether CV/LiDAR testing started",
+                    "deadline": None,
+                    "owner": "Logan Souza",
+                }
+            ],
+            "information_items": [],
+            "goals": [],
+            "key_dates": [],
+        },
+    )
 
     rows = db.get_todos_for_item("batch-rv17-83")
     assert len(rows) == 1, rows
@@ -818,16 +954,24 @@ def test_run_reanalyze_skips_manual_items(client, monkeypatch):
 
     # Seed a real item plus a synthesized manual item.
     with _db.lock:
-        _db.upsert_item({
-            "item_id": "real_t3", "source": "outlook",
-            "title": "real email", "body_preview": "hi",
-            "timestamp": "2026-04-20T00:00:00+00:00",
-        })
-        _db.upsert_item({
-            "item_id": "manual_t3", "source": "manual",
-            "title": "my manual card", "body_preview": "",
-            "timestamp": "2026-04-20T00:00:00+00:00",
-        })
+        _db.upsert_item(
+            {
+                "item_id": "real_t3",
+                "source": "outlook",
+                "title": "real email",
+                "body_preview": "hi",
+                "timestamp": "2026-04-20T00:00:00+00:00",
+            }
+        )
+        _db.upsert_item(
+            {
+                "item_id": "manual_t3",
+                "source": "manual",
+                "title": "my manual card",
+                "body_preview": "",
+                "timestamp": "2026-04-20T00:00:00+00:00",
+            }
+        )
 
     submitted: list[str] = []
 
@@ -844,5 +988,5 @@ def test_run_reanalyze_skips_manual_items(client, monkeypatch):
 
     _orc.run_reanalyze()
 
-    assert "real_t3"   in submitted
+    assert "real_t3" in submitted
     assert "manual_t3" not in submitted

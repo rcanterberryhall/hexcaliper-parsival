@@ -49,6 +49,7 @@ User / project / topic context:
 App:
     ``PAGE_API_PORT``, ``DB_PATH``, ``LOOKBACK_HOURS``
 """
+
 import os
 from typing import Any
 
@@ -74,13 +75,13 @@ CREDENTIALS_KEY = _get("CREDENTIALS_KEY", "")
 
 # ── Ollama / Hexcaliper ───────────────────────────────────────────────────────
 
-OLLAMA_URL   = _get("OLLAMA_URL",   "http://host.docker.internal:11400/api/generate")
+OLLAMA_URL = _get("OLLAMA_URL", "http://host.docker.internal:11400/api/generate")
 OLLAMA_MODEL = _get("OLLAMA_MODEL", "qwen3:32b")
-MERLLM_URL   = _get("MERLLM_URL",   "http://host.docker.internal:11400")
+MERLLM_URL = _get("MERLLM_URL", "http://host.docker.internal:11400")
 LANCELLMOT_URL = _get("LANCELLMOT_URL", "http://host.docker.internal:8080")
 
 # Cloudflare Access service token for authenticating requests to Ollama.
-CF_CLIENT_ID     = _get("CF_CLIENT_ID")
+CF_CLIENT_ID = _get("CF_CLIENT_ID")
 CF_CLIENT_SECRET = _get("CF_CLIENT_SECRET")
 
 # ── Escalation provider ──────────────────────────────────────────────────────
@@ -88,56 +89,60 @@ CF_CLIENT_SECRET = _get("CF_CLIENT_SECRET")
 # provider: "ollama" (local via merLLM proxy), "ollama_cloud" (Ollama paid API),
 #           "claude" (Anthropic Claude API)
 # When "ollama" (default), uses OLLAMA_URL + OLLAMA_MODEL as before.
-ESCALATION_PROVIDER  = _get("ESCALATION_PROVIDER", "ollama")
-ESCALATION_MODEL     = _get("ESCALATION_MODEL", "")       # blank = use OLLAMA_MODEL
-ESCALATION_API_KEY   = _get("ESCALATION_API_KEY", "")
-ESCALATION_API_URL   = _get("ESCALATION_API_URL", "")     # e.g. https://api.anthropic.com
+ESCALATION_PROVIDER = _get("ESCALATION_PROVIDER", "ollama")
+ESCALATION_MODEL = _get("ESCALATION_MODEL", "")  # blank = use OLLAMA_MODEL
+ESCALATION_API_KEY = _get("ESCALATION_API_KEY", "")
+ESCALATION_API_URL = _get("ESCALATION_API_URL", "")  # e.g. https://api.anthropic.com
 
 # ── Slack ─────────────────────────────────────────────────────────────────────
 
-SLACK_CLIENT_ID     = _get("SLACK_CLIENT_ID")
+SLACK_CLIENT_ID = _get("SLACK_CLIENT_ID")
 SLACK_CLIENT_SECRET = _get("SLACK_CLIENT_SECRET")
-SLACK_REDIRECT_URI  = _get("SLACK_REDIRECT_URI", "https://parsival.hexcaliper.com/page/api/slack/callback")
+SLACK_REDIRECT_URI = _get(
+    "SLACK_REDIRECT_URI", "https://parsival.hexcaliper.com/page/api/slack/callback"
+)
 
 # Per-workspace user tokens stored after OAuth — populated at runtime via apply_overrides.
 SLACK_USER_TOKENS: list[dict] = []
 
 # Legacy bot token kept for backward compatibility.
 SLACK_BOT_TOKEN = _get("SLACK_BOT_TOKEN")
-_sc             = _get("SLACK_CHANNELS")
-SLACK_CHANNELS  = [c.strip() for c in _sc.split(",") if c.strip()] if _sc else []
+_sc = _get("SLACK_CHANNELS")
+SLACK_CHANNELS = [c.strip() for c in _sc.split(",") if c.strip()] if _sc else []
 
 # ── Microsoft Teams ──────────────────────────────────────────────────────────
 
-TEAMS_CLIENT_ID     = _get("TEAMS_CLIENT_ID")
+TEAMS_CLIENT_ID = _get("TEAMS_CLIENT_ID")
 TEAMS_CLIENT_SECRET = _get("TEAMS_CLIENT_SECRET")
-TEAMS_REDIRECT_URI  = _get("TEAMS_REDIRECT_URI", "https://parsival.hexcaliper.com/page/api/teams/callback")
+TEAMS_REDIRECT_URI = _get(
+    "TEAMS_REDIRECT_URI", "https://parsival.hexcaliper.com/page/api/teams/callback"
+)
 
 # Per-account user tokens stored after OAuth — populated at runtime via apply_overrides.
 TEAMS_USER_TOKENS: list[dict] = []
 
 # ── GitHub ────────────────────────────────────────────────────────────────────
 
-GITHUB_PAT              = _get("GITHUB_PAT")
-GITHUB_USERNAME         = _get("GITHUB_USERNAME")
+GITHUB_PAT = _get("GITHUB_PAT")
+GITHUB_USERNAME = _get("GITHUB_USERNAME")
 GITHUB_MAX_NOTIFICATIONS = int(_get("GITHUB_MAX_NOTIFICATIONS", "500"))
 
 # ── Jira Cloud ────────────────────────────────────────────────────────────────
 
-JIRA_EMAIL  = _get("JIRA_EMAIL")
-JIRA_TOKEN  = _get("JIRA_TOKEN")
+JIRA_EMAIL = _get("JIRA_EMAIL")
+JIRA_TOKEN = _get("JIRA_TOKEN")
 JIRA_DOMAIN = _get("JIRA_DOMAIN")
-JIRA_JQL    = _get(
+JIRA_JQL = _get(
     "JIRA_JQL",
     "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
 )
 
 # ── User / Project / Topic context ───────────────────────────────────────────
 
-USER_NAME  = _get("USER_NAME", "")
+USER_NAME = _get("USER_NAME", "")
 USER_EMAIL = _get("USER_EMAIL", "")
 
-_ft          = _get("FOCUS_TOPICS", "")
+_ft = _get("FOCUS_TOPICS", "")
 FOCUS_TOPICS: list[str] = [t.strip() for t in _ft.split(",") if t.strip()] if _ft else []
 
 import json as _json
@@ -150,10 +155,10 @@ try:
 except Exception:
     PROJECTS = []
 
-NOISE_KEYWORDS:        list[str]  = []
-TASK_KEYWORDS:         list[str]  = []
-APPROVAL_KEYWORDS:     list[str]  = []
-FYI_KEYWORDS:          list[str]  = []
+NOISE_KEYWORDS: list[str] = []
+TASK_KEYWORDS: list[str] = []
+APPROVAL_KEYWORDS: list[str] = []
+FYI_KEYWORDS: list[str] = []
 # Correction examples grown from manual re-assignments.
 # Each entry: {description, llm_owner, corrected_to}
 ASSIGNMENT_CORRECTIONS: list[dict] = []
@@ -164,8 +169,8 @@ PRIORITY_OVERRIDES: list[dict] = []
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-PAGE_API_PORT  = int(_get("PAGE_API_PORT", "8001"))
-DB_PATH        = _get("DB_PATH", "/app/data/parsival.db")
+PAGE_API_PORT = int(_get("PAGE_API_PORT", "8001"))
+DB_PATH = _get("DB_PATH", "/app/data/parsival.db")
 LOOKBACK_HOURS = int(_get("LOOKBACK_HOURS", "48"))
 
 
@@ -190,33 +195,34 @@ def apply_overrides(d: dict) -> None:
     # otherwise read as "module has no attribute X" to the type checker.
     mod: Any = sys.modules[__name__]
     str_fields = {
-        "ollama_url":           "OLLAMA_URL",
-        "ollama_model":         "OLLAMA_MODEL",
-        "cf_client_id":         "CF_CLIENT_ID",
-        "cf_client_secret":     "CF_CLIENT_SECRET",
-        "slack_client_id":      "SLACK_CLIENT_ID",
-        "slack_client_secret":  "SLACK_CLIENT_SECRET",
-        "slack_bot_token":      "SLACK_BOT_TOKEN",
-        "teams_client_id":      "TEAMS_CLIENT_ID",
-        "teams_client_secret":  "TEAMS_CLIENT_SECRET",
-        "github_pat":           "GITHUB_PAT",
-        "github_username":      "GITHUB_USERNAME",
-        "jira_email":           "JIRA_EMAIL",
-        "jira_token":           "JIRA_TOKEN",
-        "jira_domain":          "JIRA_DOMAIN",
-        "jira_jql":             "JIRA_JQL",
-        "user_name":            "USER_NAME",
-        "user_email":           "USER_EMAIL",
-        "escalation_provider":  "ESCALATION_PROVIDER",
-        "escalation_model":     "ESCALATION_MODEL",
-        "escalation_api_key":   "ESCALATION_API_KEY",
-        "escalation_api_url":   "ESCALATION_API_URL",
+        "ollama_url": "OLLAMA_URL",
+        "ollama_model": "OLLAMA_MODEL",
+        "cf_client_id": "CF_CLIENT_ID",
+        "cf_client_secret": "CF_CLIENT_SECRET",
+        "slack_client_id": "SLACK_CLIENT_ID",
+        "slack_client_secret": "SLACK_CLIENT_SECRET",
+        "slack_bot_token": "SLACK_BOT_TOKEN",
+        "teams_client_id": "TEAMS_CLIENT_ID",
+        "teams_client_secret": "TEAMS_CLIENT_SECRET",
+        "github_pat": "GITHUB_PAT",
+        "github_username": "GITHUB_USERNAME",
+        "jira_email": "JIRA_EMAIL",
+        "jira_token": "JIRA_TOKEN",
+        "jira_domain": "JIRA_DOMAIN",
+        "jira_jql": "JIRA_JQL",
+        "user_name": "USER_NAME",
+        "user_email": "USER_EMAIL",
+        "escalation_provider": "ESCALATION_PROVIDER",
+        "escalation_model": "ESCALATION_MODEL",
+        "escalation_api_key": "ESCALATION_API_KEY",
+        "escalation_api_url": "ESCALATION_API_URL",
     }
     for key, var in str_fields.items():
         if key in d and d[key] not in (None, ""):
             setattr(mod, var, str(d[key]))
     if "slack_user_tokens" in d and isinstance(d["slack_user_tokens"], list):
         import crypto as _crypto  # local import to avoid circular dependency
+
         slack_tokens = [
             {**t, "token": _crypto.decrypt_secret(t["token"])} if "token" in t else t
             for t in d["slack_user_tokens"]
@@ -224,11 +230,16 @@ def apply_overrides(d: dict) -> None:
         mod.SLACK_USER_TOKENS = slack_tokens
     if "teams_user_tokens" in d and isinstance(d["teams_user_tokens"], list):
         import crypto as _crypto  # local import to avoid circular dependency
+
         teams_tokens = [
             {
                 **t,
-                "access_token":  _crypto.decrypt_secret(t["access_token"])  if "access_token"  in t else t.get("access_token",  ""),
-                "refresh_token": _crypto.decrypt_secret(t["refresh_token"]) if "refresh_token" in t else t.get("refresh_token", ""),
+                "access_token": _crypto.decrypt_secret(t["access_token"])
+                if "access_token" in t
+                else t.get("access_token", ""),
+                "refresh_token": _crypto.decrypt_secret(t["refresh_token"])
+                if "refresh_token" in t
+                else t.get("refresh_token", ""),
             }
             for t in d["teams_user_tokens"]
         ]
@@ -284,7 +295,7 @@ def ollama_headers(priority: str | None = None) -> dict:
     if priority:
         h["X-Priority"] = priority
     if CF_CLIENT_ID and CF_CLIENT_SECRET:
-        h["CF-Access-Client-Id"]     = CF_CLIENT_ID
+        h["CF-Access-Client-Id"] = CF_CLIENT_ID
         h["CF-Access-Client-Secret"] = CF_CLIENT_SECRET
     return h
 
@@ -300,13 +311,21 @@ def validate() -> list[str]:
     """
     warnings = []
     checks = [
-        (CF_CLIENT_ID,     "your-client-id",           "CF_CLIENT_ID not set — Ollama requests will be unauthenticated"),
-        (CF_CLIENT_SECRET, "your-client-secret",        "CF_CLIENT_SECRET not set — Ollama requests will be unauthenticated"),
-        (SLACK_CLIENT_ID,     "your-slack-client",  "SLACK_CLIENT_ID not configured"),
-        (SLACK_CLIENT_SECRET, "your-slack-client",  "SLACK_CLIENT_SECRET not configured"),
-        (GITHUB_PAT,       "ghp_your",                  "GITHUB_PAT not configured"),
-        (JIRA_TOKEN,       "your-jira-api-token",       "JIRA_TOKEN not configured"),
-        (JIRA_DOMAIN,      "yourcompany.atlassian.net", "JIRA_DOMAIN not configured"),
+        (
+            CF_CLIENT_ID,
+            "your-client-id",
+            "CF_CLIENT_ID not set — Ollama requests will be unauthenticated",
+        ),
+        (
+            CF_CLIENT_SECRET,
+            "your-client-secret",
+            "CF_CLIENT_SECRET not set — Ollama requests will be unauthenticated",
+        ),
+        (SLACK_CLIENT_ID, "your-slack-client", "SLACK_CLIENT_ID not configured"),
+        (SLACK_CLIENT_SECRET, "your-slack-client", "SLACK_CLIENT_SECRET not configured"),
+        (GITHUB_PAT, "ghp_your", "GITHUB_PAT not configured"),
+        (JIRA_TOKEN, "your-jira-api-token", "JIRA_TOKEN not configured"),
+        (JIRA_DOMAIN, "yourcompany.atlassian.net", "JIRA_DOMAIN not configured"),
     ]
     for val, sentinel, msg in checks:
         if not val or val.startswith(sentinel):

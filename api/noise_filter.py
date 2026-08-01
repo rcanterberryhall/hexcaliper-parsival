@@ -19,6 +19,7 @@ Rule schema (as stored in settings["noise_filters"])::
       {"type": "distribution_list",  "value": "all-company@"},
     ]
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -26,12 +27,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from models import RawItem
 
-VALID_RULE_TYPES = frozenset({
-    "sender_contains",
-    "subject_contains",
-    "source_repo",
-    "distribution_list",
-})
+VALID_RULE_TYPES = frozenset(
+    {
+        "sender_contains",
+        "subject_contains",
+        "source_repo",
+        "distribution_list",
+    }
+)
 
 
 def _matches(rule: dict, item: RawItem) -> bool:
@@ -67,8 +70,7 @@ def should_filter(item: RawItem, rules: list[dict]) -> tuple[bool, str | None]:
 
 
 def validate_rule(rule: dict) -> str | None:
-    """Validate a single filter rule.  Returns an error string or None if valid.
-    """
+    """Validate a single filter rule.  Returns an error string or None if valid."""
     if rule.get("type") not in VALID_RULE_TYPES:
         return f"Unknown filter type '{rule.get('type')}'. Valid: {sorted(VALID_RULE_TYPES)}"
     if not rule.get("value", "").strip():

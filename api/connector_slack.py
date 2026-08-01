@@ -19,6 +19,7 @@ The resulting ``hierarchy`` and ``project_tag`` values are stored in
 Each call to ``fetch()`` returns a deduplicated list of ``RawItem`` objects
 covering the lookback window defined in ``config.LOOKBACK_HOURS``.
 """
+
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -165,19 +166,24 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
     :rtype: list[RawItem]
     """
     items: list[RawItem] = []
-    seen:  set[str]      = set()
-    cache: dict          = {}
+    seen: set[str] = set()
+    cache: dict = {}
 
     # Identify whose token this is.
     try:
-        auth   = _get(token, "auth.test")
+        auth = _get(token, "auth.test")
         my_uid = auth.get("user_id", "")
-        team   = auth.get("team", "")
+        team = auth.get("team", "")
     except Exception as e:
         log.error("auth.test failed: %s", e)
         return []
 
-    log.info("%s: my_uid=%s, cutoff=%s", team, my_uid, datetime.fromtimestamp(cutoff_ts, tz=UTC).isoformat())
+    log.info(
+        "%s: my_uid=%s, cutoff=%s",
+        team,
+        my_uid,
+        datetime.fromtimestamp(cutoff_ts, tz=UTC).isoformat(),
+    )
 
     # ── 1. @mentions via search API ──────────────────────────────────────────
     # Mentions use a per-message item_id (stable across scans) so todo dedup
@@ -185,12 +191,16 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
     # consult ``slack_seen_messages`` to skip LLM work on mentions surfaced
     # in an earlier scan.
     try:
-        search_result = _get(token, "search.messages", {
-            "query":    f"<@{my_uid}>",
-            "count":    20,
-            "sort":     "timestamp",
-            "sort_dir": "desc",
-        })
+        search_result = _get(
+            token,
+            "search.messages",
+            {
+                "query": f"<@{my_uid}>",
+                "count": 20,
+                "sort": "timestamp",
+                "sort_dir": "desc",
+            },
+        )
         matches = search_result.get("messages", {}).get("matches", [])
         log.info("%s: mentions search: %d total matches", team, len(matches))
 
@@ -202,8 +212,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
             by_channel.setdefault(ch_id, []).append(m)
 
         for ch_id, msgs in by_channel.items():
-            ts_candidates = [m["ts"] for m in msgs
-                             if float(m.get("ts", 0)) >= cutoff_ts]
+            ts_candidates = [m["ts"] for m in msgs if float(m.get("ts", 0)) >= cutoff_ts]
             unseen = db.slack_unseen_message_ts(team, ch_id, ts_candidates)
             if not unseen:
                 continue
@@ -217,16 +226,25 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 seen.add(mid)
                 ts = float(m["ts"])
                 ch = m.get("channel", {})
-                items.append(RawItem(
-                    source    = "slack",
-                    item_id   = mid,
-                    title     = f"[@mention] #{ch.get('name','?')} ({team}): {m.get('text','')[:80]}",
-                    body      = m.get("text", "")[:3000],
-                    url       = m.get("permalink", f"https://slack.com/app_redirect?channel={ch.get('id','')}"),
-                    author    = _username(token, m.get("user", "?"), cache),
-                    timestamp = datetime.fromtimestamp(ts, tz=UTC).isoformat(),
-                    metadata  = {"channel": ch.get("name", ""), "workspace": team, "type": "mention"},
-                ))
+                items.append(
+                    RawItem(
+                        source="slack",
+                        item_id=mid,
+                        title=f"[@mention] #{ch.get('name', '?')} ({team}): {m.get('text', '')[:80]}",
+                        body=m.get("text", "")[:3000],
+                        url=m.get(
+                            "permalink",
+                            f"https://slack.com/app_redirect?channel={ch.get('id', '')}",
+                        ),
+                        author=_username(token, m.get("user", "?"), cache),
+                        timestamp=datetime.fromtimestamp(ts, tz=UTC).isoformat(),
+                        metadata={
+                            "channel": ch.get("name", ""),
+                            "workspace": team,
+                            "type": "mention",
+                        },
+                    )
+                )
                 new_ts_for_channel.append(m["ts"])
             if new_ts_for_channel:
                 db.slack_mark_messages_seen(team, ch_id, new_ts_for_channel)
@@ -240,29 +258,35 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
     # yet, so the LLM isn't re-analysing the same thread after the user has
     # already acted on it (parsival#69).
     try:
-        channels = _get(token, "conversations.list", {
-            "types":            "im,mpim",
-            "exclude_archived": True,
-            "limit":            50,
-        }).get("channels", [])
+        channels = _get(
+            token,
+            "conversations.list",
+            {
+                "types": "im,mpim",
+                "exclude_archived": True,
+                "limit": 50,
+            },
+        ).get("channels", [])
         log.info("%s: DM conversations found: %d", team, len(channels))
 
         for ch in channels:
             ch_id = ch["id"]
             try:
-                msgs = _get(token, "conversations.history", {
-                    "channel": ch_id,
-                    "limit":   10,
-                }).get("messages", [])
+                msgs = _get(
+                    token,
+                    "conversations.history",
+                    {
+                        "channel": ch_id,
+                        "limit": 10,
+                    },
+                ).get("messages", [])
             except Exception:
                 continue
 
             if not msgs:
                 continue
 
-            unseen = db.slack_unseen_message_ts(
-                team, ch_id, [m["ts"] for m in msgs]
-            )
+            unseen = db.slack_unseen_message_ts(team, ch_id, [m["ts"] for m in msgs])
             new_msgs = [m for m in msgs if m["ts"] in unseen]
             if not new_msgs:
                 continue
@@ -278,41 +302,51 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 continue
             seen.add(mid)
             first_ts = float(new_msgs[0]["ts"])
-            items.append(RawItem(
-                source    = "slack",
-                item_id   = mid,
-                title     = f"[DM] ({team}): {new_msgs[0].get('text','')[:70]}",
-                body      = "\n".join(lines)[:3000],
-                url       = f"https://slack.com/app_redirect?channel={ch_id}",
-                author    = _username(token, new_msgs[0].get("user", "?"), cache),
-                timestamp = datetime.fromtimestamp(first_ts, tz=UTC).isoformat(),
-                metadata  = {"workspace": team, "type": "dm"},
-            ))
+            items.append(
+                RawItem(
+                    source="slack",
+                    item_id=mid,
+                    title=f"[DM] ({team}): {new_msgs[0].get('text', '')[:70]}",
+                    body="\n".join(lines)[:3000],
+                    url=f"https://slack.com/app_redirect?channel={ch_id}",
+                    author=_username(token, new_msgs[0].get("user", "?"), cache),
+                    timestamp=datetime.fromtimestamp(first_ts, tz=UTC).isoformat(),
+                    metadata={"workspace": team, "type": "dm"},
+                )
+            )
             db.slack_mark_messages_seen(team, ch_id, [m["ts"] for m in new_msgs])
     except Exception as e:
         log.error("%s: DMs: %s", team, e)
 
     # ── 3. Channels where I participated or was mentioned ────────────────────
     try:
-        channels = _get(token, "conversations.list", {
-            "types":            "public_channel,private_channel",
-            "exclude_archived": True,
-            "limit":            200,
-        }).get("channels", [])
+        channels = _get(
+            token,
+            "conversations.list",
+            {
+                "types": "public_channel,private_channel",
+                "exclude_archived": True,
+                "limit": 200,
+            },
+        ).get("channels", [])
         log.info("%s: channel memberships: %d", team, len(channels))
 
         filtering = bool(config.PROJECTS or config.FOCUS_TOPICS)
 
         for ch in channels:
-            ch_id   = ch["id"]
+            ch_id = ch["id"]
             ch_name = ch.get("name", ch_id)
 
             try:
-                msgs = _get(token, "conversations.history", {
-                    "channel": ch_id,
-                    "oldest":  str(cutoff_ts),
-                    "limit":   100 if filtering else 40,
-                }).get("messages", [])
+                msgs = _get(
+                    token,
+                    "conversations.history",
+                    {
+                        "channel": ch_id,
+                        "oldest": str(cutoff_ts),
+                        "limit": 100 if filtering else 40,
+                    },
+                ).get("messages", [])
             except Exception:
                 continue
 
@@ -322,7 +356,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
             # When context is configured, filter to messages the user sent,
             # was mentioned in, or that match a project/topic keyword.
             ch_hierarchy = "general"
-            ch_project   = None
+            ch_project = None
             if filtering:
                 relevant = []
                 for msg in msgs:
@@ -345,9 +379,7 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
             # Filter out messages we've already surfaced in a previous scan so
             # the LLM only re-analyses when there's genuinely new content in
             # the channel (parsival#69).
-            unseen = db.slack_unseen_message_ts(
-                team, ch_id, [m["ts"] for m in msgs]
-            )
+            unseen = db.slack_unseen_message_ts(team, ch_id, [m["ts"] for m in msgs])
             new_msgs = [m for m in msgs if m["ts"] in unseen]
             if not new_msgs:
                 continue
@@ -366,22 +398,24 @@ def _fetch_for_token(token: str, cutoff_ts: float) -> list[RawItem]:
                 continue
             seen.add(mid)
             first_ts = float(new_msgs[0]["ts"])
-            items.append(RawItem(
-                source    = "slack",
-                item_id   = mid,
-                title     = f"[#{ch_name}] ({team}): recent activity",
-                body      = "\n".join(lines)[:3000],
-                url       = f"https://slack.com/app_redirect?channel={ch_id}",
-                author    = f"#{ch_name}",
-                timestamp = datetime.fromtimestamp(first_ts, tz=UTC).isoformat(),
-                metadata  = {
-                    "channel":     ch_name,
-                    "workspace":   team,
-                    "type":        "channel",
-                    "hierarchy":   ch_hierarchy,
-                    "project_tag": ch_project,
-                },
-            ))
+            items.append(
+                RawItem(
+                    source="slack",
+                    item_id=mid,
+                    title=f"[#{ch_name}] ({team}): recent activity",
+                    body="\n".join(lines)[:3000],
+                    url=f"https://slack.com/app_redirect?channel={ch_id}",
+                    author=f"#{ch_name}",
+                    timestamp=datetime.fromtimestamp(first_ts, tz=UTC).isoformat(),
+                    metadata={
+                        "channel": ch_name,
+                        "workspace": team,
+                        "type": "channel",
+                        "hierarchy": ch_hierarchy,
+                        "project_tag": ch_project,
+                    },
+                )
+            )
             db.slack_mark_messages_seen(team, ch_id, [m["ts"] for m in new_msgs])
     except Exception as e:
         log.error("%s: channels: %s", team, e)
@@ -400,9 +434,7 @@ def fetch() -> list[RawItem]:
              within each workspace by item ID.
     :rtype: list[RawItem]
     """
-    cutoff_ts = (
-        datetime.now(UTC) - timedelta(hours=config.LOOKBACK_HOURS)
-    ).timestamp()
+    cutoff_ts = (datetime.now(UTC) - timedelta(hours=config.LOOKBACK_HOURS)).timestamp()
 
     # ── User token path (one per connected workspace) ─────────────────────────
     if config.SLACK_USER_TOKENS:
@@ -414,7 +446,7 @@ def fetch() -> list[RawItem]:
             try:
                 all_items.extend(_fetch_for_token(token, cutoff_ts))
             except Exception as e:
-                log.error("workspace %s: %s", ws.get('team', '?'), e)
+                log.error("workspace %s: %s", ws.get("team", "?"), e)
         return all_items
 
     # ── Legacy bot token fallback ─────────────────────────────────────────────
@@ -423,33 +455,41 @@ def fetch() -> list[RawItem]:
         return []
 
     log.info("using legacy bot token")
-    token      = config.SLACK_BOT_TOKEN
+    token = config.SLACK_BOT_TOKEN
     cutoff_str = str(cutoff_ts)
-    cache: dict          = {}
+    cache: dict = {}
     items: list[RawItem] = []
 
     try:
-        bot_uid  = _get(token, "auth.test").get("user_id", "")
-        channels = _get(token, "conversations.list", {
-            "types":            "public_channel,private_channel,im,mpim",
-            "exclude_archived": True,
-            "limit":            100,
-        }).get("channels", [])
+        bot_uid = _get(token, "auth.test").get("user_id", "")
+        channels = _get(
+            token,
+            "conversations.list",
+            {
+                "types": "public_channel,private_channel,im,mpim",
+                "exclude_archived": True,
+                "limit": 100,
+            },
+        ).get("channels", [])
 
         if config.SLACK_CHANNELS:
             name_map = {c["name"]: c for c in channels}
             channels = [name_map[n] for n in config.SLACK_CHANNELS if n in name_map]
 
         for ch in channels:
-            ch_id   = ch["id"]
+            ch_id = ch["id"]
             ch_name = ch.get("name", ch_id)
-            is_im   = ch.get("is_im", False)
+            is_im = ch.get("is_im", False)
             try:
-                msgs = _get(token, "conversations.history", {
-                    "channel": ch_id,
-                    "oldest":  cutoff_str,
-                    "limit":   50,
-                }).get("messages", [])
+                msgs = _get(
+                    token,
+                    "conversations.history",
+                    {
+                        "channel": ch_id,
+                        "oldest": cutoff_str,
+                        "limit": 50,
+                    },
+                ).get("messages", [])
             except Exception as e:
                 log.error("#%s: %s", ch_name, e)
                 continue
@@ -457,40 +497,37 @@ def fetch() -> list[RawItem]:
             # Skip messages already surfaced in a previous scan.  The legacy
             # path uses a per-message item_id so todo dedup is already stable;
             # the seen filter just avoids redundant LLM work (parsival#69).
-            candidates = [
-                m for m in msgs
-                if is_im or f"<@{bot_uid}>" in m.get("text", "")
-            ]
-            unseen = db.slack_unseen_message_ts(
-                "", ch_id, [m["ts"] for m in candidates]
-            )
+            candidates = [m for m in msgs if is_im or f"<@{bot_uid}>" in m.get("text", "")]
+            unseen = db.slack_unseen_message_ts("", ch_id, [m["ts"] for m in candidates])
             candidates = [m for m in candidates if m["ts"] in unseen]
             for msg in candidates:
                 text = msg.get("text", "")
                 body = text
                 if msg.get("reply_count", 0) > 0:
                     try:
-                        replies = _get(token, "conversations.replies", {"channel": ch_id, "ts": msg["ts"]})
+                        replies = _get(
+                            token, "conversations.replies", {"channel": ch_id, "ts": msg["ts"]}
+                        )
                         for rp in replies.get("messages", [])[1:5]:
-                            rn   = _username(token, rp.get("user", "?"), cache)
+                            rn = _username(token, rp.get("user", "?"), cache)
                             body += f"\n[{rn}]: {rp.get('text', '')}"
                     except Exception:
                         pass
                 ts = float(msg["ts"])
-                items.append(RawItem(
-                    source    = "slack",
-                    item_id   = f"{ch_id}_{msg['ts']}",
-                    title     = f"{'DM' if is_im else f'#{ch_name}'}: {text[:80]}",
-                    body      = body[:3000],
-                    url       = f"https://slack.com/app_redirect?channel={ch_id}&message_ts={msg['ts']}",
-                    author    = _username(token, msg.get("user", "unknown"), cache),
-                    timestamp = datetime.fromtimestamp(ts, tz=UTC).isoformat(),
-                    metadata  = {"channel": ch_name, "is_dm": is_im},
-                ))
-            if candidates:
-                db.slack_mark_messages_seen(
-                    "", ch_id, [m["ts"] for m in candidates]
+                items.append(
+                    RawItem(
+                        source="slack",
+                        item_id=f"{ch_id}_{msg['ts']}",
+                        title=f"{'DM' if is_im else f'#{ch_name}'}: {text[:80]}",
+                        body=body[:3000],
+                        url=f"https://slack.com/app_redirect?channel={ch_id}&message_ts={msg['ts']}",
+                        author=_username(token, msg.get("user", "unknown"), cache),
+                        timestamp=datetime.fromtimestamp(ts, tz=UTC).isoformat(),
+                        metadata={"channel": ch_name, "is_dm": is_im},
+                    )
                 )
+            if candidates:
+                db.slack_mark_messages_seen("", ch_id, [m["ts"] for m in candidates])
     except Exception as e:
         log.error("legacy error: %s", e)
 

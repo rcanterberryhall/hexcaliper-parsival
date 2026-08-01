@@ -11,6 +11,7 @@ minutes with no output.
 These tests pin the contract: ``db.lock`` is a re-entrant ``RLock`` and a
 thread holding it can call helpers that also acquire it without deadlocking.
 """
+
 import threading
 
 import db

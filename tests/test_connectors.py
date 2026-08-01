@@ -9,6 +9,7 @@ import connector_slack
 
 # ── GitHub ────────────────────────────────────────────────────────────────────
 
+
 def test_github_skips_when_not_configured(monkeypatch):
     monkeypatch.setattr(config, "GITHUB_PAT", "")
     assert connector_github.fetch() == []
@@ -63,8 +64,10 @@ def test_github_fetch_returns_items(monkeypatch):
         mock_resp.headers = {}
         mock_get.return_value = mock_resp
 
-        with patch("connector_github._get", side_effect=fake_get), \
-             patch("connector_github._get_paginated", side_effect=fake_get_paginated):
+        with (
+            patch("connector_github._get", side_effect=fake_get),
+            patch("connector_github._get_paginated", side_effect=fake_get_paginated),
+        ):
             items = connector_github.fetch()
 
     assert len(items) == 1
@@ -73,6 +76,7 @@ def test_github_fetch_returns_items(monkeypatch):
 
 
 # ── Slack ─────────────────────────────────────────────────────────────────────
+
 
 def test_slack_skips_when_not_configured(monkeypatch):
     monkeypatch.setattr(config, "SLACK_BOT_TOKEN", "")
@@ -97,8 +101,10 @@ def test_slack_returns_empty_on_api_error(monkeypatch):
 
 # ── Slack dedup (parsival#69) ─────────────────────────────────────────────────
 
+
 def test_slack_unseen_filter_roundtrip():
     import db
+
     db.conn().execute("DELETE FROM slack_seen_messages")
     ts_list = ["100.0", "200.0", "300.0"]
     # Nothing marked yet → all unseen
@@ -116,6 +122,7 @@ def test_slack_unseen_filter_roundtrip():
 def test_slack_fetch_skips_already_seen_channel(monkeypatch):
     """Channel where every message has been seen in a prior scan emits nothing."""
     import db
+
     db.conn().execute("DELETE FROM slack_seen_messages")
     monkeypatch.setattr(config, "SLACK_USER_TOKENS", [])
     monkeypatch.setattr(config, "SLACK_BOT_TOKEN", "xoxb-real")
@@ -131,10 +138,13 @@ def test_slack_fetch_skips_already_seen_channel(monkeypatch):
         if endpoint == "conversations.list":
             return {"ok": True, "channels": [{"id": "CABC", "name": "general"}]}
         if endpoint == "conversations.history":
-            return {"ok": True, "messages": [
-                {"ts": "1700000100.0", "text": "<@UBOT> ping",   "user": "U1"},
-                {"ts": "1700000000.0", "text": "<@UBOT> older",  "user": "U1"},
-            ]}
+            return {
+                "ok": True,
+                "messages": [
+                    {"ts": "1700000100.0", "text": "<@UBOT> ping", "user": "U1"},
+                    {"ts": "1700000000.0", "text": "<@UBOT> older", "user": "U1"},
+                ],
+            }
         return {"ok": True}
 
     with patch("connector_slack._get", side_effect=fake_get_impl):
@@ -146,6 +156,7 @@ def test_slack_fetch_skips_already_seen_channel(monkeypatch):
 def test_slack_fetch_emits_only_new_messages(monkeypatch):
     """Only the unseen message becomes a RawItem; its ts is then marked seen."""
     import db
+
     db.conn().execute("DELETE FROM slack_seen_messages")
     monkeypatch.setattr(config, "SLACK_USER_TOKENS", [])
     monkeypatch.setattr(config, "SLACK_BOT_TOKEN", "xoxb-real")
@@ -160,10 +171,13 @@ def test_slack_fetch_emits_only_new_messages(monkeypatch):
         if endpoint == "conversations.list":
             return {"ok": True, "channels": [{"id": "CABC", "name": "general"}]}
         if endpoint == "conversations.history":
-            return {"ok": True, "messages": [
-                {"ts": "1700000100.0", "text": "<@UBOT> new",   "user": "U1"},
-                {"ts": "1700000000.0", "text": "<@UBOT> older", "user": "U1"},
-            ]}
+            return {
+                "ok": True,
+                "messages": [
+                    {"ts": "1700000100.0", "text": "<@UBOT> new", "user": "U1"},
+                    {"ts": "1700000000.0", "text": "<@UBOT> older", "user": "U1"},
+                ],
+            }
         if endpoint == "users.info":
             return {"ok": True, "user": {"real_name": "Alice"}}
         return {"ok": True}
@@ -178,6 +192,7 @@ def test_slack_fetch_emits_only_new_messages(monkeypatch):
 
 
 # ── Jira ──────────────────────────────────────────────────────────────────────
+
 
 def test_jira_skips_when_not_configured(monkeypatch):
     monkeypatch.setattr(config, "JIRA_TOKEN", "")
@@ -195,11 +210,14 @@ def test_jira_text_extraction_from_adf():
     adf = {
         "type": "doc",
         "content": [
-            {"type": "paragraph", "content": [
-                {"type": "text", "text": "Hello"},
-                {"type": "text", "text": " world"},
-            ]}
-        ]
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "Hello"},
+                    {"type": "text", "text": " world"},
+                ],
+            }
+        ],
     }
     result = connector_jira._text(adf)
     assert "Hello" in result
@@ -222,21 +240,23 @@ def test_jira_fetch_returns_items(monkeypatch):
     monkeypatch.setattr(config, "LOOKBACK_HOURS", 48)
 
     fake_response = {
-        "issues": [{
-            "key": "PROJ-1",
-            "fields": {
-                "summary": "Fix the thing",
-                "description": None,
-                "status": {"name": "In Progress"},
-                "priority": {"name": "High"},
-                "reporter": {"displayName": "Bob"},
-                "updated": "2026-03-13T10:00:00+00:00",
-                "duedate": "2026-03-20",
-                "comment": {"comments": []},
-                "issuetype": {"name": "Story"},
-                "project": {"name": "My Project"},
+        "issues": [
+            {
+                "key": "PROJ-1",
+                "fields": {
+                    "summary": "Fix the thing",
+                    "description": None,
+                    "status": {"name": "In Progress"},
+                    "priority": {"name": "High"},
+                    "reporter": {"displayName": "Bob"},
+                    "updated": "2026-03-13T10:00:00+00:00",
+                    "duedate": "2026-03-20",
+                    "comment": {"comments": []},
+                    "issuetype": {"name": "Story"},
+                    "project": {"name": "My Project"},
+                },
             }
-        }]
+        ]
     }
 
     mock_resp = MagicMock()
@@ -254,6 +274,7 @@ def test_jira_fetch_returns_items(monkeypatch):
 
 
 # ── Outlook ───────────────────────────────────────────────────────────────────
+
 
 def test_outlook_always_returns_empty():
     assert connector_outlook.fetch() == []
