@@ -209,7 +209,7 @@ def test_add_and_remove_email(client):
 
 
 def test_add_email_already_attached_to_other_contact_returns_409(client):
-    a = client.post("/contacts", json={"name": "A", "emails": ["x@y.com"]}).json()
+    client.post("/contacts", json={"name": "A", "emails": ["x@y.com"]}).json()
     b = client.post("/contacts", json={"name": "B", "emails": ["b@y.com"]}).json()
     r = client.post(f"/contacts/{b['contact_id']}/emails", json={"email": "x@y.com"})
     assert r.status_code == 409

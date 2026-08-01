@@ -712,10 +712,7 @@ def _run_scheduled() -> None:
 
     # Advance the mark only after a successful post.  Use the newest email seen
     # (never moving backward); if nothing new, the window is clean through run_start.
-    if emails:
-        new_mark = max(datetime.fromisoformat(e["timestamp"]) for e in emails)
-    else:
-        new_mark = run_start
+    new_mark = max(datetime.fromisoformat(e["timestamp"]) for e in emails) if emails else run_start
     if hwm is not None:
         new_mark = max(new_mark, hwm)
     _save_high_water_mark(new_mark)

@@ -48,7 +48,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: mypy api
 
-      # NOTE: `ruff check` is deliberately not wired here yet. CODE-003 requires
-      # it, but 99 findings remain (82 in api/, 15 in tests/, 2 in scripts/) and
-      # turning the gate on today would land main red. It goes in with the lint
-      # debt, together with `ruff format --check` once the formatting pass runs.
+      # CODE-003: lint and format both gate the build, with ruff pinned to an
+      # exact version in requirements-dev.txt so the gate cannot drift between a
+      # developer's machine and CI. Both are clean as of the lint-debt pass.
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: ruff check .
+
+      - name: Format
+        if: ${{ !cancelled() }}
+        run: ruff format --check .

@@ -26,6 +26,8 @@ try:
 except ImportError:
     _AVAILABLE = False
 
+import contextlib
+
 import db
 
 _lock = threading.Lock()
@@ -57,10 +59,8 @@ class _EmbeddingsTbl:
                 d = dict(row)
                 for col in ("items", "centroids", "centroid_counts"):
                     if col in d and isinstance(d[col], str):
-                        try:
+                        with contextlib.suppress(Exception):
                             d[col] = _json.loads(d[col])
-                        except Exception:
-                            pass
                 return d
         return None
 

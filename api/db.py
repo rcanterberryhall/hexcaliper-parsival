@@ -36,6 +36,7 @@ The ``conn()`` function returns the thread-shared connection; callers can
 run raw SQL when the helpers do not cover a use-case.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -1783,15 +1784,13 @@ def insert_contact(data: dict) -> int:
     for idx, email in enumerate(emails):
         if not email:
             continue
-        try:
+        # email already attached to a different contact — skip
+        with contextlib.suppress(sqlite3.IntegrityError):
             c.execute(
                 "INSERT INTO contact_emails (contact_id, email, is_primary, added_at) "
                 "VALUES (?, ?, ?, ?)",
                 (contact_id, email.lower(), 1 if idx == 0 else 0, now),
             )
-        except sqlite3.IntegrityError:
-            # email already attached to a different contact — skip
-            pass
     return contact_id
 
 

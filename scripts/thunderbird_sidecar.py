@@ -192,7 +192,7 @@ def load_messages(account_dir: Path, cutoff: datetime) -> list:
         candidates = [
             f
             for f in account_dir.iterdir()
-            if f.is_file() and not f.suffix == ".msf" and f.name.lower().startswith("inbox")
+            if f.is_file() and f.suffix != ".msf" and f.name.lower().startswith("inbox")
         ]
         if candidates:
             print(f"Reading mbox (fallback): {candidates[0]}")

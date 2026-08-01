@@ -629,9 +629,7 @@ def _looks_like_email_or_url(line: str) -> bool:
     """True if a line is just a URL or an email address (poor name candidate)."""
     if "@" in line and re.search(r"\S+@\S+\.\S+", line):
         return True
-    if re.match(r"^\s*(https?://|www\.)", line, re.I):
-        return True
-    return False
+    return bool(re.match(r"^\s*(https?://|www\.)", line, re.I))
 
 
 def _has_title_keyword(line: str) -> bool:

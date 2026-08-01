@@ -566,7 +566,7 @@ def compute_recipient_scope(user_email: str, to_field: str, cc_field: str) -> di
 
 
 def _recipient_scope_hint(scope_info: dict, user_name: str) -> str:
-    """Build a prompt hint paragraph describing recipient scope for the LLM.
+    r"""Build a prompt hint paragraph describing recipient scope for the LLM.
 
     Returns an empty string when there are no visible recipients (Jira,
     GitHub, Slack DMs) so the prompt stays clean for non-email sources.

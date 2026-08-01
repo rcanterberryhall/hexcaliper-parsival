@@ -558,8 +558,6 @@ def test_run_reanalyze_sorts_passdowns_first():
         submit_order.append(len(submit_order))
         return f"job-{len(submit_order)}"
 
-    fake_ids = iter(["p1", "n2", "n1"])
-
     def fake_build_prompt(item, **_kwargs):
         # We rely on build_prompt being called in the same iteration order as
         # the submit loop, so recording the item here gives us submit order.

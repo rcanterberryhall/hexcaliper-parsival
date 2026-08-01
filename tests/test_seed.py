@@ -317,7 +317,7 @@ def test_seed_apply_adds_tag_to_already_tagged_items(client):
         )
     )
     with patch("seeder._maybe_form_situation"):
-        r = client.post(
+        client.post(
             "/seed/apply",
             json={
                 "projects": [{"name": "Reactor Upgrade", "keywords": ["reactor"]}],

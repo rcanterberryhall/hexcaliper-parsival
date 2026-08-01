@@ -778,7 +778,7 @@ def process_ingest_items(raw: list[RawItem]) -> None:
     max_workers = min(_ingest_concurrency(), max(1, len(groups)))
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ingest") as ex:
         futures = [ex.submit(_handle_group, items) for items in groups]
-        for fut in as_completed(futures):
+        for _fut in as_completed(futures):
             # Exceptions are already caught per-item inside _handle_item;
             # this loop exists so the context manager waits on every task.
             pass

@@ -669,7 +669,7 @@ non-package neighbours and external services rather than sibling packages:
   :return: Full situation dict with deserialized ``items`` list.
   :raises HTTPException 404: If no situation with the given ID exists.
   </details>
-- `dismiss_situation(situation_id: str, body: dict={})` — Mark a situation as dismissed.
+- `dismiss_situation(situation_id: str, body: dict | None=None)` — Mark a situation as dismissed.
   <details><summary>full docstring</summary>
 
   :param situation_id: UUID of the situation to dismiss.

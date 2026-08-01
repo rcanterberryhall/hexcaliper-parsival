@@ -381,9 +381,11 @@ def test_post_exits_on_connection_error():
     sidecar = _sidecar()
     import requests as req
 
-    with patch("outlook_sidecar.requests.post", side_effect=req.ConnectionError):
-        with pytest.raises(SystemExit):
-            sidecar.post([{"item_id": "E1"}], "cid", "csec")
+    with (
+        patch("outlook_sidecar.requests.post", side_effect=req.ConnectionError),
+        pytest.raises(SystemExit),
+    ):
+        sidecar.post([{"item_id": "E1"}], "cid", "csec")
 
 
 def test_post_exits_with_credential_message_on_401():
@@ -397,9 +399,11 @@ def test_post_exits_with_credential_message_on_401():
     mock_resp.raise_for_status.side_effect = req.HTTPError(
         "401 Client Error: Unauthorized", response=mock_resp
     )
-    with patch("outlook_sidecar.requests.post", return_value=mock_resp):
-        with pytest.raises(SystemExit) as exc_info:
-            sidecar.post([{"item_id": "E1"}], "bad-id", "bad-secret")
+    with (
+        patch("outlook_sidecar.requests.post", return_value=mock_resp),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        sidecar.post([{"item_id": "E1"}], "bad-id", "bad-secret")
 
     msg = str(exc_info.value)
     assert "Cloudflare Access" in msg
@@ -415,9 +419,11 @@ def test_post_exits_with_credential_message_on_403():
     mock_resp.raise_for_status.side_effect = req.HTTPError(
         "403 Client Error: Forbidden", response=mock_resp
     )
-    with patch("outlook_sidecar.requests.post", return_value=mock_resp):
-        with pytest.raises(SystemExit) as exc_info:
-            sidecar.post([{"item_id": "E1"}], "cid", "csec")
+    with (
+        patch("outlook_sidecar.requests.post", return_value=mock_resp),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        sidecar.post([{"item_id": "E1"}], "cid", "csec")
 
     assert "Cloudflare Access" in str(exc_info.value)
 

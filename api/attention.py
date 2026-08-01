@@ -99,7 +99,7 @@ def _weighted_centroid(vectors: list[list], weights: list[float]) -> list | None
     if total_w == 0:
         return None
     arr = np.zeros(len(vectors[0]), dtype=float)
-    for v, w in zip(vectors, weights):
+    for v, w in zip(vectors, weights, strict=True):
         arr += np.array(v, dtype=float) * w
     arr /= total_w
     norm = np.linalg.norm(arr)

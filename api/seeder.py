@@ -134,7 +134,7 @@ Respond ONLY with valid JSON — no markdown, no explanation:
 
 
 def _run_seed_job(context: str) -> None:
-    """Background thread for POST /seed.  Implements the full bootstrap state machine:
+    """Background thread for POST /seed, implementing the bootstrap state machine.
 
     waiting_for_ingest → analyzing → review (thread exits; user applies)
 

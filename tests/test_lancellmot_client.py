@@ -51,9 +51,11 @@ def test_list_projects_raises_on_5xx():
     bad = MagicMock()
     bad.status_code = 503
     bad.raise_for_status.side_effect = __import__("requests").HTTPError("503")
-    with patch("lancellmot_client.requests.get", return_value=bad):
-        with pytest.raises(lancellmot_client.LancellmotUnavailable):
-            lancellmot_client.list_projects()
+    with (
+        patch("lancellmot_client.requests.get", return_value=bad),
+        pytest.raises(lancellmot_client.LancellmotUnavailable),
+    ):
+        lancellmot_client.list_projects()
 
 
 def test_html_body_with_200_is_unavailable():

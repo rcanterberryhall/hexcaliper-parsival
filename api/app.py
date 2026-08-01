@@ -116,7 +116,10 @@ except Exception as _exc:
 try:
     import requests as _req
 
-    _r = _req.get(f"{config.OLLAMA_URL.rstrip('/generate')}/api/tags", timeout=5)
+    # removesuffix, not rstrip: rstrip takes a character SET, so it would eat any
+    # trailing run of "/generate"'s letters -- a host ending in one of them (e.g.
+    # http://ollama.example/generate) would be truncated to "http://ollama.exampl".
+    _r = _req.get(f"{config.OLLAMA_URL.removesuffix('/generate')}/api/tags", timeout=5)
     _log.info("Ollama reachable (%d models)", len(_r.json().get("models", [])))
 except Exception as _exc:
     _log.warning("Ollama unreachable at startup: %s", _exc)
@@ -1509,6 +1512,8 @@ def save_settings(body: dict):
 
 # ── Noise filters ─────────────────────────────────────────────────────────────
 
+import contextlib
+
 import noise_filter as _nf_mod
 
 
@@ -2585,7 +2590,7 @@ def get_situation(situation_id: str):
 
 
 @app.post("/situations/{situation_id}/dismiss")
-def dismiss_situation(situation_id: str, body: dict = {}):
+def dismiss_situation(situation_id: str, body: dict | None = None):
     """Mark a situation as dismissed.
 
     :param situation_id: UUID of the situation to dismiss.
@@ -2593,6 +2598,7 @@ def dismiss_situation(situation_id: str, body: dict = {}):
     :return: ``{"ok": True}``
     :raises HTTPException 404: If no situation with the given ID exists.
     """
+    body = body or {}
     with db.lock:
         sit = db.get_situation(situation_id)
         if not sit:
@@ -3341,10 +3347,8 @@ async def seed_preview(request: Request):
     items arrive.  Returns the current seed job state.
     """
     body = {}
-    try:
+    with contextlib.suppress(Exception):
         body = await request.json()
-    except Exception:
-        pass
     context = body.get("context", "") if isinstance(body, dict) else ""
     return seeder.start(context)
 
@@ -3661,9 +3665,8 @@ def _card_input(body: dict, *, require_all: bool = False) -> dict:
                 data[k] = int(data[k])
             except (TypeError, ValueError) as exc:
                 raise HTTPException(status_code=400, detail=f"{k} must be an integer") from exc
-    if "start_date" in data and "end_date" in data:
-        if data["end_date"] < data["start_date"]:
-            raise HTTPException(status_code=400, detail="end_date before start_date")
+    if "start_date" in data and "end_date" in data and data["end_date"] < data["start_date"]:
+        raise HTTPException(status_code=400, detail="end_date before start_date")
     return data
 
 
@@ -4211,7 +4214,7 @@ def _annotate_card(card: dict, *, max_candidates: int = 40, max_suggestions: int
     if not candidates:
         return []
     # Never re-suggest already-linked items.
-    already_linked = {(l["type"], str(l["id"])) for l in card.get("links", [])}
+    already_linked = {(lnk["type"], str(lnk["id"])) for lnk in card.get("links", [])}
     # Nor already-proposed ones (pending or decided) — dedup is per target.
     seen = {
         (r["link_type"], r["target_id"])

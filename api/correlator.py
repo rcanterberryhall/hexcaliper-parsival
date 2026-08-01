@@ -100,9 +100,12 @@ def find_correlated_candidates(
                 # Only correlate within same project or both untagged
                 rec_tags = db.parse_project_tags(rec.get("project_tag"))
                 query_tags = db.parse_project_tags(project_tag)
-                if rec_tags != query_tags and not set(rec_tags) & set(query_tags):
-                    if rec_tags or query_tags:  # skip unless both untagged
-                        continue
+                if (
+                    rec_tags != query_tags
+                    and not set(rec_tags) & set(query_tags)
+                    and (rec_tags or query_tags)  # skip unless both untagged
+                ):
+                    continue
                 stored_vec = get_item_vector(cid)
                 if stored_vec is None:
                     continue
@@ -279,7 +282,6 @@ def synthesize_situation(
 
 
 def _fallback_title(records: list) -> str:
-    sources = list(dict.fromkeys(r.get("source", "") for r in records))
     if records:
         return records[0].get("title", "Correlated situation")[:60]
     return "Correlated situation"
