@@ -3,16 +3,16 @@
 Notable changes to Parsival — features added, behavior changes, and fixes
 (`STANDARDS.md` DOC-009). Newest first.
 
-Entries are grouped by the date the work landed rather than by version:
-the repository carries no release tags yet (the single existing tag,
-`premerge-43-backup`, is a backup marker, not a milestone). Once VCS-003
-milestone tags exist, sections become versions.
+Sections are milestone tags where one exists, and otherwise the date the work
+landed. Tagging began at `v0.1-standards`; everything below it predates the
+first tag, so those sections stay dated. Per VCS-003 these are landmarks for
+tracing behaviour to when it entered, not semver releases.
 
-Everything before `[Unreleased]` was reconstructed from git history when this
-file was introduced, summarised at feature granularity. From here on, entries
-are written in the same change set as the change they describe.
+Everything before `v0.1-standards` was reconstructed from git history when
+this file was introduced, summarised at feature granularity. From here on,
+entries are written in the same change set as the change they describe.
 
-## [Unreleased]
+## [v0.1-standards] - 2026-08-01
 
 Day-0 engineering standards adoption (`chore/gatehouse-standards`). No
 runtime behavior changes — the service is untouched; this is tooling,
