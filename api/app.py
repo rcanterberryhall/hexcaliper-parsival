@@ -1085,7 +1085,7 @@ def patch_analysis(item_id: str, body: dict, background_tasks: BackgroundTasks):
                 elif old_project:
                     remove_item(item_id, old_project)
             except Exception as e:
-                print(f"[patch] embedding update failed: {e}")
+                _log.error("embedding update failed: %s", e)
 
         background_tasks.add_task(relearn)
 
@@ -1146,12 +1146,9 @@ def _record_priority_override(
         with db.lock:
             db.save_settings(saved)
         config.apply_overrides(saved)
-        print(
-            f"[priority_override] {reason}: {llm_priority} -> {user_priority} "
-            f"({len(overrides)} total)"
-        )
+        _log.info("%s: %s -> %s (%s total)", reason, llm_priority, user_priority, len(overrides))
     except Exception as e:
-        print(f"[priority_override] failed to record: {e}")
+        _log.error("failed to record: %s", e)
 
 
 @app.post("/analyses/{item_id}/tag")
@@ -1248,9 +1245,13 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
         config.apply_overrides(saved)
         kw_total = len(p.get("learned_keywords", []))
         sr_total = len(p.get("learned_senders", []))
-        print(
-            f"[learn] {project_name}: +{len(keywords)} keywords ({kw_total} total), "
-            f"+{len(senders)} senders ({sr_total} total)"
+        _log.info(
+            "%s: +%s keywords (%s total), +%s senders (%s total)",
+            project_name,
+            len(keywords),
+            kw_total,
+            len(senders),
+            sr_total,
         )
 
         # Embedding update
@@ -1272,7 +1273,7 @@ def tag_item(item_id: str, body: TagRequest, background_tasks: BackgroundTasks):
                     old_category=None,
                 )
             except Exception as e:
-                print(f"[learn] embedding update failed: {e}")
+                _log.error("embedding update failed: %s", e)
 
     background_tasks.add_task(learn)
     return {"ok": True, "project": project_name}
@@ -1308,7 +1309,7 @@ def _learn_keywords_for_category(record: dict, category: str) -> None:
     with db.lock:
         db.save_settings(saved)
     config.apply_overrides(saved)
-    print(f"[{category}] +{len(keywords)} keywords ({len(existing)} total)")
+    _log.info("+%s keywords (%s total)", category, len(keywords), len(existing))
 
 
 @app.post("/analyses/{item_id}/noise")
@@ -2134,9 +2135,9 @@ def generate_briefing(background_tasks: BackgroundTasks):
             content = _build_briefing(full=True)
             with db.lock:
                 db.save_briefing(content)
-            print(f"[briefing] generated {len(content.get('sections', []))} sections")
+            _log.info("generated %s sections", len(content.get("sections", [])))
         except Exception as exc:
-            print(f"[briefing] generation failed: {exc}")
+            _log.error("generation failed: %s", exc)
             with db.lock:
                 db.save_briefing({"sections": [], "error": str(exc)})
 
@@ -3007,11 +3008,10 @@ def get_stats():
 
 # Warn at import time if OAuth tokens will be stored unencrypted.
 if not config.CREDENTIALS_KEY:
-    import logging as _log
-
-    _log.getLogger(__name__).warning(
-        "CREDENTIALS_KEY is not set — OAuth tokens will be stored unencrypted in SQLite."
-    )
+    # Use the module logger directly. `import logging as _log` here would rebind
+    # the module-global _log from the "parsival" Logger to the logging module,
+    # silently rerouting every later _log call in this file to the root logger.
+    _log.warning("CREDENTIALS_KEY is not set — OAuth tokens will be stored unencrypted in SQLite.")
 
 # ── OAuth state nonce store ────────────────────────────────────────────────────
 # Maps state token → expiry timestamp. Validated in each OAuth callback.
@@ -3107,14 +3107,16 @@ def slack_callback(code: str = None, error: str = None, state: str = None):
     )
     r.raise_for_status()
     data = r.json()
-    print(
-        f"[slack/callback] ok={data.get('ok')} error={data.get('error')} "
-        f"authed_user_keys={list(data.get('authed_user', {}).keys())}"
+    _log.error(
+        "ok=%s error=%s authed_user_keys=%s",
+        data.get("ok"),
+        data.get("error"),
+        list(data.get("authed_user", {}).keys()),
     )
 
     if not data.get("ok"):
         err = data.get("error", "unknown")
-        print(f"[slack/callback] OAuth failed: {err}")
+        _log.error("OAuth failed: %s", err)
         return Response(
             status_code=302,
             headers={"Location": f"/page/?slack_error={err}"},
@@ -3123,7 +3125,7 @@ def slack_callback(code: str = None, error: str = None, state: str = None):
     authed_user = data.get("authed_user", {})
     token = authed_user.get("access_token")
     if not token:
-        print(f"[slack/callback] No user token in response. authed_user={authed_user}")
+        _log.info("No user token in response. authed_user=%s", authed_user)
         return Response(status_code=302, headers={"Location": "/page/?slack_error=no_user_token"})
 
     team = data.get("team", {})

@@ -8,6 +8,7 @@ Owns all situation formation logic:
 """
 
 import json
+import logging
 import math
 import re
 from datetime import UTC, datetime
@@ -15,6 +16,8 @@ from datetime import UTC, datetime
 import config
 import db
 import llm
+
+log = logging.getLogger(__name__)
 
 # ── Reference extraction ───────────────────────────────────────────────────────
 
@@ -113,7 +116,7 @@ def find_correlated_candidates(
                 if score >= similarity_threshold:
                     candidates.add(cid)
         except Exception as e:
-            print(f"[correlator] semantic pass failed: {e}")
+            log.error("semantic pass failed: %s", e)
 
     return list(candidates)
 
@@ -277,7 +280,7 @@ def synthesize_situation(
             "key_context": data.get("key_context"),
         }
     except Exception as e:
-        print(f"[correlator] synthesis failed: {e}")
+        log.error("synthesis failed: %s", e)
         return fallback
 
 

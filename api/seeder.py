@@ -16,6 +16,7 @@ run_reanalyze_fn, and maybe_form_situation_fn are injected via init().
 """
 
 import json
+import logging
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -23,6 +24,8 @@ from typing import Any
 import config
 import db
 import llm
+
+log = logging.getLogger(__name__)
 
 # ── Module-level references, set by init() ────────────────────────────────────
 #
@@ -224,8 +227,8 @@ def _run_seed_job(context: str) -> None:
         batch_size = 15
         n_batches = max(1, (n_items + batch_size - 1) // batch_size)
 
-        print(
-            f"[seed] analysing {n_items} items ({passdown_count} passdowns) in {n_batches} batches"
+        log.info(
+            "analysing %s items (%s passdowns) in %s batches", n_items, passdown_count, n_batches
         )
         _seed_job["progress"] = f"Analysing {n_items} items ({passdown_count} passdowns)…"
 
@@ -255,7 +258,7 @@ def _run_seed_job(context: str) -> None:
                 existing_projects_block=existing_projects_block,
                 items_block=items_block,
             )
-            print(f"[seed] map batch {batch_num}/{n_batches}: {len(batch)} items")
+            log.info("map batch %s/%s: %s items", batch_num, n_batches, len(batch))
             try:
                 # No parsival-side throttle (squire#33): merLLM is the
                 # single source of truth for GPU concurrency, so we just
@@ -269,18 +272,21 @@ def _run_seed_job(context: str) -> None:
                     timeout=120,
                     priority="background",
                 )
-                print(f"[seed] map batch {batch_num} raw response: {text!r}")
+                log.debug("map batch %s raw response: %r", batch_num, text)
                 data = json.loads(text or "{}")
-                print(
-                    f"[seed] map batch {batch_num}: {len(data.get('projects', []))} projects, {len(data.get('concerns', []))} concerns"
+                log.info(
+                    "map batch %s: %s projects, %s concerns",
+                    batch_num,
+                    len(data.get("projects", [])),
+                    len(data.get("concerns", [])),
                 )
                 map_results.append(data)
             except Exception as e:
                 last_map_err = str(e)
-                print(f"[seed] map batch {batch_start} failed: {e}")
+                log.error("map batch %s failed: %s", batch_start, e)
                 continue
 
-        print(f"[seed] map pass complete: {len(map_results)}/{n_batches} batches succeeded")
+        log.info("map pass complete: %s/%s batches succeeded", len(map_results), n_batches)
         if not map_results:
             err_detail = f" ({last_map_err})" if last_map_err else ""
             _seed_job.update(
@@ -327,13 +333,13 @@ def _run_seed_job(context: str) -> None:
                 timeout=180,
                 priority="background",
             )
-            print(f"[seed] reduce raw response: {text!r}")
+            log.debug("reduce raw response: %r", text)
             final = json.loads(text or "{}")
             projects = final.get("projects", [])
             topics = final.get("topics", [])
-            print(f"[seed] reduce result: {len(projects)} projects, {len(topics)} topics")
+            log.info("reduce result: %s projects, %s topics", len(projects), len(topics))
         except Exception as e:
-            print(f"[seed] reduce failed: {e}")
+            log.error("reduce failed: %s", e)
             projects = []
             seen_names = set()
             topics = []
@@ -345,10 +351,10 @@ def _run_seed_job(context: str) -> None:
                         projects.append(p)
                 topics.extend(mr.get("concerns", []))
             topics = list(dict.fromkeys(topics))
-            print(f"[seed] reduce fallback: {len(projects)} projects, {len(topics)} topics")
+            log.info("reduce fallback: %s projects, %s topics", len(projects), len(topics))
 
-        print(f"[seed] final projects: {json.dumps(projects, indent=2)}")
-        print(f"[seed] final topics: {topics}")
+        log.info("final projects: %s", json.dumps(projects, indent=2))
+        log.info("final topics: %s", topics)
         _seed_job.update(
             {
                 "state": "review",
@@ -542,7 +548,7 @@ def apply(body: dict, background_tasks) -> dict:
         _time.sleep(3)
         while _scan_state.get("running"):
             _time.sleep(3)
-        print("[seed] reanalysis complete — starting embedding sweep...")
+        log.info("reanalysis complete — starting embedding sweep...")
         try:
             from embedder import embed, update_project
 
@@ -578,12 +584,12 @@ def apply(body: dict, background_tasks) -> dict:
                                 priority=item.get("priority", "medium"),
                             )
                 except Exception as e:
-                    print(f"[seed] embed {item.get('item_id')}: {e}")
-            print("[seed] embedding sweep complete")
+                    log.info("embed %s: %s", item.get("item_id"), e)
+            log.info("embedding sweep complete")
         except Exception as e:
-            print(f"[seed] embedding sweep failed: {e}")
+            log.error("embedding sweep failed: %s", e)
 
-        print("[seed] starting situation formation sweep...")
+        log.info("starting situation formation sweep...")
         try:
             with db.lock:
                 all_items = db.get_all_items()
@@ -596,15 +602,15 @@ def apply(body: dict, background_tasks) -> dict:
                         raise RuntimeError("seeder.init() has not been called")
                     _maybe_form_situation(iid)
                 except Exception as e:
-                    print(f"[seed] situation sweep {iid}: {e}")
+                    log.info("situation sweep %s: %s", iid, e)
                 finally:
                     with db.lock:
                         _scan_state["situations_pending"] = max(
                             0, _scan_state["situations_pending"] - 1
                         )
-            print(f"[seed] situation sweep complete ({len(item_ids)} items)")
+            log.info("situation sweep complete (%s items)", len(item_ids))
         except Exception as e:
-            print(f"[seed] situation sweep failed: {e}")
+            log.error("situation sweep failed: %s", e)
 
     background_tasks.add_task(_seed_embed_and_correlate)
 
