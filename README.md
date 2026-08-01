@@ -537,7 +537,10 @@ the forcing function that keeps project naming disciplined.
 - **Setup.** Point `LANCELLMOT_URL` at your lancellmot instance (default
   `http://host.docker.internal:8080`).
 - **Mapping.** Open Settings → Projects and pick a lancellmot project from the
-  dropdown on each project row. The choice persists immediately.
+  dropdown on each project row. The choice persists immediately. If the write
+  fails the dropdown reverts to the stored mapping and the settings modal
+  reports the reason, so the control only ever shows a mapping the server
+  confirmed.
 - **Resolved chip.** A situation tagged with a mapped project shows a chip with
   the document count; hover it for a popover listing the top filenames.
 - **Unmapped chip.** A tag with no mapping shows a dashed `Map →` chip; clicking

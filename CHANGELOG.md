@@ -12,6 +12,19 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-08 — lancellmot alias write path
+
+### Fixed
+- Saving or clearing a lancellmot mapping in **Settings → Projects** reports
+  failures instead of swallowing them. Both branches now go through `api()`,
+  which throws on any non-2xx — the delete previously used a raw `fetch()`,
+  which resolves on a 500 and so reported a delete that never happened as a
+  success. On failure the dropdown reverts to the last server-confirmed value
+  and the reason is shown in the settings modal, so the control cannot display
+  a mapping the server never stored, and the chips re-resolve only after a
+  confirmed write
+  ([#96](https://github.com/rcanterberryhall/hexcaliper-parsival/issues/96)).
+
 ## [v0.1-standards] - 2026-08-01
 
 Day-0 engineering standards adoption (`chore/gatehouse-standards`). No
@@ -108,8 +121,9 @@ documentation, and CI.
   `thunderbird_sidecar.py`. `api/` is enforced.
 - Eight `api/` modules remain on the mypy ratchet's exemption list. The list
   only ever shrinks.
-- The lancellmot alias save/delete path still swallows errors, so a failed
-  save is invisible ([#96](https://github.com/rcanterberryhall/hexcaliper-parsival/issues/96)).
+- The lancellmot alias save/delete path swallowed errors, so a failed save was
+  invisible ([#96](https://github.com/rcanterberryhall/hexcaliper-parsival/issues/96)).
+  Fixed on 2026-08-01 — see the section above.
 
 ## 2026-07 — Sidecar resilience
 
