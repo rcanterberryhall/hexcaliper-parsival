@@ -1,4 +1,4 @@
-"""Regression test for squire#33: parsival has no GPU-concurrency throttle.
+"""Regression test for parsival#33: parsival has no GPU-concurrency throttle.
 
 Background
 ----------
@@ -11,7 +11,7 @@ became strictly subtractive — the lower of the two concurrency limits
 won, and ours was hard-coded to 1, silently halving sync-path throughput
 on a 2-GPU stack.
 
-The fix in squire#33 deletes ``_sem`` and every ``with _sem:`` block.
+The fix in parsival#33 deletes ``_sem`` and every ``with _sem:`` block.
 **This test is the regression pin** that proves no other parsival-side
 throttle has crept back in: it kicks two ``process_ingest_items`` calls
 from two threads, blocks both inside ``analyze`` on a shared
@@ -123,7 +123,7 @@ def test_sync_path_allows_concurrent_llm_calls():
         try:
             assert arrived, (
                 "Only one thread reached analyze() — parsival is gating "
-                "LLM traffic on its own side. squire#33 says merLLM is "
+                "LLM traffic on its own side. parsival#33 says merLLM is "
                 "the single source of truth for GPU concurrency; "
                 "delete whatever throttle was added back."
             )
@@ -201,9 +201,9 @@ def test_orchestrator_has_no_concurrency_semaphore():
     instead of waiting for the threading test above to flake.
     """
     assert not hasattr(orchestrator, "_sem"), (
-        "orchestrator._sem was re-introduced — see squire#33. "
+        "orchestrator._sem was re-introduced — see parsival#33. "
         "merLLM owns GPU concurrency; parsival never gates LLM traffic."
     )
     assert not hasattr(orchestrator, "get_sem"), (
-        "orchestrator.get_sem was re-introduced — see squire#33."
+        "orchestrator.get_sem was re-introduced — see parsival#33."
     )

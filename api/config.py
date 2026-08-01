@@ -1,4 +1,4 @@
-"""config.py — Runtime configuration for the Squire API.
+"""config.py — Runtime configuration for the Parsival API.
 
 All values are read from environment variables on startup.  The
 ``apply_overrides`` function allows settings saved via the ``/settings``

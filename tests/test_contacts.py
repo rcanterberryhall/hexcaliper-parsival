@@ -1,4 +1,4 @@
-"""Tests for the contacts feature (squire#24).
+"""Tests for the contacts feature (parsival#24).
 
 Covers:
   * parse_header_pairs — RFC-style and bare-address parsing

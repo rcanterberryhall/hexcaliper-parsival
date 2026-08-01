@@ -220,7 +220,7 @@ def migrate(source_path: str = SOURCE_PATH, dest_path: str = DEST_PATH) -> None:
     print(f"SQLite database written to: {dest_path}")
     print("\nNext steps:")
     print("  1. Set DB_PATH in your .env / docker-compose to point to the new .db file")
-    print("  2. Restart the Squire container")
+    print("  2. Restart the Parsival container")
     print("  3. Run a re-analyze to populate graph edges for existing items")
 
 

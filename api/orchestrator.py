@@ -1,4 +1,4 @@
-"""orchestrator.py — Scan, reanalyze, and ingest orchestration for Squire.
+"""orchestrator.py — Scan, reanalyze, and ingest orchestration for Parsival.
 
 Owns the three background pipeline functions that drive item analysis:
 
@@ -8,7 +8,7 @@ Owns the three background pipeline functions that drive item analysis:
 
 scan_state and the analysis helper callables are injected via init().
 
-GPU concurrency note (squire#33)
+GPU concurrency note (parsival#33)
 --------------------------------
 This module used to wrap every ``analyze()`` call in a
 ``threading.Semaphore(1)`` named ``_sem``, dating from the single-GPU era
@@ -377,7 +377,7 @@ def run_scan(sources: list[str]) -> None:
     Iterates ``sources`` in order, calling the matching connector's ``fetch()``
     method.  Each item is then passed to ``agent.analyze``; concurrency
     against the LLM is owned entirely by merLLM (see the module docstring
-    for the squire#33 rationale).  Saves every result via ``_save_analysis``
+    for the parsival#33 rationale).  Saves every result via ``_save_analysis``
     and spawns a situation-formation task per item.  A scan log entry is
     written regardless of success or cancellation.
 
@@ -553,7 +553,7 @@ def run_reanalyze() -> None:
         _scan_state["total_items"] = len(all_records)
         _scan_state["message"] = f"Re-analyzing {len(all_records)} items..."
 
-        # Reanalyze is durable-only (squire#47). Previously a missing merLLM
+        # Reanalyze is durable-only (parsival#47). Previously a missing merLLM
         # triggered a sync /api/generate fallback that merLLM does not
         # persist — a restart mid-run silently dropped items. We now abort
         # the whole run loudly instead; re-running reanalyze once merLLM is
@@ -616,7 +616,7 @@ def run_reanalyze() -> None:
                     batch_submitted += 1
                 else:
                     # Per-item submit failure: log and skip, leaving the item
-                    # in its previous state. squire#47 — we no longer silently
+                    # in its previous state. parsival#47 — we no longer silently
                     # fall back to the sync /api/generate path (not durable);
                     # the user can re-run reanalyze later to retry.
                     log.warning(

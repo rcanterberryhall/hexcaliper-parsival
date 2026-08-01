@@ -260,7 +260,7 @@ def _run_seed_job(context: str) -> None:
             )
             log.info("map batch %s/%s: %s items", batch_num, n_batches, len(batch))
             try:
-                # No parsival-side throttle (squire#33): merLLM is the
+                # No parsival-side throttle (parsival#33): merLLM is the
                 # single source of truth for GPU concurrency, so we just
                 # call llm.generate directly and let merLLM's tracked
                 # queue do the gating.
@@ -323,7 +323,7 @@ def _run_seed_job(context: str) -> None:
         )
 
         try:
-            # See the map-pass note above (squire#33): merLLM owns GPU
+            # See the map-pass note above (parsival#33): merLLM owns GPU
             # concurrency; parsival just submits.
             text = llm.generate(
                 reduce_prompt,

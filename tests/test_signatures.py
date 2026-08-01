@@ -1,4 +1,4 @@
-"""Tests for the email signature parser (squire#31).
+"""Tests for the email signature parser (parsival#31).
 
 The parser is a *suggestion engine*: it scores each field's confidence and
 ``apply_to_contact`` writes only when the score is above threshold and the

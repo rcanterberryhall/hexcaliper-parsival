@@ -2,7 +2,7 @@
 thunderbird_sidecar.py — Thunderbird email ingestion sidecar (Ubuntu / Linux).
 
 Reads recent emails from Thunderbird's local mbox/Maildir cache on disk
-and POSTs them to the Squire ``/ingest`` endpoint.  No API tokens or IT
+and POSTs them to the Parsival ``/ingest`` endpoint.  No API tokens or IT
 involvement required — Thunderbird must be configured to keep a local copy
 of messages.
 

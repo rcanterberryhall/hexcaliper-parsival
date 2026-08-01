@@ -488,7 +488,7 @@ class TestBuildAnalysisFromLlmJson:
         assert result.conversation_topic == "Release"
 
 
-# ── priority overrides (squire#38) ────────────────────────────────────────────
+# ── priority overrides (parsival#38) ────────────────────────────────────────────
 
 
 def test_priority_overrides_ctx_empty():

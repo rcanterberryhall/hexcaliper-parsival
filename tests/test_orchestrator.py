@@ -232,7 +232,7 @@ def _apply_fake_batch_result(item_id, payload):
     """Test helper: invoke the batch-result apply path as if merLLM had
     returned ``payload``. The reanalyze save-logic tests used to drive this
     through a mocked ``analyze()`` call in ``_run_reanalyze``, but reanalyze
-    is now batch-only (squire#47) — the save-field logic lives in
+    is now batch-only (parsival#47) — the save-field logic lives in
     ``_apply_batch_result`` → ``_save_analysis(reanalyze=True)``.
     """
     import json as _json
@@ -871,7 +871,7 @@ def test_process_ingest_items_empty_thread_todos_for_standalone_items():
 
 
 def test_run_reanalyze_aborts_when_merllm_unavailable():
-    """squire#47: if merLLM is unreachable, reanalyze must refuse to run rather
+    """parsival#47: if merLLM is unreachable, reanalyze must refuse to run rather
     than silently falling back to the non-durable /api/generate path."""
     _insert_minimal("a1")
     _insert_minimal("a2")

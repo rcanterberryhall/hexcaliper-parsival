@@ -1,4 +1,4 @@
-"""signatures.py — Email-signature parser for the contacts table (squire#31).
+"""signatures.py — Email-signature parser for the contacts table (parsival#31).
 
 The contacts table is auto-populated from email *headers* by ``contacts.py``.
 This module is the second pass: it walks the bottom of an email body, isolates
@@ -462,7 +462,7 @@ def apply_to_contact(
     * Never overwrite a field that appears in ``manually_edited_fields``.
     * Never overwrite the ``name`` field — header scraping owns names, the
       signature parser only fills it in when the existing name is empty.
-      (Confirmed approach in the squire#31 design discussion.)
+      (Confirmed approach in the parsival#31 design discussion.)
     * Skip any field whose confidence is below ``threshold``.
     * Stamp ``<field>_source = 'signature'`` on every field actually written.
     * Always refresh ``signature_confidence`` so the UI sees the latest

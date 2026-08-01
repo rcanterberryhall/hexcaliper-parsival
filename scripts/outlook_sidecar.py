@@ -2,8 +2,8 @@
 outlook_sidecar.py — Outlook email ingestion sidecar (Windows).
 
 Reads recent emails from the local Outlook client via ``win32com`` and
-POSTs them to the Squire ``/ingest`` endpoint.  Intended to run on the
-Windows host machine where Outlook is installed; the Squire Docker stack
+POSTs them to the Parsival ``/ingest`` endpoint.  Intended to run on the
+Windows host machine where Outlook is installed; the Parsival Docker stack
 does not have access to ``win32com`` and relies on this script to supply
 email data.
 
@@ -162,7 +162,7 @@ def _setup() -> None:
     except ImportError:
         sys.exit("ERROR: keyring not installed.  Run: pip install keyring")
 
-    print("Hexcaliper Squire — Credential Setup")
+    print("Hexcaliper Parsival — Credential Setup")
     print("Credentials will be stored in Windows Credential Manager.\n")
     client_id = input("CF Access Client ID:     ").strip()
     client_secret = input("CF Access Client Secret: ").strip()
@@ -492,7 +492,7 @@ def _ingest_with_retry(items: list[dict], headers: dict, dropped: list[dict]) ->
 
 def post(items: list[dict], client_id: str, client_secret: str) -> None:
     """
-    POST fetched email items to the Squire ``/ingest`` endpoint in batches.
+    POST fetched email items to the Parsival ``/ingest`` endpoint in batches.
 
     Large seed runs (500 emails) would exceed nginx's default body-size limit
     in a single request.  Items are chunked into batches of ``_POST_BATCH``
@@ -648,9 +648,9 @@ def _seed_and_infer() -> None:
     if state == "review":
         print(
             "\nProject inference complete — the LLM has proposed projects for review.\n"
-            "Open the Squire UI to review, edit, and confirm:\n"
+            "Open the Parsival UI to review, edit, and confirm:\n"
             f"  {PAGE_API_URL.replace('/page/api', '/page/')}\n"
-            "After confirming, Squire will re-analyse all items with the new project config.",
+            "After confirming, Parsival will re-analyse all items with the new project config.",
             flush=True,
         )
     elif state == "error":

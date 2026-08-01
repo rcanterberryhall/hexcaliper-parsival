@@ -3,7 +3,7 @@
 The lock used to be a non-reentrant ``threading.Lock``, which meant a thread
 that already held it would self-deadlock the moment it called any helper that
 also acquired ``db.lock`` internally. That actually happened during the
-contacts feature build (squire#24): a hook inside ``_save_analysis``'s
+contacts feature build (parsival#24): a hook inside ``_save_analysis``'s
 ``with db.lock:`` block called a helper that also wrapped its work in
 ``with db.lock:``, and the orchestrator batch-result test wedged for 20+
 minutes with no output.

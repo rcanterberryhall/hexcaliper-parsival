@@ -1,4 +1,4 @@
-"""db.py — SQLite database layer for Squire.
+"""db.py — SQLite database layer for Parsival.
 
 Replaces TinyDB with SQLite.  All document and graph data lives in a single
 SQLite file at ``config.DB_PATH``.  WAL mode allows concurrent reads while
@@ -198,7 +198,7 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE situations ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
 
     # Contacts: provenance + manual-edit tracking for the signature parser
-    # (squire#31).  Each editable field gets a *_source column tagging its
+    # (parsival#31).  Each editable field gets a *_source column tagging its
     # origin: 'header' (scraped from To/CC/author), 'signature' (parsed from
     # email body), or 'manual' (user typed it in the UI).  Fields the user
     # has touched are also recorded in manually_edited_fields so the parser
@@ -511,7 +511,7 @@ def _create_schema(c: sqlite3.Connection) -> None:
         is_manual        INTEGER NOT NULL DEFAULT 0,
         -- Provenance per editable field: 'header' | 'signature' | 'manual'.
         -- Defaults to 'header' because that is the only source that existed
-        -- before squire#31.  See _migrate_schema for the matching ALTERs.
+        -- before parsival#31.  See _migrate_schema for the matching ALTERs.
         name_source      TEXT    NOT NULL DEFAULT 'header',
         phone_source     TEXT    NOT NULL DEFAULT 'header',
         employer_source  TEXT    NOT NULL DEFAULT 'header',

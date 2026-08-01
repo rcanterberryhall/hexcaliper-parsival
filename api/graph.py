@@ -1,4 +1,4 @@
-"""graph.py — Knowledge graph layer for Squire.
+"""graph.py — Knowledge graph layer for Parsival.
 
 Builds and queries a lightweight directed graph of items, people, projects,
 and conversations stored in the nodes/edges tables via db.py.

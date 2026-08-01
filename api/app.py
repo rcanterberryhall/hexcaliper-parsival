@@ -643,7 +643,7 @@ def _save_analysis(a: Analysis, reanalyze: bool = False) -> None:
         }
         _contacts.scrape_item_headers(item_for_contacts)
         # Then enrich the author's contact row with anything we can pull
-        # from the email body's signature block (squire#31).  Must run
+        # from the email body's signature block (parsival#31).  Must run
         # *after* the header scrape so the contact row already exists; the
         # helper is a no-op when it doesn't.  Failures are swallowed inside.
         try:
@@ -3489,7 +3489,7 @@ def patch_contact(contact_id: int, body: dict):
     edit: its ``<field>_source`` is stamped ``manual`` and the field name is
     added to ``manually_edited_fields`` so the signature parser will never
     overwrite it later.  This is the contract that makes manual edits sticky
-    against repeated re-parses (squire#31).
+    against repeated re-parses (parsival#31).
 
     :raises HTTPException 404: If no contact with ``contact_id`` exists.
     """
@@ -3598,7 +3598,7 @@ def rebuild_contacts():
 def reparse_contact_signatures():
     """Re-run the email-body signature parser across every item.
 
-    Results are applied to the corresponding contact rows (squire#31).
+    Results are applied to the corresponding contact rows (parsival#31).
     Manually-edited fields are never overwritten — see
     ``signatures.apply_to_contact``.
 

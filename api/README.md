@@ -90,10 +90,9 @@ non-package neighbours and external services rather than sibling packages:
   `docs/code_map.md` are generated from them, and CI runs the generator in
   `--check` mode. Editing a docstring without regenerating fails the build —
   run `python scripts/gen_code_map.py --src-root api --flat`.
-- **Some docstrings still say "Squire."** `config`, `db`, `graph`, `models`,
-  `orchestrator`, and `signatures` carry the project's former name, and a
-  number of comments reference `squire#NN` issues. These are stale, not a
-  second component.
+- **Issue references use the `parsival#NN` form.** The project was renamed from
+  Squire, and the GitHub issue numbers carried over unchanged, so an old
+  `squire#31` and today's `parsival#31` are the same issue.
 
 ## Public API
 <!-- BEGIN: AUTO-GENERATED PUBLIC API (do not edit) -->
@@ -913,7 +912,7 @@ non-package neighbours and external services rather than sibling packages:
   edit: its ``<field>_source`` is stamped ``manual`` and the field name is
   added to ``manually_edited_fields`` so the signature parser will never
   overwrite it later.  This is the contract that makes manual edits sticky
-  against repeated re-parses (squire#31).
+  against repeated re-parses (parsival#31).
 
   :raises HTTPException 404: If no contact with ``contact_id`` exists.
   </details>
@@ -951,7 +950,7 @@ non-package neighbours and external services rather than sibling packages:
 - `reparse_contact_signatures()` — Re-run the email-body signature parser across every item.
   <details><summary>full docstring</summary>
 
-  Results are applied to the corresponding contact rows (squire#31).
+  Results are applied to the corresponding contact rows (parsival#31).
   Manually-edited fields are never overwritten — see
   ``signatures.apply_to_contact``.
 
@@ -1155,7 +1154,7 @@ non-package neighbours and external services rather than sibling packages:
   </details>
 
 ### `api.config`
-*config.py — Runtime configuration for the Squire API.*
+*config.py — Runtime configuration for the Parsival API.*
 
 - `SLACK_USER_TOKENS: list[dict] = []` — (undocumented)
 - `TEAMS_USER_TOKENS: list[dict] = []` — (undocumented)
@@ -1365,7 +1364,7 @@ non-package neighbours and external services rather than sibling packages:
 - `decrypt_config(cfg: dict) -> dict` — Return a copy of *cfg* with all SECRET_FIELDS values decrypted.
 
 ### `api.db`
-*db.py — SQLite database layer for Squire.*
+*db.py — SQLite database layer for Parsival.*
 
 - `parse_project_tags(val) -> list[str]` — Parse a project_tag column value into a list of project names.
   <details><summary>full docstring</summary>
@@ -1818,7 +1817,7 @@ non-package neighbours and external services rather than sibling packages:
 - `get_project_stats() -> dict` — Return ``{project_name: {total_items, subdivisions}}`` for all stored projects.
 
 ### `api.graph`
-*graph.py — Knowledge graph layer for Squire.*
+*graph.py — Knowledge graph layer for Parsival.*
 
 - `index_item(analysis) -> None` — Ingest a saved Analysis object into the knowledge graph.
   <details><summary>full docstring</summary>
@@ -1902,7 +1901,7 @@ non-package neighbours and external services rather than sibling packages:
   </details>
 
 ### `api.models`
-*models.py — Core data models for the Squire analysis pipeline.*
+*models.py — Core data models for the Parsival analysis pipeline.*
 
 - `RawItem` — A normalised, source-agnostic item ready for AI analysis.
   <details><summary>full docstring</summary>
@@ -2051,7 +2050,7 @@ non-package neighbours and external services rather than sibling packages:
 - `validate_rule(rule: dict) -> str | None` — Validate a single filter rule.  Returns an error string or None if valid.
 
 ### `api.orchestrator`
-*orchestrator.py — Scan, reanalyze, and ingest orchestration for Squire.*
+*orchestrator.py — Scan, reanalyze, and ingest orchestration for Parsival.*
 
 - `init(scan_state: dict, save_analysis_fn, spawn_situation_fn, generate_briefing_fn=None) -> None` — Inject shared state and callables from app.py.
   <details><summary>full docstring</summary>
@@ -2065,7 +2064,7 @@ non-package neighbours and external services rather than sibling packages:
   Iterates ``sources`` in order, calling the matching connector's ``fetch()``
   method.  Each item is then passed to ``agent.analyze``; concurrency
   against the LLM is owned entirely by merLLM (see the module docstring
-  for the squire#33 rationale).  Saves every result via ``_save_analysis``
+  for the parsival#33 rationale).  Saves every result via ``_save_analysis``
   and spawns a situation-formation task per item.  A scan log entry is
   written regardless of success or cancellation.
 
@@ -2172,7 +2171,7 @@ non-package neighbours and external services rather than sibling packages:
   </details>
 
 ### `api.signatures`
-*signatures.py — Email-signature parser for the contacts table (squire#31).*
+*signatures.py — Email-signature parser for the contacts table (parsival#31).*
 
 - `SignatureFields` — Result of a single signature parse, with per-field confidence (0..1).
   <details><summary>full docstring</summary>
@@ -2230,7 +2229,7 @@ non-package neighbours and external services rather than sibling packages:
   * Never overwrite a field that appears in ``manually_edited_fields``.
   * Never overwrite the ``name`` field — header scraping owns names, the
     signature parser only fills it in when the existing name is empty.
-    (Confirmed approach in the squire#31 design discussion.)
+    (Confirmed approach in the parsival#31 design discussion.)
   * Skip any field whose confidence is below ``threshold``.
   * Stamp ``<field>_source = 'signature'`` on every field actually written.
   * Always refresh ``signature_confidence`` so the UI sees the latest

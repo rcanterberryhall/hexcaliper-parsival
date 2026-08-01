@@ -1,4 +1,4 @@
-"""models.py — Core data models for the Squire analysis pipeline.
+"""models.py — Core data models for the Parsival analysis pipeline.
 
 Defines the two-stage data flow:
 
