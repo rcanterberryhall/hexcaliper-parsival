@@ -486,8 +486,10 @@ _DL_DOMAIN_RE = _re.compile(r"@(?:lists|groups|mailman)\.", _re.IGNORECASE)
 
 
 def _is_distribution_list(email: str) -> bool:
-    """Heuristically decide whether an email address is a distribution list
-    or group alias rather than a personal mailbox.
+    """Decide whether an email address is a group alias rather than a mailbox.
+
+    Heuristic: the address is matched against known distribution-list and
+    group-alias patterns.
 
     :param email: Lowercased email address.
     :return: ``True`` if the address matches a known group-alias pattern.
@@ -721,8 +723,10 @@ def _detect_passdown(title: str, body: str) -> bool:
 
 
 def _detect_quarantine_noise(item: "RawItem") -> bool:
-    """Deterministically force noise for Microsoft 365 quarantine digest emails
-    whose quarantined sender is not associated with any configured project.
+    """Force noise for irrelevant Microsoft 365 quarantine digest emails.
+
+    Deterministic rather than LLM-driven: a digest is forced to noise when its
+    quarantined sender is not associated with any configured project.
 
     Returns ``True`` (→ force noise) when:
     - The item author matches ``_QUARANTINE_AUTHOR_RE`` (a quarantine digest), AND

@@ -15,10 +15,8 @@ misconfigured base URL would surface as an unhandled decode error rather
 than the chip's unreachable state.
 """
 
-import requests
-
 import config
-
+import requests
 
 DEFAULT_TIMEOUT = 2.0
 

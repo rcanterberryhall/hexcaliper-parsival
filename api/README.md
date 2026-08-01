@@ -279,10 +279,10 @@ non-package neighbours and external services rather than sibling packages:
   :rtype: str
   </details>
 - `scan_state: dict = {'running': False, 'cancelled': False, 'progress': 0, 'total': 0, 'current_source': '', 'current_item': '', 'message': 'idle', 'ingest_pending': 0, 'situations_pending': 0, 'total_items': 0, 'completed_items': 0, 'estimated_minutes_remaining': 0}` — (undocumented)
-- `gpu_stats()` — Return live GPU utilisation, VRAM usage, and temperature via NVML for all
+- `gpu_stats()` — Return live GPU utilisation, VRAM usage, and temperature for every GPU.
   <details><summary>full docstring</summary>
 
-  detected GPUs.
+  Read via NVML across all detected devices.
 
   Used by the frontend GPU meter widgets.  Returns ``{"ok": False}`` when
   ``pynvml`` is not installed or no NVIDIA device is present — the UI will
@@ -561,11 +561,12 @@ non-package neighbours and external services rather than sibling packages:
   :return: ``{"ok": True, "doc_id": <id>}``
   :raises HTTPException 400: If ``description`` is missing or empty.
   </details>
-- `get_todos_assigned_count()` — Return a count of open todos in the 'assigned' state with a non-empty
+- `get_todos_assigned_count()` — Return a count of open todos in the 'assigned' state.
   <details><summary>full docstring</summary>
 
-  ``assigned_to``. Backs the Assigned vtab badge so the UI doesn't have
-  to fetch and client-side filter the full open-todo set on every mutation.
+  Counts only rows with a non-empty ``assigned_to``. Backs the Assigned vtab
+  badge so the UI doesn't have to fetch and client-side filter the full
+  open-todo set on every mutation.
 
   :return: ``{"count": N}``
   :rtype: dict
@@ -749,10 +750,10 @@ non-package neighbours and external services rather than sibling packages:
   :raises HTTPException 404: If no situation with the given ID exists.
   :raises HTTPException 502: If merLLM is unreachable.
   </details>
-- `save_deep_analysis(situation_id: str, body: dict)` — Fetch a completed batch job result from merLLM and store it as an intel item
+- `save_deep_analysis(situation_id: str, body: dict)` — Store a completed merLLM batch result as an intel item.
   <details><summary>full docstring</summary>
 
-  linked to the situation.
+  The result is fetched from merLLM and linked to the situation.
 
   :param situation_id: UUID of the situation.
   :param body: Must contain ``job_id``.
@@ -835,16 +836,17 @@ non-package neighbours and external services rather than sibling packages:
   :return: ``{"ok": True}``
   :rtype: dict
   </details>
-- `async seed_preview(request: Request)` — Start the seed state machine.  Always succeeds immediately — the
+- `async seed_preview(request: Request)` — Start the seed state machine.
   <details><summary>full docstring</summary>
 
+  Always succeeds immediately — the
   ``waiting_for_ingest`` phase handles empty databases by polling until
   items arrive.  Returns the current seed job state.
   </details>
-- `async seed_update_context(request: Request)` — Update the user-provided context string while the seed job is in the
+- `async seed_update_context(request: Request)` — Update the user-provided context string on a waiting seed job.
   <details><summary>full docstring</summary>
 
-  ``waiting_for_ingest`` state.
+  Accepted only while the job is in the ``waiting_for_ingest`` state.
 
   :param request: Request body must be JSON with a ``context`` key.
   :return: ``{"ok": True}``
@@ -864,18 +866,20 @@ non-package neighbours and external services rather than sibling packages:
   :return: ``{"ok": True, "projects_added": N, "topics_added": M, "items_retagged": K}``
   :rtype: dict
   </details>
-- `seed_run_scan()` — Transition the seed state machine from ``scan_prompt`` to ``scanning``,
+- `seed_run_scan()` — Run the optional post-seed connector scan.
   <details><summary>full docstring</summary>
 
-  run a full multi-source scan, then transition to ``done``.
+  Transitions the seed state machine from ``scan_prompt`` to ``scanning``,
+  runs a full multi-source scan, then transitions to ``done``.
 
   :return: ``{"ok": True}``
   :raises HTTPException 409: If a scan is already running.
   </details>
-- `seed_skip_scan()` — Transition the seed state machine from ``scan_prompt`` to ``done``
+- `seed_skip_scan()` — Skip the optional post-seed connector scan.
   <details><summary>full docstring</summary>
 
-  without running a connector scan.
+  Transitions the seed state machine from ``scan_prompt`` straight to
+  ``done`` without running a scan.
 
   :return: ``{"ok": True}``
   :rtype: dict
@@ -927,26 +931,29 @@ non-package neighbours and external services rather than sibling packages:
   :raises HTTPException 409: If the email is already attached to a different
                               contact (caller can merge manually).
   </details>
-- `delete_contact_email(contact_id: int, email: str)` — Detach an email from a contact.  Does not delete the contact even if this
+- `delete_contact_email(contact_id: int, email: str)` — Detach an email from a contact.
   <details><summary>full docstring</summary>
 
+  Does not delete the contact even if this
   was its only email — that requires the contact-level DELETE.
 
   :raises HTTPException 404: If no contact with ``contact_id`` exists.
   </details>
-- `rebuild_contacts()` — Walk every existing item and (re)populate the contacts table from To/CC/
+- `rebuild_contacts()` — Rebuild the contacts table from every item's headers.
   <details><summary>full docstring</summary>
 
-  author headers.  Idempotent — safe to re-run after schema changes or new
-  bulk imports.
+  Walks every existing item and (re)populates contacts from To/CC/author
+  headers.  Idempotent — safe to re-run after schema changes or new bulk
+  imports.
 
   :return: ``{"ok": True, "items_scanned": N, "contacts_touched": M, "total_contacts": K}``
   </details>
-- `reparse_contact_signatures()` — Walk every existing item and re-run the email-body signature parser
+- `reparse_contact_signatures()` — Re-run the email-body signature parser across every item.
   <details><summary>full docstring</summary>
 
-  against the corresponding contact rows (squire#31).  Manually-edited
-  fields are never overwritten — see ``signatures.apply_to_contact``.
+  Results are applied to the corresponding contact rows (squire#31).
+  Manually-edited fields are never overwritten — see
+  ``signatures.apply_to_contact``.
 
   Mirrors ``/contacts/rebuild`` but for the body-parsing pass.  Idempotent
   and safe to re-run.
@@ -1373,10 +1380,11 @@ non-package neighbours and external services rather than sibling packages:
 - `item_has_project(item: dict, project: str) -> bool` — Check whether an item record is tagged to a given project.
 - `item_has_any_project(item: dict) -> bool` — Check whether an item has any project tag at all.
 - `conn() -> sqlite3.Connection` — Return the shared SQLite connection, creating it on first call.
-- `backfill_manual_todo_items() -> int` — Create placeholder items rows for manual todos that predate the
+- `backfill_manual_todo_items() -> int` — Backfill placeholder items rows for legacy manual todos.
   <details><summary>full docstring</summary>
 
-  synthesized-item model (is_manual=1, item_id IS NULL).
+  Covers todos that predate the synthesized-item model (is_manual=1,
+  item_id IS NULL).
 
   Each orphan todo gets item_id='manual_<todo_id>' on both the todo and
   a synthesized items row whose title/body seed from the todo description
@@ -1495,9 +1503,10 @@ non-package neighbours and external services rather than sibling packages:
 - `delete_embedding_project(project: str) -> None` — Remove the embedding record for a project.
 - `reset_data_tables() -> None` — Truncate all data tables while preserving settings.
 - `upsert_node(node_id: str, node_type: str, label: str, properties: dict=None) -> None` — Insert or update a graph node.
-- `upsert_edge(src_id: str, dst_id: str, edge_type: str, weight: float=1.0, properties: dict=None) -> None` — Insert or update a graph edge.  Weight is updated to the new value if the
+- `upsert_edge(src_id: str, dst_id: str, edge_type: str, weight: float=1.0, properties: dict=None) -> None` — Insert or update a graph edge.
   <details><summary>full docstring</summary>
 
+  Weight is updated to the new value if the
   edge already exists (e.g. accumulated co-occurrence count).
   </details>
 - `get_edges_from(node_id: str, edge_type: str | None=None) -> list[dict]` — Return all edges where src_id matches.
@@ -1535,9 +1544,10 @@ non-package neighbours and external services rather than sibling packages:
   'manual' stamping wrapper around this helper.
   </details>
 - `delete_contact(contact_id: int) -> None` — Delete a contact and all its emails (cascade via FK).
-- `add_contact_email(contact_id: int, email: str, is_primary: bool=False) -> bool` — Attach an email to a contact.  Returns False if the email is already
+- `add_contact_email(contact_id: int, email: str, is_primary: bool=False) -> bool` — Attach an email to a contact.
   <details><summary>full docstring</summary>
 
+  Returns False if the email is already
   attached to another contact (caller can decide whether to merge).
   </details>
 - `remove_contact_email(contact_id: int, email: str) -> None` — Detach an email from a contact.
@@ -1747,10 +1757,10 @@ non-package neighbours and external services rather than sibling packages:
 - `list_card_suggestions(card_id: str, include_decided: bool=False) -> list[dict]` — Return suggestions for a card.  Pending only by default.
 - `add_card_suggestion(card_id: str, link_type: str, target_id: str, reason: str='') -> dict | None` — Insert a new pending suggestion.  Deduped on (card, type, target).
 - `decide_card_suggestion(suggestion_id: int, decision: str) -> dict | None` — Accept or reject a suggestion.  Accepted ones also become card_links.
-- `slack_unseen_message_ts(team: str, channel_id: str, ts_list: list[str]) -> set[str]` — Return the subset of ``ts_list`` that has not yet been recorded as seen
+- `slack_unseen_message_ts(team: str, channel_id: str, ts_list: list[str]) -> set[str]` — Return the timestamps in ``ts_list`` not yet recorded as seen.
   <details><summary>full docstring</summary>
 
-  for the given ``(team, channel_id)``.
+  Scoped to the given ``(team, channel_id)``.
 
   Used by ``connector_slack._fetch_for_token`` to keep only newly-surfaced
   messages in each scan.  The connector calls this to filter the raw
@@ -1770,10 +1780,10 @@ non-package neighbours and external services rather than sibling packages:
   ``INSERT OR IGNORE`` to stay idempotent — re-calling with the same
   timestamps is a no-op.
   </details>
-- `candidate_items_for_card(project: str, start_date: str, end_date: str, limit: int=40) -> list[dict]` — Return items tagged to the same project whose timestamp sits near the
+- `candidate_items_for_card(project: str, start_date: str, end_date: str, limit: int=40) -> list[dict]` — Return same-project items whose timestamp sits near the card window.
   <details><summary>full docstring</summary>
 
-  card window.  Used as the shortlist the LLM ranks against the card.
+  Used as the shortlist the LLM ranks against the card.
   </details>
 
 ### `api.embedder`
@@ -1792,11 +1802,12 @@ non-package neighbours and external services rather than sibling packages:
   ``get_all_item_vectors()`` instead — this function walks every stored
   project's items list on each call.
   </details>
-- `get_all_item_vectors() -> dict` — Return a dict mapping ``item_id`` → stored embedding vector for every
+- `get_all_item_vectors() -> dict` — Return a dict mapping ``item_id`` to its stored embedding vector.
   <details><summary>full docstring</summary>
 
-  item across every project, built in a single pass over the embeddings
-  table. If an item is stored under multiple projects the first match wins
+  Covers every item across every project, built in a single pass over the
+  embeddings table. If an item is stored under multiple projects the first
+  match wins
   (vectors are invariant per item, so this is safe).
 
   Callers that need attention scores for a full list of items should call
@@ -2032,10 +2043,10 @@ non-package neighbours and external services rather than sibling packages:
 ### `api.noise_filter`
 *noise_filter.py — Pre-scan noise filter evaluation.*
 
-- `should_filter(item: RawItem, rules: list[dict]) -> tuple[bool, str | None]` — Return ``(True, matched_rule_type)`` if any rule matches *item*,
+- `should_filter(item: RawItem, rules: list[dict]) -> tuple[bool, str | None]` — Return whether any pre-scan noise rule matches *item*.
   <details><summary>full docstring</summary>
 
-  else ``(False, None)``.
+  ``(True, matched_rule_type)`` when a rule matches, else ``(False, None)``.
   </details>
 - `validate_rule(rule: dict) -> str | None` — Validate a single filter rule.  Returns an error string or None if valid.
 
@@ -2075,10 +2086,10 @@ non-package neighbours and external services rather than sibling packages:
   Situation formation is re-triggered for each item after save.
   Reuses ``scan_state`` for progress reporting.
   </details>
-- `claim_ingest_items(item_ids: list[str]) -> set[str]` — Atomically mark ``item_ids`` as in-flight and return the subset that is
+- `claim_ingest_items(item_ids: list[str]) -> set[str]` — Atomically mark ``item_ids`` as in-flight and return the new ones.
   <details><summary>full docstring</summary>
 
-  genuinely new (not already in the DB and not currently being processed).
+  "New" means not already in the DB and not currently being processed.
 
   Used by ``POST /ingest`` to deduplicate against both persisted items
   *and* items queued by a previous call whose background task has not yet

@@ -215,6 +215,7 @@ def remove_item(item_id: str, project_name: str) -> None:
 
 def get_item_vector(item_id: str):
     """Retrieve the stored embedding vector for a specific item_id across all projects.
+
     Returns None if the item has not been embedded.
 
     Note: callers processing many item_ids in a batch should prefer
@@ -231,9 +232,11 @@ def get_item_vector(item_id: str):
 
 
 def get_all_item_vectors() -> dict:
-    """Return a dict mapping ``item_id`` → stored embedding vector for every
-    item across every project, built in a single pass over the embeddings
-    table. If an item is stored under multiple projects the first match wins
+    """Return a dict mapping ``item_id`` to its stored embedding vector.
+
+    Covers every item across every project, built in a single pass over the
+    embeddings table. If an item is stored under multiple projects the first
+    match wins
     (vectors are invariant per item, so this is safe).
 
     Callers that need attention scores for a full list of items should call

@@ -216,8 +216,9 @@ def _candidates_via_edge_type(
     base_weight: float,
     exclude_item_id: str,
 ) -> list[dict]:
-    """Find item nodes connected to hub_node via a given edge type, returning
-    scored candidates.  Edges are traversed in both directions.
+    """Find item nodes connected to hub_node via a given edge type.
+
+    Returns scored candidates.  Edges are traversed in both directions.
     """
     candidates = []
 

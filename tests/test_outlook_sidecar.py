@@ -468,9 +468,9 @@ def test_post_aborts_when_drops_exceed_max_skipped_items():
     with (
         patch("outlook_sidecar.requests.post", return_value=_always_500()),
         patch("outlook_sidecar.time.sleep"),
+        pytest.raises(SystemExit) as exc_info,
     ):
-        with pytest.raises(SystemExit) as exc_info:
-            sidecar.post(items, "cid", "csec")
+        sidecar.post(items, "cid", "csec")
 
     msg = str(exc_info.value)
     assert f"more than {sidecar._MAX_SKIPPED_ITEMS} items failed to ingest" in msg

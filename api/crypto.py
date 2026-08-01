@@ -68,6 +68,7 @@ def _is_encrypted(value: str) -> bool:
 
 def encrypt_secret(plaintext: str) -> str:
     """Encrypt *plaintext* with Fernet if a key is configured.
+
     Returns *plaintext* unchanged when no key is set (pass-through mode).
     Values that already look encrypted are returned unchanged.
     """
@@ -83,6 +84,7 @@ def encrypt_secret(plaintext: str) -> str:
 
 def decrypt_secret(value: str) -> str:
     """Decrypt *value* if it is a Fernet token and a key is configured.
+
     Returns *value* unchanged when no key is set or the value is plaintext.
     """
     if not value:

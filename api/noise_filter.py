@@ -60,8 +60,9 @@ def _matches(rule: dict, item: RawItem) -> bool:
 
 
 def should_filter(item: RawItem, rules: list[dict]) -> tuple[bool, str | None]:
-    """Return ``(True, matched_rule_type)`` if any rule matches *item*,
-    else ``(False, None)``.
+    """Return whether any pre-scan noise rule matches *item*.
+
+    ``(True, matched_rule_type)`` when a rule matches, else ``(False, None)``.
     """
     for rule in rules:
         if _matches(rule, item):

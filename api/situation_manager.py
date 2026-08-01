@@ -267,8 +267,9 @@ def _sync_situation_tags_all() -> None:
 
 
 def _maybe_form_situation(item_id: str) -> None:
-    """Attempt to correlate a newly saved item with existing analyses and form
-    or update a ``Situation`` record.
+    """Correlate a newly saved item with existing analyses.
+
+    Forms or updates a ``Situation`` record when a correlation is found.
 
     Algorithm:
     1. Load the item's stored record and parse its cross-source reference
@@ -446,8 +447,10 @@ def _spawn_situation_task(item_id: str) -> None:
 
 
 def _rescore_lightweight(sit_id: str, item_ids: list) -> None:
-    """Recompute ``score``, ``priority``, ``sources``, ``last_updated``, and
-    ``project_tag`` for a situation without invoking the LLM.
+    """Recompute a situation's derived fields without invoking the LLM.
+
+    Covers ``score``, ``priority``, ``sources``, ``last_updated``, and
+    ``project_tag``.
 
     Used after split/merge so the caller sees a consistent record without
     paying for synthesis.  The user can trigger full rescoring via

@@ -2,12 +2,10 @@
 
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from app import app
 import db
 import lancellmot_client
-
+from app import app
+from fastapi.testclient import TestClient
 
 client = TestClient(app)
 

@@ -751,8 +751,9 @@ def _mask(val: str) -> str:
 
 @app.get("/gpu")
 def gpu_stats():
-    """Return live GPU utilisation, VRAM usage, and temperature via NVML for all
-    detected GPUs.
+    """Return live GPU utilisation, VRAM usage, and temperature for every GPU.
+
+    Read via NVML across all detected devices.
 
     Used by the frontend GPU meter widgets.  Returns ``{"ok": False}`` when
     ``pynvml`` is not installed or no NVIDIA device is present — the UI will
@@ -1111,8 +1112,9 @@ def _record_priority_override(
     user_priority: str,
     reason: str,
 ) -> None:
-    """Append a priority override entry to settings so the analysis prompt can
-    learn from it.
+    """Append a priority override entry to settings.
+
+    Recorded so that future analysis prompts can learn from the correction.
 
     Mirrors the shape of ``ASSIGNMENT_CORRECTIONS``: entries are grown
     unbounded on the settings object but capped when they're read into the
@@ -1832,9 +1834,11 @@ def create_todo(body: dict):
 
 @app.get("/todos/assigned_count")
 def get_todos_assigned_count():
-    """Return a count of open todos in the 'assigned' state with a non-empty
-    ``assigned_to``. Backs the Assigned vtab badge so the UI doesn't have
-    to fetch and client-side filter the full open-todo set on every mutation.
+    """Return a count of open todos in the 'assigned' state.
+
+    Counts only rows with a non-empty ``assigned_to``. Backs the Assigned vtab
+    badge so the UI doesn't have to fetch and client-side filter the full
+    open-todo set on every mutation.
 
     :return: ``{"count": N}``
     :rtype: dict
@@ -2877,8 +2881,9 @@ def submit_deep_analysis(situation_id: str):
 
 @app.post("/situations/{situation_id}/deep-analysis/save")
 def save_deep_analysis(situation_id: str, body: dict):
-    """Fetch a completed batch job result from merLLM and store it as an intel item
-    linked to the situation.
+    """Store a completed merLLM batch result as an intel item.
+
+    The result is fetched from merLLM and linked to the situation.
 
     :param situation_id: UUID of the situation.
     :param body: Must contain ``job_id``.
@@ -3329,7 +3334,9 @@ def disconnect_teams_account(account_id: str):
 
 @app.post("/seed")
 async def seed_preview(request: Request):
-    """Start the seed state machine.  Always succeeds immediately — the
+    """Start the seed state machine.
+
+    Always succeeds immediately — the
     ``waiting_for_ingest`` phase handles empty databases by polling until
     items arrive.  Returns the current seed job state.
     """
@@ -3344,8 +3351,9 @@ async def seed_preview(request: Request):
 
 @app.patch("/seed/context")
 async def seed_update_context(request: Request):
-    """Update the user-provided context string while the seed job is in the
-    ``waiting_for_ingest`` state.
+    """Update the user-provided context string on a waiting seed job.
+
+    Accepted only while the job is in the ``waiting_for_ingest`` state.
 
     :param request: Request body must be JSON with a ``context`` key.
     :return: ``{"ok": True}``
@@ -3380,8 +3388,10 @@ def seed_apply(body: dict, background_tasks: BackgroundTasks):
 
 @app.post("/seed/scan")
 def seed_run_scan():
-    """Transition the seed state machine from ``scan_prompt`` to ``scanning``,
-    run a full multi-source scan, then transition to ``done``.
+    """Run the optional post-seed connector scan.
+
+    Transitions the seed state machine from ``scan_prompt`` to ``scanning``,
+    runs a full multi-source scan, then transitions to ``done``.
 
     :return: ``{"ok": True}``
     :raises HTTPException 409: If a scan is already running.
@@ -3391,8 +3401,10 @@ def seed_run_scan():
 
 @app.post("/seed/skip_scan")
 def seed_skip_scan():
-    """Transition the seed state machine from ``scan_prompt`` to ``done``
-    without running a connector scan.
+    """Skip the optional post-seed connector scan.
+
+    Transitions the seed state machine from ``scan_prompt`` straight to
+    ``done`` without running a scan.
 
     :return: ``{"ok": True}``
     :rtype: dict
@@ -3547,7 +3559,9 @@ def add_contact_email(contact_id: int, body: dict):
 
 @app.delete("/contacts/{contact_id}/emails/{email}")
 def delete_contact_email(contact_id: int, email: str):
-    """Detach an email from a contact.  Does not delete the contact even if this
+    """Detach an email from a contact.
+
+    Does not delete the contact even if this
     was its only email — that requires the contact-level DELETE.
 
     :raises HTTPException 404: If no contact with ``contact_id`` exists.
@@ -3562,9 +3576,11 @@ def delete_contact_email(contact_id: int, email: str):
 
 @app.post("/contacts/rebuild")
 def rebuild_contacts():
-    """Walk every existing item and (re)populate the contacts table from To/CC/
-    author headers.  Idempotent — safe to re-run after schema changes or new
-    bulk imports.
+    """Rebuild the contacts table from every item's headers.
+
+    Walks every existing item and (re)populates contacts from To/CC/author
+    headers.  Idempotent — safe to re-run after schema changes or new bulk
+    imports.
 
     :return: ``{"ok": True, "items_scanned": N, "contacts_touched": M, "total_contacts": K}``
     """
@@ -3574,9 +3590,11 @@ def rebuild_contacts():
 
 @app.post("/contacts/reparse-signatures")
 def reparse_contact_signatures():
-    """Walk every existing item and re-run the email-body signature parser
-    against the corresponding contact rows (squire#31).  Manually-edited
-    fields are never overwritten — see ``signatures.apply_to_contact``.
+    """Re-run the email-body signature parser across every item.
+
+    Results are applied to the corresponding contact rows (squire#31).
+    Manually-edited fields are never overwritten — see
+    ``signatures.apply_to_contact``.
 
     Mirrors ``/contacts/rebuild`` but for the body-parsing pass.  Idempotent
     and safe to re-run.

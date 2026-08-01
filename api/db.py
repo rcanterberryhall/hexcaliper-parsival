@@ -130,8 +130,10 @@ def conn() -> sqlite3.Connection:
 
 
 def backfill_manual_todo_items() -> int:
-    """Create placeholder items rows for manual todos that predate the
-    synthesized-item model (is_manual=1, item_id IS NULL).
+    """Backfill placeholder items rows for legacy manual todos.
+
+    Covers todos that predate the synthesized-item model (is_manual=1,
+    item_id IS NULL).
 
     Each orphan todo gets item_id='manual_<todo_id>' on both the todo and
     a synthesized items row whose title/body seed from the todo description
@@ -1549,7 +1551,9 @@ def upsert_edge(
     weight: float = 1.0,
     properties: dict = None,
 ) -> None:
-    """Insert or update a graph edge.  Weight is updated to the new value if the
+    """Insert or update a graph edge.
+
+    Weight is updated to the new value if the
     edge already exists (e.g. accumulated co-occurrence count).
     """
     c = conn()
@@ -1843,7 +1847,9 @@ def delete_contact(contact_id: int) -> None:
 
 
 def add_contact_email(contact_id: int, email: str, is_primary: bool = False) -> bool:
-    """Attach an email to a contact.  Returns False if the email is already
+    """Attach an email to a contact.
+
+    Returns False if the email is already
     attached to another contact (caller can decide whether to merge).
     """
     if not email:
@@ -3145,8 +3151,9 @@ def decide_card_suggestion(suggestion_id: int, decision: str) -> dict | None:
 
 
 def slack_unseen_message_ts(team: str, channel_id: str, ts_list: list[str]) -> set[str]:
-    """Return the subset of ``ts_list`` that has not yet been recorded as seen
-    for the given ``(team, channel_id)``.
+    """Return the timestamps in ``ts_list`` not yet recorded as seen.
+
+    Scoped to the given ``(team, channel_id)``.
 
     Used by ``connector_slack._fetch_for_token`` to keep only newly-surfaced
     messages in each scan.  The connector calls this to filter the raw
@@ -3193,8 +3200,9 @@ def slack_mark_messages_seen(team: str, channel_id: str, ts_list: list[str]) -> 
 def candidate_items_for_card(
     project: str, start_date: str, end_date: str, limit: int = 40
 ) -> list[dict]:
-    """Return items tagged to the same project whose timestamp sits near the
-    card window.  Used as the shortlist the LLM ranks against the card.
+    """Return same-project items whose timestamp sits near the card window.
+
+    Used as the shortlist the LLM ranks against the card.
     """
     if not project:
         return []

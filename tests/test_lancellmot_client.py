@@ -1,10 +1,9 @@
 """Tests for lancellmot_client (parsival#43)."""
 
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 import lancellmot_client
+import pytest
 
 
 def _ok_response(payload):
@@ -30,19 +29,22 @@ def test_list_projects_returns_list_of_dicts():
 
 
 def test_list_projects_raises_on_network_error():
-    with patch(
-        "lancellmot_client.requests.get", side_effect=__import__("requests").ConnectionError("boom")
+    with (
+        patch(
+            "lancellmot_client.requests.get",
+            side_effect=__import__("requests").ConnectionError("boom"),
+        ),
+        pytest.raises(lancellmot_client.LancellmotUnavailable),
     ):
-        with pytest.raises(lancellmot_client.LancellmotUnavailable):
-            lancellmot_client.list_projects()
+        lancellmot_client.list_projects()
 
 
 def test_list_projects_raises_on_timeout():
-    with patch(
-        "lancellmot_client.requests.get", side_effect=__import__("requests").Timeout("slow")
+    with (
+        patch("lancellmot_client.requests.get", side_effect=__import__("requests").Timeout("slow")),
+        pytest.raises(lancellmot_client.LancellmotUnavailable),
     ):
-        with pytest.raises(lancellmot_client.LancellmotUnavailable):
-            lancellmot_client.list_projects()
+        lancellmot_client.list_projects()
 
 
 def test_list_projects_raises_on_5xx():
@@ -93,8 +95,11 @@ def test_list_documents_default_limit_is_5():
 
 
 def test_list_documents_raises_on_failure():
-    with patch(
-        "lancellmot_client.requests.get", side_effect=__import__("requests").ConnectionError("boom")
+    with (
+        patch(
+            "lancellmot_client.requests.get",
+            side_effect=__import__("requests").ConnectionError("boom"),
+        ),
+        pytest.raises(lancellmot_client.LancellmotUnavailable),
     ):
-        with pytest.raises(lancellmot_client.LancellmotUnavailable):
-            lancellmot_client.list_documents("proj-1")
+        lancellmot_client.list_documents("proj-1")

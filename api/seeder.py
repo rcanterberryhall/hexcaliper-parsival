@@ -370,6 +370,7 @@ def _run_seed_job(context: str) -> None:
 
 def start(context: str) -> dict:
     """Start the seed state machine.  Always succeeds immediately.
+
     Returns the current _seed_job state.
     """
     global _seed_job
@@ -527,8 +528,9 @@ def apply(body: dict, background_tasks) -> dict:
                     db.update_item(item_id, {"project_tag": tag_val})
 
     def _seed_embed_and_correlate() -> None:
-        """Background task run after apply() to warm the embedding and
-        situation layers from the existing corpus.
+        """Warm the embedding and situation layers from the existing corpus.
+
+        Background task run after apply().
 
         Waits for reanalysis to complete first so embeddings and
         situations are built from fully updated item data (with correct

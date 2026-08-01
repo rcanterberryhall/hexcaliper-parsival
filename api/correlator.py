@@ -28,6 +28,7 @@ _REF_PATTERNS = [
 
 def extract_references(title: str, body: str) -> list:
     """Extract explicit cross-source identifiers from item title and body.
+
     Returns a deduplicated lowercase list, e.g. ["proj-142", "pr-89"].
     """
     text = (title or "") + " " + (body or "")
@@ -191,6 +192,7 @@ def synthesize_situation(
     item_records: list, user_name: str, intel_items: list = None, completed_actions: list = None
 ) -> dict:
     """Call Ollama to produce a cross-source narrative for a situation cluster.
+
     Falls back to a minimal dict on failure.
 
     items_block: per-item summary lines capped at 6 items × 200 chars each.

@@ -119,6 +119,7 @@ def _get_noise_rules() -> list[dict]:
 
 def _save_filtered_item(item: RawItem, matched_rule: str) -> None:
     """Persist a filtered item to the items table as category='filtered'.
+
     No LLM analysis is run; the item is auditable but invisible in the normal UI.
     """
     with db.lock:
@@ -258,7 +259,9 @@ def _apply_batch_result(rec: dict, response_text: str) -> None:
 
 
 def _poll_batch_once() -> None:
-    """One iteration of the batch poll loop.  Extracted from
+    """One iteration of the batch poll loop.
+
+    Extracted from
     :func:`_poll_batch_jobs` so tests can drive it directly without spawning
     a thread.
 
@@ -326,8 +329,9 @@ def _poll_batch_once() -> None:
 
 
 def _poll_batch_jobs() -> None:
-    """Background thread: every 60 s call :func:`_poll_batch_once` to poll
-    merLLM for completed batch jobs and apply their results.
+    """Poll merLLM for completed batch jobs on a background thread.
+
+    Every 60 s, calls :func:`_poll_batch_once` and applies its results.
     """
     while True:
         time.sleep(60)
@@ -660,8 +664,9 @@ def run_reanalyze() -> None:
 
 
 def claim_ingest_items(item_ids: list[str]) -> set[str]:
-    """Atomically mark ``item_ids`` as in-flight and return the subset that is
-    genuinely new (not already in the DB and not currently being processed).
+    """Atomically mark ``item_ids`` as in-flight and return the new ones.
+
+    "New" means not already in the DB and not currently being processed.
 
     Used by ``POST /ingest`` to deduplicate against both persisted items
     *and* items queued by a previous call whose background task has not yet
