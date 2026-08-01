@@ -3,7 +3,7 @@
 The lock used to be a non-reentrant ``threading.Lock``, which meant a thread
 that already held it would self-deadlock the moment it called any helper that
 also acquired ``db.lock`` internally. That actually happened during the
-contacts feature build (squire#24): a hook inside ``_save_analysis``'s
+contacts feature build (parsival#24): a hook inside ``_save_analysis``'s
 ``with db.lock:`` block called a helper that also wrapped its work in
 ``with db.lock:``, and the orchestrator batch-result test wedged for 20+
 minutes with no output.
@@ -11,19 +11,17 @@ minutes with no output.
 These tests pin the contract: ``db.lock`` is a re-entrant ``RLock`` and a
 thread holding it can call helpers that also acquire it without deadlocking.
 """
+
 import threading
 
-import pytest
-
 import db
+import pytest
 
 
 def test_db_lock_is_reentrant():
     """``db.lock`` must allow the same thread to acquire it multiple times."""
-    with db.lock:
-        with db.lock:
-            with db.lock:
-                pass
+    with db.lock, db.lock, db.lock:
+        pass
 
 
 @pytest.mark.timeout(5)

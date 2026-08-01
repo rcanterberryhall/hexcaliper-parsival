@@ -3,29 +3,27 @@ test_noise_filters.py — B6: Pre-scan noise filters.
 
 Tests for noise_filter.py matching logic and the /noise-filters endpoints.
 """
-import pytest
+
 from dataclasses import dataclass, field
 
-
 # ── noise_filter unit tests ───────────────────────────────────────────────────
-
 import noise_filter as nf
 
 
 @dataclass
 class _Item:
-    source:    str = "github"
-    item_id:   str = "test-1"
-    title:     str = "Daily digest"
-    body:      str = ""
-    url:       str = ""
-    author:    str = "bot@noreply.com"
+    source: str = "github"
+    item_id: str = "test-1"
+    title: str = "Daily digest"
+    body: str = ""
+    url: str = ""
+    author: str = "bot@noreply.com"
     timestamp: str = "2026-04-05T00:00:00"
-    metadata:  dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
 
 
 def test_sender_contains_match():
-    item  = _Item(author="noreply@github.com")
+    item = _Item(author="noreply@github.com")
     rules = [{"type": "sender_contains", "value": "noreply@"}]
     matched, rtype = nf.should_filter(item, rules)
     assert matched
@@ -33,28 +31,28 @@ def test_sender_contains_match():
 
 
 def test_sender_contains_no_match():
-    item  = _Item(author="alice@example.com")
+    item = _Item(author="alice@example.com")
     rules = [{"type": "sender_contains", "value": "noreply@"}]
     matched, _ = nf.should_filter(item, rules)
     assert not matched
 
 
 def test_subject_contains_match():
-    item  = _Item(title="Out of Office: Alice is away")
+    item = _Item(title="Out of Office: Alice is away")
     rules = [{"type": "subject_contains", "value": "Out of Office"}]
     matched, rtype = nf.should_filter(item, rules)
     assert matched
 
 
 def test_subject_contains_case_insensitive():
-    item  = _Item(title="out of office notification")
+    item = _Item(title="out of office notification")
     rules = [{"type": "subject_contains", "value": "Out of Office"}]
     matched, _ = nf.should_filter(item, rules)
     assert matched
 
 
 def test_source_repo_match():
-    item  = _Item(source="github", metadata={"repo": "acme/alerts"})
+    item = _Item(source="github", metadata={"repo": "acme/alerts"})
     rules = [{"type": "source_repo", "value": "acme/alerts"}]
     matched, rtype = nf.should_filter(item, rules)
     assert matched
@@ -62,14 +60,14 @@ def test_source_repo_match():
 
 
 def test_source_repo_no_partial_match():
-    item  = _Item(source="github", metadata={"repo": "acme/alerts-extended"})
+    item = _Item(source="github", metadata={"repo": "acme/alerts-extended"})
     rules = [{"type": "source_repo", "value": "acme/alerts"}]
     matched, _ = nf.should_filter(item, rules)
     assert not matched
 
 
 def test_distribution_list_match():
-    item  = _Item(metadata={"to": "all-company@example.com"})
+    item = _Item(metadata={"to": "all-company@example.com"})
     rules = [{"type": "distribution_list", "value": "all-company@"}]
     matched, _ = nf.should_filter(item, rules)
     assert matched
@@ -96,6 +94,7 @@ def test_validate_rule_empty_value():
 
 
 # ── /noise-filters API tests ──────────────────────────────────────────────────
+
 
 def test_get_noise_filters_empty(client):
     r = client.get("/noise-filters")

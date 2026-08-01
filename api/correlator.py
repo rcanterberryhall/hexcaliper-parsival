@@ -1,5 +1,4 @@
-"""
-correlator.py — Cross-source situation correlation and synthesis.
+"""correlator.py — Cross-source situation correlation and synthesis.
 
 Owns all situation formation logic:
   extract_references()         — pull Jira keys, PR numbers, issue refs from text
@@ -7,30 +6,32 @@ Owns all situation formation logic:
   score_situation()            — composite urgency score for a candidate cluster
   synthesize_situation()       — LLM narrative synthesis across items
 """
+
 import json
+import logging
 import math
 import re
-from datetime import datetime, timezone
-
-import requests
-import llm
+from datetime import UTC, datetime
 
 import config
 import db
+import llm
+
+log = logging.getLogger(__name__)
 
 # ── Reference extraction ───────────────────────────────────────────────────────
 
 _REF_PATTERNS = [
-    re.compile(r'\b([A-Z][A-Z0-9]+-\d+)\b'),           # Jira keys: PROJ-142
-    re.compile(r'\bPR[- ]?#?(\d+)\b', re.IGNORECASE),  # PR numbers
-    re.compile(r'\bissue[- ]?#?(\d+)\b', re.IGNORECASE),
-    re.compile(r'#(\d{3,6})\b'),                        # bare #NNN
+    re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b"),  # Jira keys: PROJ-142
+    re.compile(r"\bPR[- ]?#?(\d+)\b", re.IGNORECASE),  # PR numbers
+    re.compile(r"\bissue[- ]?#?(\d+)\b", re.IGNORECASE),
+    re.compile(r"#(\d{3,6})\b"),  # bare #NNN
 ]
 
 
 def extract_references(title: str, body: str) -> list:
-    """
-    Extract explicit cross-source identifiers from item title and body.
+    """Extract explicit cross-source identifiers from item title and body.
+
     Returns a deduplicated lowercase list, e.g. ["proj-142", "pr-89"].
     """
     text = (title or "") + " " + (body or "")
@@ -48,6 +49,7 @@ def extract_references(title: str, body: str) -> list:
 
 # ── Candidate generation ───────────────────────────────────────────────────────
 
+
 def find_correlated_candidates(
     item_id: str,
     references: list,
@@ -56,8 +58,7 @@ def find_correlated_candidates(
     all_analyses: list,
     similarity_threshold: float = 0.82,
 ) -> list:
-    """
-    Return item_ids of analyses likely describing the same situation.
+    """Return item_ids of analyses likely describing the same situation.
 
     Two-pass approach:
     1. Deterministic: all analyses sharing at least one reference string.
@@ -93,6 +94,7 @@ def find_correlated_candidates(
         try:
             import numpy as np
             from embedder import get_item_vector
+
             v = np.array(vector)
             for rec in all_analyses:
                 cid = rec.get("item_id")
@@ -101,9 +103,12 @@ def find_correlated_candidates(
                 # Only correlate within same project or both untagged
                 rec_tags = db.parse_project_tags(rec.get("project_tag"))
                 query_tags = db.parse_project_tags(project_tag)
-                if rec_tags != query_tags and not set(rec_tags) & set(query_tags):
-                    if rec_tags or query_tags:  # skip unless both untagged
-                        continue
+                if (
+                    rec_tags != query_tags
+                    and not set(rec_tags) & set(query_tags)
+                    and (rec_tags or query_tags)  # skip unless both untagged
+                ):
+                    continue
                 stored_vec = get_item_vector(cid)
                 if stored_vec is None:
                     continue
@@ -111,16 +116,16 @@ def find_correlated_candidates(
                 if score >= similarity_threshold:
                     candidates.add(cid)
         except Exception as e:
-            print(f"[correlator] semantic pass failed: {e}")
+            log.error("semantic pass failed: %s", e)
 
     return list(candidates)
 
 
 # ── Situation scoring ──────────────────────────────────────────────────────────
 
+
 def score_situation(item_ids: list, analyses: list) -> float:
-    """
-    Compute a composite urgency score for a candidate situation cluster.
+    """Compute a composite urgency score for a candidate situation cluster.
 
     Components:
       source_score    (0.35) — log2(unique_source_types + 1)
@@ -133,32 +138,29 @@ def score_situation(item_ids: list, analyses: list) -> float:
     pri_map = {"high": 3, "medium": 2, "low": 1}
 
     unique_sources = len(set(a["source"] for a in analyses))
-    source_score   = math.log2(unique_sources + 1)
+    source_score = math.log2(unique_sources + 1)
 
     timestamps = [a.get("timestamp", "") for a in analyses if a.get("timestamp")]
     if timestamps:
         latest = max(timestamps)
         try:
-            dt        = datetime.fromisoformat(latest.replace("Z", "+00:00"))
-            hours_ago = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+            dt = datetime.fromisoformat(latest.replace("Z", "+00:00"))
+            hours_ago = (datetime.now(UTC) - dt).total_seconds() / 3600
         except Exception:
             hours_ago = 48
     else:
         hours_ago = 48
     recency_score = 1 / (1 + hours_ago / 12)
 
-    max_pri        = max((pri_map.get(a.get("priority", "low"), 1) for a in analyses), default=1)
+    max_pri = max((pri_map.get(a.get("priority", "low"), 1) for a in analyses), default=1)
     priority_score = max_pri / 3
 
-    user_items      = sum(1 for a in analyses if a.get("hierarchy") == "user")
+    user_items = sum(1 for a in analyses if a.get("hierarchy") == "user")
     addressal_score = min(1.0, user_items / max(len(analyses), 1) + 0.3 * bool(user_items))
 
     return round(
-        source_score    * 0.35 +
-        recency_score   * 0.25 +
-        priority_score  * 0.25 +
-        addressal_score * 0.15,
-        3
+        source_score * 0.35 + recency_score * 0.25 + priority_score * 0.25 + addressal_score * 0.15,
+        3,
     )
 
 
@@ -192,11 +194,11 @@ Do NOT list anything in ``open_actions`` that already appears under "Completed a
 """
 
 
-def synthesize_situation(item_records: list, user_name: str,
-                         intel_items: list = None,
-                         completed_actions: list = None) -> dict:
-    """
-    Call Ollama to produce a cross-source narrative for a situation cluster.
+def synthesize_situation(
+    item_records: list, user_name: str, intel_items: list = None, completed_actions: list = None
+) -> dict:
+    """Call Ollama to produce a cross-source narrative for a situation cluster.
+
     Falls back to a minimal dict on failure.
 
     items_block: per-item summary lines capped at 6 items × 200 chars each.
@@ -208,13 +210,13 @@ def synthesize_situation(item_records: list, user_name: str,
     capped = item_records[:6]
     lines = []
     for r in capped:
-        line = f"[{r.get('source','')}] {r.get('title','')}: {r.get('summary','')[:200]} ({r.get('priority','')}, {r.get('category','')})"
+        line = f"[{r.get('source', '')}] {r.get('title', '')}: {r.get('summary', '')[:200]} ({r.get('priority', '')}, {r.get('category', '')})"
         lines.append(line)
     items_block = "\n".join(lines)
 
     if intel_items:
         intel_lines = [
-            f"- [{i.get('source','')}] {i.get('fact','')} ({i.get('relevance','')[:100]})"
+            f"- [{i.get('source', '')}] {i.get('fact', '')} ({i.get('relevance', '')[:100]})"
             for i in intel_items[:8]
         ]
         intel_block = "Recent status updates and context:\n" + "\n".join(intel_lines) + "\n"
@@ -230,21 +232,26 @@ def synthesize_situation(item_records: list, user_name: str,
             if not desc:
                 continue
             owner = t.get("assigned_to") or t.get("owner") or ""
-            who   = f" ({owner})" if owner else ""
+            who = f" ({owner})" if owner else ""
             done_lines.append(f"- {desc}{who}")
         completed_block = (
-            "Completed actions (treat as already done; do not re-raise):\n"
-            + "\n".join(done_lines) + "\n"
-        ) if done_lines else ""
+            (
+                "Completed actions (treat as already done; do not re-raise):\n"
+                + "\n".join(done_lines)
+                + "\n"
+            )
+            if done_lines
+            else ""
+        )
     else:
         completed_block = ""
 
     fallback = {
-        "title":        _fallback_title(item_records),
-        "summary":      "Multiple related items detected across sources.",
-        "status":       "in_progress",
+        "title": _fallback_title(item_records),
+        "summary": "Multiple related items detected across sources.",
+        "status": "in_progress",
         "open_actions": [],
-        "key_context":  None,
+        "key_context": None,
     }
 
     if not config.OLLAMA_URL:
@@ -253,29 +260,31 @@ def synthesize_situation(item_records: list, user_name: str,
     try:
         text = llm.generate(
             SYNTHESIS_PROMPT.format(
-                user_name       = user_name or "the user",
-                items_block     = items_block,
-                intel_block     = intel_block,
-                completed_block = completed_block,
+                user_name=user_name or "the user",
+                items_block=items_block,
+                intel_block=intel_block,
+                completed_block=completed_block,
             ),
-            format="json", temperature=0.1, num_predict=512, timeout=60,
+            format="json",
+            temperature=0.1,
+            num_predict=512,
+            timeout=60,
             priority="feedback",
         )
         data = json.loads(text or "{}")
         return {
-            "title":        data.get("title")        or fallback["title"],
-            "summary":      data.get("summary")      or fallback["summary"],
-            "status":       data.get("status")       or "in_progress",
+            "title": data.get("title") or fallback["title"],
+            "summary": data.get("summary") or fallback["summary"],
+            "status": data.get("status") or "in_progress",
             "open_actions": data.get("open_actions") or [],
-            "key_context":  data.get("key_context"),
+            "key_context": data.get("key_context"),
         }
     except Exception as e:
-        print(f"[correlator] synthesis failed: {e}")
+        log.error("synthesis failed: %s", e)
         return fallback
 
 
 def _fallback_title(records: list) -> str:
-    sources = list(dict.fromkeys(r.get("source", "") for r in records))
     if records:
         return records[0].get("title", "Correlated situation")[:60]
     return "Correlated situation"

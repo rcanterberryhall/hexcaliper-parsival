@@ -1,11 +1,10 @@
 """Tests for lancellmot_aliases table + CRUD helpers (parsival#43)."""
+
 import db
 
 
 def test_lancellmot_aliases_table_exists():
-    cols = {r[1] for r in db.conn().execute(
-        "PRAGMA table_info(lancellmot_aliases)"
-    ).fetchall()}
+    cols = {r[1] for r in db.conn().execute("PRAGMA table_info(lancellmot_aliases)").fetchall()}
     assert cols == {
         "parsival_project",
         "lancellmot_project_id",

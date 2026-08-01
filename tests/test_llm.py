@@ -1,4 +1,5 @@
 """Tests for the llm.py provider abstraction."""
+
 import json
 from unittest.mock import MagicMock, patch
 
@@ -130,7 +131,9 @@ class TestClaude:
         monkeypatch.setattr(config, "ESCALATION_MODEL", "claude-sonnet-4-20250514")
         monkeypatch.setattr(config, "OLLAMA_MODEL", "qwen3:32b")
 
-        with patch("llm.requests.post", return_value=_mock_claude_response('{"result":"ok"}')) as mock:
+        with patch(
+            "llm.requests.post", return_value=_mock_claude_response('{"result":"ok"}')
+        ) as mock:
             result = llm.generate("analyze this", format="json")
 
         assert result == '{"result":"ok"}'
@@ -148,6 +151,7 @@ class TestClaude:
         monkeypatch.setattr(config, "ESCALATION_MODEL", "")
 
         import pytest
+
         with pytest.raises(ValueError, match="ESCALATION_API_KEY"):
             llm.generate("test")
 
@@ -170,47 +174,59 @@ class TestCollectStream:
 
     def _make_stream(self, lines: list[dict]) -> MagicMock:
         m = MagicMock()
-        m.iter_lines.return_value = iter(
-            [json.dumps(l).encode() for l in lines]
-        )
+        m.iter_lines.return_value = iter([json.dumps(l).encode() for l in lines])
         return m
 
     def test_normal_response_tokens(self):
-        resp = self._make_stream([
-            {"response": '{"ok":true}', "done": False},
-            {"response": "", "done": True},
-        ])
+        resp = self._make_stream(
+            [
+                {"response": '{"ok":true}', "done": False},
+                {"response": "", "done": True},
+            ]
+        )
         assert llm._collect_stream(resp) == '{"ok":true}'
 
     def test_strips_think_tags_from_response(self):
-        resp = self._make_stream([
-            {"response": "<think>reasoning</think>{\"ok\":true}", "done": False},
-            {"response": "", "done": True},
-        ])
+        resp = self._make_stream(
+            [
+                {"response": '<think>reasoning</think>{"ok":true}', "done": False},
+                {"response": "", "done": True},
+            ]
+        )
         assert llm._collect_stream(resp) == '{"ok":true}'
 
     def test_fallback_to_thinking_field_when_response_empty(self):
         """When model puts answer in thinking NDJSON field, use it."""
-        resp = self._make_stream([
-            {"response": "", "thinking": '{"ok":true}', "done": False},
-            {"response": "", "done": True},
-        ])
+        resp = self._make_stream(
+            [
+                {"response": "", "thinking": '{"ok":true}', "done": False},
+                {"response": "", "done": True},
+            ]
+        )
         assert llm._collect_stream(resp) == '{"ok":true}'
 
     def test_thinking_field_with_think_tags(self):
         """Thinking field may contain <think> tags wrapping reasoning + answer."""
-        resp = self._make_stream([
-            {"response": "", "thinking": "<think>let me think</think>{\"ok\":true}", "done": False},
-            {"response": "", "done": True},
-        ])
+        resp = self._make_stream(
+            [
+                {
+                    "response": "",
+                    "thinking": '<think>let me think</think>{"ok":true}',
+                    "done": False,
+                },
+                {"response": "", "done": True},
+            ]
+        )
         assert llm._collect_stream(resp) == '{"ok":true}'
 
     def test_response_preferred_over_thinking(self):
         """When both fields have content, response wins."""
-        resp = self._make_stream([
-            {"response": '{"from":"response"}', "thinking": "other stuff", "done": False},
-            {"response": "", "done": True},
-        ])
+        resp = self._make_stream(
+            [
+                {"response": '{"from":"response"}', "thinking": "other stuff", "done": False},
+                {"response": "", "done": True},
+            ]
+        )
         assert llm._collect_stream(resp) == '{"from":"response"}'
 
 
@@ -243,16 +259,15 @@ class TestStripUntaggedThink:
     def test_various_cot_starters(self):
         for starter in ["Let me ", "First, ", "I need to ", "I should ", "Now, "]:
             text = f"{starter}analyze this carefully.\n\nThe answer is 42."
-            assert llm._strip_untagged_think(text) == "The answer is 42.", f"Failed for starter: {starter}"
+            assert llm._strip_untagged_think(text) == "The answer is 42.", (
+                f"Failed for starter: {starter}"
+            )
 
     def test_generate_strips_untagged_for_freetext(self, monkeypatch):
         """generate() applies untagged-think stripping for format=None."""
         monkeypatch.setattr(config, "ESCALATION_PROVIDER", "ollama")
         monkeypatch.setattr(config, "ESCALATION_MODEL", "")
-        cot_response = (
-            "Okay, the user wants a briefing.\n\n"
-            "RV 7 needs shield inspection."
-        )
+        cot_response = "Okay, the user wants a briefing.\n\nRV 7 needs shield inspection."
         with patch("llm.requests.post", return_value=_mock_ollama_response(cot_response)):
             result = llm.generate("test", format=None)
         assert result == "RV 7 needs shield inspection."

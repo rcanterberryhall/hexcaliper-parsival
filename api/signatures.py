@@ -1,5 +1,4 @@
-"""
-signatures.py — Email-signature parser for the contacts table (squire#31).
+"""signatures.py — Email-signature parser for the contacts table (parsival#31).
 
 The contacts table is auto-populated from email *headers* by ``contacts.py``.
 This module is the second pass: it walks the bottom of an email body, isolates
@@ -33,13 +32,13 @@ This file does *not* parse HTML — ``items.body_preview`` is plain text in
 every connector that currently exists.  Full HTML body parsing is a future
 extension if/when richer body fields land in the items table.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 import db
 from agent import extract_emails
@@ -72,11 +71,11 @@ NAME_FILL_THRESHOLD = 0.6
 #: these markers downward is *not* a signature, no matter what comes after.
 #: Order matters: the first match wins, so put the most specific ones first.
 _QUOTE_MARKERS = (
-    re.compile(r"^\s*>"),                                       # > quoted text
+    re.compile(r"^\s*>"),  # > quoted text
     re.compile(r"^\s*-{2,}\s*Original Message\s*-{2,}", re.I),  # Outlook
-    re.compile(r"^\s*From:\s.+", re.I),                         # forwarded header
-    re.compile(r"^\s*On\s.+\swrote:\s*$", re.I),                # On <date> ... wrote:
-    re.compile(r"^\s*Sent from my\s", re.I),                    # mobile sigs we don't want
+    re.compile(r"^\s*From:\s.+", re.I),  # forwarded header
+    re.compile(r"^\s*On\s.+\swrote:\s*$", re.I),  # On <date> ... wrote:
+    re.compile(r"^\s*Sent from my\s", re.I),  # mobile sigs we don't want
     re.compile(r"^\s*Get Outlook for", re.I),
 )
 
@@ -126,16 +125,24 @@ _STATE_ABBR_RE = re.compile(r"\b[A-Z]{2}\b")
 #: punctuation other than ., ', -.  This is intentionally loose — most actual
 #: name lines pass it, and the false positives we care about (greetings like
 #: "Thanks, John") are filtered separately.
-_NAME_LINE_RE = re.compile(
-    r"^[A-Z][A-Za-z'\-\.]+(?:\s+[A-Z][A-Za-z'\-\.]+){0,3}$"
-)
+_NAME_LINE_RE = re.compile(r"^[A-Z][A-Za-z'\-\.]+(?:\s+[A-Z][A-Za-z'\-\.]+){0,3}$")
 
 #: Greeting words that often immediately precede a name on a single line and
 #: would otherwise be parsed *as* a name.  Treated as evidence the line is a
 #: sign-off, not a signature start.
 _GREETING_WORDS = {
-    "thanks", "thank", "thx", "regards", "best", "cheers", "sincerely",
-    "br", "kind", "kindly", "respectfully", "cordially",
+    "thanks",
+    "thank",
+    "thx",
+    "regards",
+    "best",
+    "cheers",
+    "sincerely",
+    "br",
+    "kind",
+    "kindly",
+    "respectfully",
+    "cordially",
 }
 
 #: Sign-off lines that imply "the signature starts on the next line."  Used
@@ -143,34 +150,64 @@ _GREETING_WORDS = {
 #: explicit ``-- `` delimiter.  Match is case-insensitive and tolerates
 #: optional trailing punctuation/extra word ("Best regards,", "Thanks!").
 _SIGNOFF_RE = re.compile(
-    r"^\s*(?:" + "|".join([
-        r"thanks(?:\s+again)?",
-        r"thank\s+you",
-        r"thx",
-        r"regards",
-        r"best(?:\s+regards)?",
-        r"kind(?:\s+regards)?",
-        r"cheers",
-        r"sincerely",
-        r"respectfully",
-        r"cordially",
-        r"yours(?:\s+truly)?",
-    ]) + r")[,!.\s]*$",
+    r"^\s*(?:"
+    + "|".join(
+        [
+            r"thanks(?:\s+again)?",
+            r"thank\s+you",
+            r"thx",
+            r"regards",
+            r"best(?:\s+regards)?",
+            r"kind(?:\s+regards)?",
+            r"cheers",
+            r"sincerely",
+            r"respectfully",
+            r"cordially",
+            r"yours(?:\s+truly)?",
+        ]
+    )
+    + r")[,!.\s]*$",
     re.IGNORECASE,
 )
 
 #: Title keywords — used to bump confidence when a candidate "title" line
 #: contains one.  Not exhaustive; only high-signal terms.
 _TITLE_KEYWORDS = {
-    "engineer", "manager", "director", "president", "ceo", "cto", "cfo",
-    "coo", "vp", "vice", "lead", "principal", "senior", "sr", "jr",
-    "consultant", "specialist", "analyst", "architect", "developer",
-    "administrator", "coordinator", "supervisor", "owner", "founder",
-    "partner", "associate", "officer", "head", "chief",
+    "engineer",
+    "manager",
+    "director",
+    "president",
+    "ceo",
+    "cto",
+    "cfo",
+    "coo",
+    "vp",
+    "vice",
+    "lead",
+    "principal",
+    "senior",
+    "sr",
+    "jr",
+    "consultant",
+    "specialist",
+    "analyst",
+    "architect",
+    "developer",
+    "administrator",
+    "coordinator",
+    "supervisor",
+    "owner",
+    "founder",
+    "partner",
+    "associate",
+    "officer",
+    "head",
+    "chief",
 }
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
+
 
 @dataclass
 class SignatureFields:
@@ -182,23 +219,29 @@ class SignatureFields:
     ``("Acme", 0.4)`` is still recorded for diagnostic purposes but will not
     actually update the row.
     """
-    name:             str   = ""
-    name_conf:        float = 0.0
-    phone:            str   = ""
-    phone_conf:       float = 0.0
-    title:            str   = ""
-    title_conf:       float = 0.0
-    employer:         str   = ""
-    employer_conf:    float = 0.0
-    employer_address: str   = ""
-    address_conf:     float = 0.0
+
+    name: str = ""
+    name_conf: float = 0.0
+    phone: str = ""
+    phone_conf: float = 0.0
+    title: str = ""
+    title_conf: float = 0.0
+    employer: str = ""
+    employer_conf: float = 0.0
+    employer_address: str = ""
+    address_conf: float = 0.0
 
     def is_empty(self) -> bool:
         """True if the parser found nothing usable at all."""
-        return not any((
-            self.name, self.phone, self.title,
-            self.employer, self.employer_address,
-        ))
+        return not any(
+            (
+                self.name,
+                self.phone,
+                self.title,
+                self.employer,
+                self.employer_address,
+            )
+        )
 
     def confidence_map(self) -> dict[str, float]:
         """Confidence dict suitable for storage in ``signature_confidence``.
@@ -207,11 +250,16 @@ class SignatureFields:
         with a 0.0 score is omitted so the persisted JSON stays small.
         """
         out: dict[str, float] = {}
-        if self.name:             out["name"]             = round(self.name_conf, 2)
-        if self.phone:            out["phone"]            = round(self.phone_conf, 2)
-        if self.title:            out["title"]            = round(self.title_conf, 2)
-        if self.employer:         out["employer"]         = round(self.employer_conf, 2)
-        if self.employer_address: out["employer_address"] = round(self.address_conf, 2)
+        if self.name:
+            out["name"] = round(self.name_conf, 2)
+        if self.phone:
+            out["phone"] = round(self.phone_conf, 2)
+        if self.title:
+            out["title"] = round(self.title_conf, 2)
+        if self.employer:
+            out["employer"] = round(self.employer_conf, 2)
+        if self.employer_address:
+            out["employer_address"] = round(self.address_conf, 2)
         return out
 
 
@@ -273,7 +321,7 @@ def extract_signature_block(body: str) -> str:
     # If neither anchor is present we fall back to "the whole tail" — which
     # is fine for short messages that *are* basically a signature, and the
     # downstream parser is conservative about what it writes.
-    anchor: Optional[int] = None
+    anchor: int | None = None
     for idx, line in enumerate(tail):
         if any(p.match(line) for p in _SIG_DELIMITERS):
             anchor = idx
@@ -284,12 +332,12 @@ def extract_signature_block(body: str) -> str:
                 anchor = idx
                 break
     if anchor is not None:
-        tail = tail[anchor + 1:]
+        tail = tail[anchor + 1 :]
 
     return "\n".join(tail).strip()
 
 
-def parse_signature(block: str, sender_domain: Optional[str] = None) -> SignatureFields:
+def parse_signature(block: str, sender_domain: str | None = None) -> SignatureFields:
     """Heuristic field extraction from a signature block.
 
     The strategy is intentionally cheap: regex for the high-signal field
@@ -317,7 +365,7 @@ def parse_signature(block: str, sender_domain: Optional[str] = None) -> Signatur
             phone = m.group(0).strip()
             digits = re.sub(r"\D", "", phone)
             if 10 <= len(digits) <= 15:
-                out.phone      = phone
+                out.phone = phone
                 out.phone_conf = 0.95
                 break
 
@@ -333,15 +381,11 @@ def parse_signature(block: str, sender_domain: Optional[str] = None) -> Signatur
             block_lines: list[str] = [lines[idx]]
             for back in range(idx - 1, max(-1, idx - 4), -1):
                 line = lines[back]
-                if (
-                    "|" in line
-                    or _PHONE_RE.search(line)
-                    or _has_title_keyword(line)
-                ):
+                if "|" in line or _PHONE_RE.search(line) or _has_title_keyword(line):
                     break
                 block_lines.insert(0, line)
             out.employer_address = ", ".join(block_lines)
-            out.address_conf     = 0.85
+            out.address_conf = 0.85
             break
 
     # ── Name + title + employer (structural top-of-block guess) ──────────
@@ -353,10 +397,11 @@ def parse_signature(block: str, sender_domain: Optional[str] = None) -> Signatur
     # greeting (`Thanks,` etc).  When line 1 fails, we don't try harder —
     # better to leave the field blank than poison the contacts row.
     candidate_lines = [
-        ln for ln in lines
-        if not _PHONE_RE.search(ln)                # phone-only lines
+        ln
+        for ln in lines
+        if not _PHONE_RE.search(ln)  # phone-only lines
         and not _looks_like_email_or_url(ln)
-        and not _US_ZIP_RE.search(ln)              # address tail
+        and not _US_ZIP_RE.search(ln)  # address tail
     ]
 
     if candidate_lines:
@@ -366,7 +411,7 @@ def parse_signature(block: str, sender_domain: Optional[str] = None) -> Signatur
             _NAME_LINE_RE.match(first_clean)
             and first_clean.split()[0].lower() not in _GREETING_WORDS
         ):
-            out.name      = first_clean
+            out.name = first_clean
             out.name_conf = 0.65
 
             # Title: second non-phone, non-address line if it looks title-y.
@@ -376,28 +421,28 @@ def parse_signature(block: str, sender_domain: Optional[str] = None) -> Signatur
                 if "|" in second:
                     parts = [p.strip() for p in second.split("|") if p.strip()]
                     if parts:
-                        out.title      = parts[0]
+                        out.title = parts[0]
                         out.title_conf = 0.7 if _has_title_keyword(parts[0]) else 0.55
                     if len(parts) >= 2:
-                        out.employer      = parts[1]
+                        out.employer = parts[1]
                         out.employer_conf = 0.7
                 else:
                     # Bump confidence when the line contains a known title word.
-                    out.title      = second
+                    out.title = second
                     out.title_conf = 0.75 if _has_title_keyword(second) else 0.5
 
             # Employer: third line if we don't already have one.
             if not out.employer and len(candidate_lines) >= 3:
                 third = candidate_lines[2]
                 if not _has_title_keyword(third):
-                    out.employer      = third
+                    out.employer = third
                     out.employer_conf = 0.6
 
     # Domain fallback for employer when we still have nothing.
     if not out.employer and sender_domain:
         guess = _employer_from_domain(sender_domain)
         if guess:
-            out.employer      = guess
+            out.employer = guess
             # Lower confidence — domain → name is a guess, especially for
             # generic providers like gmail.com (which we filter below).
             out.employer_conf = 0.4
@@ -417,7 +462,7 @@ def apply_to_contact(
     * Never overwrite a field that appears in ``manually_edited_fields``.
     * Never overwrite the ``name`` field — header scraping owns names, the
       signature parser only fills it in when the existing name is empty.
-      (Confirmed approach in the squire#31 design discussion.)
+      (Confirmed approach in the parsival#31 design discussion.)
     * Skip any field whose confidence is below ``threshold``.
     * Stamp ``<field>_source = 'signature'`` on every field actually written.
     * Always refresh ``signature_confidence`` so the UI sees the latest
@@ -458,14 +503,14 @@ def apply_to_contact(
         and "name" not in locked
         and not (contact.get("name") or "").strip()
     ):
-        updates["name"]        = fields.name
+        updates["name"] = fields.name
         updates["name_source"] = "signature"
         written.append("name")
 
-    _try("phone",            fields.phone,            fields.phone_conf,    "phone_source")
-    _try("title",            fields.title,            fields.title_conf,    "title_source")
-    _try("employer",         fields.employer,         fields.employer_conf, "employer_source")
-    _try("employer_address", fields.employer_address, fields.address_conf,  "address_source")
+    _try("phone", fields.phone, fields.phone_conf, "phone_source")
+    _try("title", fields.title, fields.title_conf, "title_source")
+    _try("employer", fields.employer, fields.employer_conf, "employer_source")
+    _try("employer_address", fields.employer_address, fields.address_conf, "address_source")
 
     # Always persist the latest confidence map (even if nothing was written
     # — the UI uses this to show "tried but below threshold").  Merge with
@@ -486,8 +531,8 @@ def apply_to_contact(
     if updates:
         db.update_contact(contact_id, updates)
     return {
-        "updated":  bool(written),
-        "fields":   written,
+        "updated": bool(written),
+        "fields": written,
         "contact_id": contact_id,
     }
 
@@ -524,7 +569,7 @@ def parse_item_body(item: dict, threshold: float = DEFAULT_CONFIDENCE_THRESHOLD)
 
     try:
         contact = db.get_contact_by_email(author_email)
-    except Exception as exc:                                # pragma: no cover
+    except Exception as exc:  # pragma: no cover
         log.warning("signatures: contact lookup failed for %s: %s", author_email, exc)
         return {"applied": False, "reason": "lookup_error"}
     if not contact:
@@ -537,17 +582,14 @@ def parse_item_body(item: dict, threshold: float = DEFAULT_CONFIDENCE_THRESHOLD)
         fields = parse_signature(block, sender_domain=sender_domain)
         if fields.is_empty():
             return {"applied": False, "reason": "no_signal"}
-        result = apply_to_contact(
-            contact["contact_id"], fields, threshold=threshold
-        )
+        result = apply_to_contact(contact["contact_id"], fields, threshold=threshold)
         return {
             "applied": result.get("updated", False),
-            "fields":  result.get("fields", []),
+            "fields": result.get("fields", []),
             "contact_id": contact["contact_id"],
         }
-    except Exception as exc:                                # pragma: no cover
-        log.warning("signatures: parse failed for item %s: %s",
-                    item.get("item_id"), exc)
+    except Exception as exc:  # pragma: no cover
+        log.warning("signatures: parse failed for item %s: %s", item.get("item_id"), exc)
         return {"applied": False, "reason": "parse_error"}
 
 
@@ -569,7 +611,9 @@ def reparse_all_items(threshold: float = DEFAULT_CONFIDENCE_THRESHOLD) -> dict:
             fields_written += len(result.get("fields") or [])
     log.info(
         "signatures: rebuild scanned %d items, enriched %d contacts, wrote %d fields",
-        items_scanned, items_applied, fields_written,
+        items_scanned,
+        items_applied,
+        fields_written,
     )
     return {
         "items_scanned": items_scanned,
@@ -580,13 +624,12 @@ def reparse_all_items(threshold: float = DEFAULT_CONFIDENCE_THRESHOLD) -> dict:
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
+
 def _looks_like_email_or_url(line: str) -> bool:
     """True if a line is just a URL or an email address (poor name candidate)."""
     if "@" in line and re.search(r"\S+@\S+\.\S+", line):
         return True
-    if re.match(r"^\s*(https?://|www\.)", line, re.I):
-        return True
-    return False
+    return bool(re.match(r"^\s*(https?://|www\.)", line, re.I))
 
 
 def _has_title_keyword(line: str) -> bool:
@@ -598,13 +641,25 @@ def _has_title_keyword(line: str) -> bool:
 #: Free-mail providers we should never use as an employer guess.  These domains
 #: tell us nothing about who someone works for.
 _FREEMAIL_DOMAINS = {
-    "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com",
-    "aol.com", "live.com", "me.com", "msn.com", "protonmail.com",
-    "proton.me", "fastmail.com", "gmx.com", "yandex.com", "mail.com",
+    "gmail.com",
+    "yahoo.com",
+    "outlook.com",
+    "hotmail.com",
+    "icloud.com",
+    "aol.com",
+    "live.com",
+    "me.com",
+    "msn.com",
+    "protonmail.com",
+    "proton.me",
+    "fastmail.com",
+    "gmx.com",
+    "yandex.com",
+    "mail.com",
 }
 
 
-def _employer_from_domain(domain: str) -> Optional[str]:
+def _employer_from_domain(domain: str) -> str | None:
     """Best-effort 'turn acme.com into Acme' fallback for the employer field.
 
     Returns None for free-mail providers (gmail.com etc) where the domain

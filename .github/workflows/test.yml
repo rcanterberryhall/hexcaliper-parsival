@@ -25,3 +25,36 @@ jobs:
 
       - name: Run tests
         run: pytest --tb=short --cov=api --cov-report=term-missing
+
+      # The gates below use !cancelled() rather than running before the tests, so
+      # one failing gate never hides the others or the test results — every run
+      # reports the full picture. They still fail the build.
+
+      - name: Generator self-test
+        if: ${{ !cancelled() }}
+        run: python scripts/test_gen_code_map.py
+
+      # DOC-008: documentation drift fails the build. --check writes nothing and
+      # renders from the same desired-state the write path uses, so a clean check
+      # guarantees regeneration would be a no-op.
+      - name: Code map up to date
+        if: ${{ !cancelled() }}
+        run: python scripts/gen_code_map.py --src-root api --flat --check
+
+      # CODE-001: the ratchet described in pyproject.toml. api/ is enforced; the
+      # eight modules listed there are named debt. scripts/ is not yet included —
+      # it carries 7 pre-existing errors, mostly in thunderbird_sidecar.py.
+      - name: Type check
+        if: ${{ !cancelled() }}
+        run: mypy api
+
+      # CODE-003: lint and format both gate the build, with ruff pinned to an
+      # exact version in requirements-dev.txt so the gate cannot drift between a
+      # developer's machine and CI. Both are clean as of the lint-debt pass.
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: ruff check .
+
+      - name: Format
+        if: ${{ !cancelled() }}
+        run: ruff format --check .

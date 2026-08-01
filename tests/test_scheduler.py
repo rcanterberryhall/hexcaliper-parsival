@@ -7,8 +7,6 @@ Checks that:
  - Existing timers are cancelled when schedule is replaced
  - Scans are skipped when one is already running
 """
-import time
-from unittest.mock import MagicMock, patch
 
 import orchestrator
 
@@ -37,7 +35,7 @@ def test_scheduler_update_clears_old_timers():
         old_timer = orchestrator._schedule["slack"]["timer"]
     # Replace schedule
     orchestrator.scheduler_update({"slack": 30})
-    assert old_timer.finished.is_set()   # Timer.cancel() sets finished
+    assert old_timer.finished.is_set()  # Timer.cancel() sets finished
     _reset()
 
 
@@ -54,7 +52,7 @@ def test_get_schedule_status_has_next_run():
     status = orchestrator.get_schedule_status()
     assert "github" in status
     assert status["github"]["interval_min"] == 30
-    assert status["github"]["next_run"] is not None   # ISO string
+    assert status["github"]["next_run"] is not None  # ISO string
     assert status["github"]["last_run"] is None
     _reset()
 

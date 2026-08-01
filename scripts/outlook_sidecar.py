@@ -2,8 +2,8 @@
 outlook_sidecar.py — Outlook email ingestion sidecar (Windows).
 
 Reads recent emails from the local Outlook client via ``win32com`` and
-POSTs them to the Squire ``/ingest`` endpoint.  Intended to run on the
-Windows host machine where Outlook is installed; the Squire Docker stack
+POSTs them to the Parsival ``/ingest`` endpoint.  Intended to run on the
+Windows host machine where Outlook is installed; the Parsival Docker stack
 does not have access to ``win32com`` and relies on this script to supply
 email data.
 
@@ -51,36 +51,38 @@ Usage::
 
 Schedule with Windows Task Scheduler to run every 30–60 minutes.
 """
+
+import json
 import os
 import re
 import sys
-import json
 import time
-import requests
-from pathlib import Path
 from datetime import datetime, timedelta
+from pathlib import Path
 
-PAGE_API_URL        = "https://parsival.hexcaliper.com/page/api"
-LOOKBACK_HOURS      = 48
-MAX_EMAILS          = 75
-SEED_LOOKBACK_HOURS = 720   # 30 days
-SEED_MAX_EMAILS     = 500
+import requests
+
+PAGE_API_URL = "https://parsival.hexcaliper.com/page/api"
+LOOKBACK_HOURS = 48
+MAX_EMAILS = 75
+SEED_LOOKBACK_HOURS = 720  # 30 days
+SEED_MAX_EMAILS = 500
 TEST_LOOKBACK_HOURS = 24
-TEST_MAX_EMAILS     = 5
+TEST_MAX_EMAILS = 5
 
 # Windows Credential Manager service name used by keyring.
 _KEYRING_SERVICE = "hexcaliper-squire"
-_KEY_CLIENT_ID   = "cf_client_id"
+_KEY_CLIENT_ID = "cf_client_id"
 _KEY_CLIENT_SECRET = "cf_client_secret"
 
 # High-water-mark state.  The scheduled run persists the timestamp through which
 # email has been ingested, so after any offline gap (machine off / logged out)
 # the next run backfills *everything* since that mark rather than a fixed window.
 # Stored under LOCALAPPDATA so it survives git operations and log cleanup.
-_STATE_DIR   = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "hexcaliper-parsival"
-_STATE_FILE  = _STATE_DIR / "sidecar_state.json"
-_HWM_OVERLAP_HOURS = 1      # re-scan a little before the mark; /ingest dedupes by item_id
-_HWM_MAX_EMAILS    = 5000   # generous per-folder cap for long-gap backfills
+_STATE_DIR = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "hexcaliper-parsival"
+_STATE_FILE = _STATE_DIR / "sidecar_state.json"
+_HWM_OVERLAP_HOURS = 1  # re-scan a little before the mark; /ingest dedupes by item_id
+_HWM_MAX_EMAILS = 5000  # generous per-folder cap for long-gap backfills
 
 
 def _load_high_water_mark() -> "datetime | None":
@@ -135,7 +137,7 @@ def _load_credentials() -> tuple[str, str]:
     except ImportError:
         sys.exit("ERROR: keyring not installed.  Run: pip install keyring")
 
-    client_id     = keyring.get_password(_KEYRING_SERVICE, _KEY_CLIENT_ID)     or ""
+    client_id = keyring.get_password(_KEYRING_SERVICE, _KEY_CLIENT_ID) or ""
     client_secret = keyring.get_password(_KEYRING_SERVICE, _KEY_CLIENT_SECRET) or ""
 
     if not client_id or not client_secret:
@@ -160,15 +162,15 @@ def _setup() -> None:
     except ImportError:
         sys.exit("ERROR: keyring not installed.  Run: pip install keyring")
 
-    print("Hexcaliper Squire — Credential Setup")
+    print("Hexcaliper Parsival — Credential Setup")
     print("Credentials will be stored in Windows Credential Manager.\n")
-    client_id     = input("CF Access Client ID:     ").strip()
+    client_id = input("CF Access Client ID:     ").strip()
     client_secret = input("CF Access Client Secret: ").strip()
 
     if not client_id or not client_secret:
         sys.exit("ERROR: Both values are required.")
 
-    keyring.set_password(_KEYRING_SERVICE, _KEY_CLIENT_ID,     client_id)
+    keyring.set_password(_KEYRING_SERVICE, _KEY_CLIENT_ID, client_id)
     keyring.set_password(_KEYRING_SERVICE, _KEY_CLIENT_SECRET, client_secret)
     print("\nCredentials saved to Windows Credential Manager.")
 
@@ -187,11 +189,11 @@ def _read_recipients(msg) -> tuple[list[str], list[str]]:
     to_list, cc_list = [], []
     try:
         for r in msg.Recipients:
-            addr  = getattr(r, "Address", "") or ""
-            name  = getattr(r, "Name", "")    or ""
+            addr = getattr(r, "Address", "") or ""
+            name = getattr(r, "Name", "") or ""
             entry = f"{name} <{addr}>" if name and addr else (name or addr)
             rtype = getattr(r, "Type", 1)
-            if rtype == 1:    # olTo
+            if rtype == 1:  # olTo
                 to_list.append(entry)
             elif rtype == 2:  # olCC
                 cc_list.append(entry)
@@ -208,7 +210,7 @@ def _normalise_subject(subject: str) -> str:
     :param subject: Raw email subject string.
     :return: Cleaned subject with reply/forward prefixes removed.
     """
-    return re.sub(r'^(Re|Fwd?|AW|WG):\s*', '', subject or "", flags=re.IGNORECASE).strip()
+    return re.sub(r"^(Re|Fwd?|AW|WG):\s*", "", subject or "", flags=re.IGNORECASE).strip()
 
 
 def _fetch_folder(
@@ -231,7 +233,7 @@ def _fetch_folder(
                        (``"ReceivedTime"`` for Inbox, ``"SentOn"`` for Sent).
     :return: List of normalised email dicts.
     """
-    folder   = ns.GetDefaultFolder(folder_id)
+    folder = ns.GetDefaultFolder(folder_id)
     messages = folder.Items
     messages.Sort(f"[{time_field}]", True)
 
@@ -246,65 +248,73 @@ def _fetch_folder(
     count = messages.Count
     for index in range(1, min(count, max_emails) + 1):
         try:
-            msg      = messages.Item(index)
-            subject  = getattr(msg, "Subject", None)
-            ts_com   = getattr(msg, time_field, None)
+            msg = messages.Item(index)
+            subject = getattr(msg, "Subject", None)
+            ts_com = getattr(msg, time_field, None)
             if ts_com is None:
                 continue
 
             dt = datetime(
-                ts_com.year, ts_com.month, ts_com.day,
-                ts_com.hour, ts_com.minute, ts_com.second,
+                ts_com.year,
+                ts_com.month,
+                ts_com.day,
+                ts_com.hour,
+                ts_com.minute,
+                ts_com.second,
             )
             if dt < cutoff:
                 break
 
-            body         = re.sub(r'\n{3,}', '\n\n', (getattr(msg, "Body", "") or "")).strip()
-            sender_name  = getattr(msg, "SenderName", "")        or ""
+            body = re.sub(r"\n{3,}", "\n\n", (getattr(msg, "Body", "") or "")).strip()
+            sender_name = getattr(msg, "SenderName", "") or ""
             sender_email = getattr(msg, "SenderEmailAddress", "") or ""
             to_list, cc_list = _read_recipients(msg)
 
             # Detect reply/forward via LastVerbExecuted (inbox only; sent = 0):
             # 102 = olReplyToSender, 103 = olReplyToAll, 104 = olForward
-            last_verb    = getattr(msg, "LastVerbExecuted", 0) or 0
-            is_replied   = last_verb in (102, 103)
+            last_verb = getattr(msg, "LastVerbExecuted", 0) or 0
+            is_replied = last_verb in (102, 103)
             is_forwarded = last_verb == 104
-            replied_at   = None
+            replied_at = None
             if last_verb in (102, 103, 104):
                 try:
                     rv = msg.LastVerbExecutionTime
                     replied_at = datetime(
-                        rv.year, rv.month, rv.day,
-                        rv.hour, rv.minute, rv.second,
+                        rv.year,
+                        rv.month,
+                        rv.day,
+                        rv.hour,
+                        rv.minute,
+                        rv.second,
                     ).isoformat()
                 except Exception:
                     pass
 
-            conv_id    = getattr(msg, "ConversationID", "")    or ""
-            conv_topic = _normalise_subject(
-                getattr(msg, "ConversationTopic", "") or subject or ""
-            )
+            conv_id = getattr(msg, "ConversationID", "") or ""
+            conv_topic = _normalise_subject(getattr(msg, "ConversationTopic", "") or subject or "")
 
-            items.append({
-                "source":    "outlook",
-                "item_id":   str(getattr(msg, "EntryID", "")),
-                "title":     subject or "(no subject)",
-                "body":      body[:3000],
-                "url":       "",
-                "author":    f"{sender_name} <{sender_email}>".strip(),
-                "timestamp": dt.isoformat(),
-                "metadata":  {
-                    "direction":          direction,
-                    "is_read":            getattr(msg, "UnRead", True) is False,
-                    "to":                 "; ".join(to_list),
-                    "cc":                 "; ".join(cc_list),
-                    "is_replied":         is_replied,
-                    "is_forwarded":       is_forwarded,
-                    "replied_at":         replied_at,
-                    "conversation_id":    conv_id,
-                    "conversation_topic": conv_topic,
-                },
-            })
+            items.append(
+                {
+                    "source": "outlook",
+                    "item_id": str(getattr(msg, "EntryID", "")),
+                    "title": subject or "(no subject)",
+                    "body": body[:3000],
+                    "url": "",
+                    "author": f"{sender_name} <{sender_email}>".strip(),
+                    "timestamp": dt.isoformat(),
+                    "metadata": {
+                        "direction": direction,
+                        "is_read": getattr(msg, "UnRead", True) is False,
+                        "to": "; ".join(to_list),
+                        "cc": "; ".join(cc_list),
+                        "is_replied": is_replied,
+                        "is_forwarded": is_forwarded,
+                        "replied_at": replied_at,
+                        "conversation_id": conv_id,
+                        "conversation_topic": conv_topic,
+                    },
+                }
+            )
         except Exception:
             continue
 
@@ -343,15 +353,23 @@ def fetch(lookback_hours: int = LOOKBACK_HOURS, max_emails: int = MAX_EMAILS) ->
 
         print("Fetching Inbox...", flush=True)
         inbox_items = _fetch_folder(
-            ns, folder_id=6, cutoff=cutoff, max_emails=max_emails,
-            direction="received", time_field="ReceivedTime",
+            ns,
+            folder_id=6,
+            cutoff=cutoff,
+            max_emails=max_emails,
+            direction="received",
+            time_field="ReceivedTime",
         )
         print(f"  Inbox: {len(inbox_items)} items", flush=True)
 
         print("Fetching Sent Items...", flush=True)
         sent_items = _fetch_folder(
-            ns, folder_id=5, cutoff=cutoff, max_emails=max_emails,
-            direction="sent", time_field="SentOn",
+            ns,
+            folder_id=5,
+            cutoff=cutoff,
+            max_emails=max_emails,
+            direction="sent",
+            time_field="SentOn",
         )
         print(f"  Sent:  {len(sent_items)} items", flush=True)
 
@@ -360,16 +378,16 @@ def fetch(lookback_hours: int = LOOKBACK_HOURS, max_emails: int = MAX_EMAILS) ->
         pythoncom.CoUninitialize()
 
 
-_POST_BATCH = 50   # items per /ingest request — keeps payloads well under nginx limits
+_POST_BATCH = 50  # items per /ingest request — keeps payloads well under nginx limits
 
 # Resilience knobs for post().  Transient failures (5xx, timeouts) are retried;
 # a batch that still fails is bisected to isolate a single "poison" item, which
 # is skipped so one malformed email cannot stall the whole run.  If more than
 # _MAX_SKIPPED_ITEMS are dropped the failure looks systemic, so the run aborts
 # without advancing the high-water mark and retries everything next time.
-_POST_RETRIES      = 3    # attempts per group before bisecting / skipping
-_POST_BACKOFF_SEC  = 2    # base backoff between retries (scaled by attempt number)
-_MAX_SKIPPED_ITEMS = 10   # abort the run if more than this many items are dropped
+_POST_RETRIES = 3  # attempts per group before bisecting / skipping
+_POST_BACKOFF_SEC = 2  # base backoff between retries (scaled by attempt number)
+_MAX_SKIPPED_ITEMS = 10  # abort the run if more than this many items are dropped
 
 
 def _exit_on_http_error(exc: "requests.HTTPError") -> None:
@@ -434,7 +452,7 @@ def _ingest_with_retry(items: list[dict], headers: dict, dropped: list[dict]) ->
         except requests.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
             if status in (401, 403):
-                _exit_on_http_error(e)          # bad creds — systemic, abort
+                _exit_on_http_error(e)  # bad creds — systemic, abort
             last_exc = e
             # Deterministic client errors (except 429) won't change on retry.
             if status is not None and 400 <= status < 500 and status != 429:
@@ -474,7 +492,7 @@ def _ingest_with_retry(items: list[dict], headers: dict, dropped: list[dict]) ->
 
 def post(items: list[dict], client_id: str, client_secret: str) -> None:
     """
-    POST fetched email items to the Squire ``/ingest`` endpoint in batches.
+    POST fetched email items to the Parsival ``/ingest`` endpoint in batches.
 
     Large seed runs (500 emails) would exceed nginx's default body-size limit
     in a single request.  Items are chunked into batches of ``_POST_BATCH``
@@ -501,21 +519,24 @@ def post(items: list[dict], client_id: str, client_secret: str) -> None:
         return
 
     headers = {
-        "CF-Access-Client-Id":     client_id,
+        "CF-Access-Client-Id": client_id,
         "CF-Access-Client-Secret": client_secret,
     }
     total_received = total_skipped = 0
     dropped: list[dict] = []
-    batches = [items[i:i + _POST_BATCH] for i in range(0, len(items), _POST_BATCH)]
+    batches = [items[i : i + _POST_BATCH] for i in range(0, len(items), _POST_BATCH)]
     for idx, batch in enumerate(batches, 1):
         recv, skip = _ingest_with_retry(batch, headers, dropped)
         total_received += recv
-        total_skipped  += skip
+        total_skipped += skip
         print(f"  Batch {idx}/{len(batches)}: accepted {recv}, skipped {skip}", flush=True)
 
     if dropped:
         ids = ", ".join(d.get("item_id", "?") for d in dropped)
-        print(f"WARNING: {len(dropped)} item(s) could not be ingested and were skipped: {ids}", flush=True)
+        print(
+            f"WARNING: {len(dropped)} item(s) could not be ingested and were skipped: {ids}",
+            flush=True,
+        )
 
     print(
         f"Done — {len(items)} sent, {total_received} accepted, {total_skipped} skipped"
@@ -587,7 +608,7 @@ def _seed_and_infer() -> None:
     print(f"High-water mark set to {seed_start.isoformat()}", flush=True)
 
     headers = {
-        "CF-Access-Client-Id":     cf_id,
+        "CF-Access-Client-Id": cf_id,
         "CF-Access-Client-Secret": cf_secret,
     }
 
@@ -603,7 +624,7 @@ def _seed_and_infer() -> None:
         sys.exit(f"ERROR starting seed state machine: {e}")
 
     terminal_states = {"review", "error", "done", "idle"}
-    last_progress   = ""
+    last_progress = ""
     while True:
         time.sleep(5)
         try:
@@ -614,7 +635,7 @@ def _seed_and_infer() -> None:
             print(f"  (poll error: {e})", flush=True)
             continue
 
-        state    = job.get("state", "")
+        state = job.get("state", "")
         progress = job.get("progress", "")
 
         if progress != last_progress:
@@ -627,9 +648,9 @@ def _seed_and_infer() -> None:
     if state == "review":
         print(
             "\nProject inference complete — the LLM has proposed projects for review.\n"
-            "Open the Squire UI to review, edit, and confirm:\n"
+            "Open the Parsival UI to review, edit, and confirm:\n"
             f"  {PAGE_API_URL.replace('/page/api', '/page/')}\n"
-            "After confirming, Squire will re-analyse all items with the new project config.",
+            "After confirming, Parsival will re-analyse all items with the new project config.",
             flush=True,
         )
     elif state == "error":
@@ -663,7 +684,7 @@ def _run_scheduled() -> None:
     cf_id, cf_secret = _load_credentials()
 
     run_start = datetime.now()
-    hwm       = _load_high_water_mark()
+    hwm = _load_high_water_mark()
     if hwm is None:
         lookback_hours = LOOKBACK_HOURS
         print(f"No prior state — first run, fetching last {lookback_hours}h...", flush=True)
@@ -687,14 +708,11 @@ def _run_scheduled() -> None:
             flush=True,
         )
 
-    post(emails, cf_id, cf_secret)   # sys.exits on failure, so reaching here == success
+    post(emails, cf_id, cf_secret)  # sys.exits on failure, so reaching here == success
 
     # Advance the mark only after a successful post.  Use the newest email seen
     # (never moving backward); if nothing new, the window is clean through run_start.
-    if emails:
-        new_mark = max(datetime.fromisoformat(e["timestamp"]) for e in emails)
-    else:
-        new_mark = run_start
+    new_mark = max(datetime.fromisoformat(e["timestamp"]) for e in emails) if emails else run_start
     if hwm is not None:
         new_mark = max(new_mark, hwm)
     _save_high_water_mark(new_mark)
@@ -711,7 +729,10 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "--seed":
         cf_id, cf_secret = _load_credentials()
         seed_start = datetime.now()
-        print(f"SEED MODE — fetching Outlook emails (last {SEED_LOOKBACK_HOURS}h / {SEED_LOOKBACK_HOURS//24} days, cap {SEED_MAX_EMAILS})...", flush=True)
+        print(
+            f"SEED MODE — fetching Outlook emails (last {SEED_LOOKBACK_HOURS}h / {SEED_LOOKBACK_HOURS // 24} days, cap {SEED_MAX_EMAILS})...",
+            flush=True,
+        )
         emails = fetch(lookback_hours=SEED_LOOKBACK_HOURS, max_emails=SEED_MAX_EMAILS)
         print(f"Found {len(emails)} emails", flush=True)
         post(emails, cf_id, cf_secret)

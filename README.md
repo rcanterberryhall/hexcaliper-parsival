@@ -4,6 +4,10 @@ Parsival is one of three apps in the [Hexcaliper](https://github.com/rcanterberr
 
 Parsival includes scheduled auto-scans, an adaptive attention model that learns from your behavior, a situation lifecycle workflow, pre-scan noise filters, and encrypted credential storage.
 
+Recent changes are recorded in [CHANGELOG.md](CHANGELOG.md). For a tour of the
+source layout — the module layer map and per-module public API — see
+[docs/code_map.md](docs/code_map.md).
+
 ## Architecture
 
 ```

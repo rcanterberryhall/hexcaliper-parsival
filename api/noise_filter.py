@@ -1,5 +1,4 @@
-"""
-noise_filter.py — Pre-scan noise filter evaluation.
+"""noise_filter.py — Pre-scan noise filter evaluation.
 
 Filters are evaluated against each RawItem before the LLM pipeline runs.
 Matching items are stored with category='filtered' and skipped by the analyser.
@@ -20,6 +19,7 @@ Rule schema (as stored in settings["noise_filters"])::
       {"type": "distribution_list",  "value": "all-company@"},
     ]
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -27,15 +27,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from models import RawItem
 
-VALID_RULE_TYPES = frozenset({
-    "sender_contains",
-    "subject_contains",
-    "source_repo",
-    "distribution_list",
-})
+VALID_RULE_TYPES = frozenset(
+    {
+        "sender_contains",
+        "subject_contains",
+        "source_repo",
+        "distribution_list",
+    }
+)
 
 
-def _matches(rule: dict, item: "RawItem") -> bool:
+def _matches(rule: dict, item: RawItem) -> bool:
     rtype = rule.get("type", "")
     value = rule.get("value", "")
     if not value:
@@ -57,10 +59,10 @@ def _matches(rule: dict, item: "RawItem") -> bool:
     return False
 
 
-def should_filter(item: "RawItem", rules: list[dict]) -> tuple[bool, str | None]:
-    """
-    Return ``(True, matched_rule_type)`` if any rule matches *item*,
-    else ``(False, None)``.
+def should_filter(item: RawItem, rules: list[dict]) -> tuple[bool, str | None]:
+    """Return whether any pre-scan noise rule matches *item*.
+
+    ``(True, matched_rule_type)`` when a rule matches, else ``(False, None)``.
     """
     for rule in rules:
         if _matches(rule, item):
@@ -69,9 +71,7 @@ def should_filter(item: "RawItem", rules: list[dict]) -> tuple[bool, str | None]
 
 
 def validate_rule(rule: dict) -> str | None:
-    """
-    Validate a single filter rule.  Returns an error string or None if valid.
-    """
+    """Validate a single filter rule.  Returns an error string or None if valid."""
     if rule.get("type") not in VALID_RULE_TYPES:
         return f"Unknown filter type '{rule.get('type')}'. Valid: {sorted(VALID_RULE_TYPES)}"
     if not rule.get("value", "").strip():

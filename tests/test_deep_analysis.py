@@ -1,45 +1,53 @@
 """tests/test_deep_analysis.py — Tests for deep analysis endpoints."""
+
 import uuid
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from app import situations_tbl, analyses, intel_tbl
+from app import analyses, intel_tbl, situations_tbl
 
 
 def _sit(sit_id=None, item_ids=None, project_tag=None):
     sit_id = sit_id or str(uuid.uuid4())
     return {
-        "situation_id":     sit_id,
-        "title":            "Service degradation detected",
-        "summary":          "Multiple sources indicate elevated error rates.",
-        "status":           "in_progress",
-        "item_ids":         item_ids or ["item-1", "item-2"],
-        "sources":          ["github", "slack"],
-        "project_tag":      project_tag,
-        "score":            1.8,
-        "priority":         "high",
-        "open_actions":     [{"description": "Investigate root cause", "owner": "me"}],
-        "references":       [],
-        "key_context":      None,
-        "last_updated":     "2026-04-01T10:00:00+00:00",
-        "created_at":       "2026-04-01T10:00:00+00:00",
+        "situation_id": sit_id,
+        "title": "Service degradation detected",
+        "summary": "Multiple sources indicate elevated error rates.",
+        "status": "in_progress",
+        "item_ids": item_ids or ["item-1", "item-2"],
+        "sources": ["github", "slack"],
+        "project_tag": project_tag,
+        "score": 1.8,
+        "priority": "high",
+        "open_actions": [{"description": "Investigate root cause", "owner": "me"}],
+        "references": [],
+        "key_context": None,
+        "last_updated": "2026-04-01T10:00:00+00:00",
+        "created_at": "2026-04-01T10:00:00+00:00",
         "score_updated_at": "2026-04-01T10:00:00+00:00",
-        "dismissed":        False,
+        "dismissed": False,
     }
 
 
 def _analysis(item_id, source="github"):
     return {
-        "item_id": item_id, "source": source, "title": f"Item {item_id}",
-        "author": "eng@example.com", "timestamp": "2026-04-01T10:00:00+00:00",
-        "url": "", "has_action": False, "priority": "high", "category": "fyi",
-        "summary": "Error spike on service.", "urgency": None,
-        "action_items": "[]", "processed_at": "2026-04-01T10:00:00+00:00",
+        "item_id": item_id,
+        "source": source,
+        "title": f"Item {item_id}",
+        "author": "eng@example.com",
+        "timestamp": "2026-04-01T10:00:00+00:00",
+        "url": "",
+        "has_action": False,
+        "priority": "high",
+        "category": "fyi",
+        "summary": "Error spike on service.",
+        "urgency": None,
+        "action_items": "[]",
+        "processed_at": "2026-04-01T10:00:00+00:00",
     }
 
 
 # ── POST /situations/{id}/deep-analysis ───────────────────────────────────────
+
 
 def test_submit_deep_analysis_returns_job_id(client):
     situations_tbl.insert(_sit(sit_id="sit-da-1", item_ids=["item-1"]))
@@ -83,6 +91,7 @@ def test_submit_deep_analysis_502_when_merllm_unreachable(client):
 
 # ── POST /situations/{id}/deep-analysis/save ──────────────────────────────────
 
+
 def test_save_deep_analysis_stores_intel_item(client):
     situations_tbl.insert(_sit(sit_id="sit-save-1", item_ids=["item-3"], project_tag="proj-x"))
     analyses.insert(_analysis("item-3"))
@@ -93,8 +102,7 @@ def test_save_deep_analysis_stores_intel_item(client):
     mock_response.json.return_value = {"id": "job-xyz", "result": "Deep analysis text here."}
 
     with patch("app.http_requests.get", return_value=mock_response):
-        r = client.post("/situations/sit-save-1/deep-analysis/save",
-                        json={"job_id": "job-xyz"})
+        r = client.post("/situations/sit-save-1/deep-analysis/save", json={"job_id": "job-xyz"})
 
     assert r.status_code == 200
     assert r.json()["ok"] is True
@@ -114,8 +122,7 @@ def test_save_deep_analysis_404_for_unknown_situation(client):
     mock_response.json.return_value = {"result": "some result"}
 
     with patch("app.http_requests.get", return_value=mock_response):
-        r = client.post("/situations/nonexistent/deep-analysis/save",
-                        json={"job_id": "job-xyz"})
+        r = client.post("/situations/nonexistent/deep-analysis/save", json={"job_id": "job-xyz"})
     assert r.status_code == 404
 
 
@@ -127,8 +134,9 @@ def test_save_deep_analysis_409_when_job_not_complete(client):
     mock_response.json.return_value = {"detail": "Job status: queued"}
 
     with patch("app.http_requests.get", return_value=mock_response):
-        r = client.post("/situations/sit-save-2/deep-analysis/save",
-                        json={"job_id": "job-not-done"})
+        r = client.post(
+            "/situations/sit-save-2/deep-analysis/save", json={"job_id": "job-not-done"}
+        )
     assert r.status_code == 409
 
 
@@ -140,11 +148,14 @@ def test_save_deep_analysis_requires_job_id(client):
 
 # ── GET /batch/status/{job_id} ────────────────────────────────────────────────
 
+
 def test_proxy_batch_status_returns_job_info(client):
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        "id": "job-abc", "status": "queued", "source_app": "parsival"
+        "id": "job-abc",
+        "status": "queued",
+        "source_app": "parsival",
     }
 
     with patch("app.http_requests.get", return_value=mock_response):

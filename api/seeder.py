@@ -1,5 +1,4 @@
-"""
-seeder.py — Seed state machine for bootstrapping project config.
+"""seeder.py — Seed state machine for bootstrapping project config.
 
 Implements the multi-stage seed workflow that bootstraps project and topic
 configuration from an existing corpus using a map-reduce LLM pass:
@@ -15,35 +14,42 @@ configuration from an existing corpus using a map-reduce LLM pass:
 Uses db.py directly for all persistence.  scan_state, run_scan_fn,
 run_reanalyze_fn, and maybe_form_situation_fn are injected via init().
 """
-import json
-import threading
 
-import requests as http_requests
+import json
+import logging
+import threading
+from collections.abc import Callable
+from typing import Any
 
 import config
 import db
 import llm
 
-# ── Module-level references, set by init() ────────────────────────────────────
+log = logging.getLogger(__name__)
 
-_scan_state:          dict = {}
-_run_scan                   = None
-_run_reanalyze              = None
-_maybe_form_situation       = None
+# ── Module-level references, set by init() ────────────────────────────────────
+#
+# These start as None and are injected by init() at startup rather than imported,
+# which keeps seeder from importing app.py and creating a cycle.  The Optional
+# annotations tell the type checker the same thing: None until init() runs.
+
+_scan_state: dict = {}
+_run_scan: Callable[..., Any] | None = None
+_run_reanalyze: Callable[..., Any] | None = None
+_maybe_form_situation: Callable[..., Any] | None = None
 
 _seed_job: dict = {"status": "idle"}
 
 
 def init(scan_state: dict, run_scan_fn, run_reanalyze_fn, maybe_form_situation_fn) -> None:
-    """
-    Inject shared state and callables from app.py.
+    """Inject shared state and callables from app.py.
 
     Must be called once at startup before any seed endpoints are invoked.
     """
     global _scan_state, _run_scan, _run_reanalyze, _maybe_form_situation
-    _scan_state           = scan_state
-    _run_scan             = run_scan_fn
-    _run_reanalyze        = run_reanalyze_fn
+    _scan_state = scan_state
+    _run_scan = run_scan_fn
+    _run_reanalyze = run_reanalyze_fn
     _maybe_form_situation = maybe_form_situation_fn
 
 
@@ -129,15 +135,16 @@ Respond ONLY with valid JSON — no markdown, no explanation:
 
 # ── Background job ─────────────────────────────────────────────────────────────
 
+
 def _run_seed_job(context: str) -> None:
-    """
-    Background thread for POST /seed.  Implements the full bootstrap state machine:
+    """Background thread for POST /seed, implementing the bootstrap state machine.
 
     waiting_for_ingest → analyzing → review (thread exits; user applies)
 
     After apply, seed_apply() transitions to reanalyzing → scan_prompt → done.
     """
     import time
+
     global _seed_job
     try:
         user_name = config.USER_NAME or "the user"
@@ -150,16 +157,23 @@ def _run_seed_job(context: str) -> None:
             pending = _scan_state.get("ingest_pending", 0)
             if item_count > 0:
                 seen_items = True
-            _seed_job.update({
-                "state":          "waiting_for_ingest",
-                "item_count":     item_count,
-                "ingest_pending": pending,
-                "progress":       (
-                    f"{item_count} item{'s' if item_count != 1 else ''} received"
-                    + (f", {pending} processing…" if pending else
-                       " — ingest complete" if seen_items else "")
-                ),
-            })
+            _seed_job.update(
+                {
+                    "state": "waiting_for_ingest",
+                    "item_count": item_count,
+                    "ingest_pending": pending,
+                    "progress": (
+                        f"{item_count} item{'s' if item_count != 1 else ''} received"
+                        + (
+                            f", {pending} processing…"
+                            if pending
+                            else " — ingest complete"
+                            if seen_items
+                            else ""
+                        )
+                    ),
+                }
+            )
             if pending == 0:
                 break
             if _seed_job.get("cancelled"):
@@ -201,38 +215,40 @@ def _run_seed_job(context: str) -> None:
 
         def _sort_key(a):
             is_pd = 1 if a.get("is_passdown") else 0
-            pri   = priority_rank.get(a.get("priority", "low"), 1)
+            pri = priority_rank.get(a.get("priority", "low"), 1)
             return (is_pd, pri)
 
         all_items.sort(key=_sort_key, reverse=True)
         all_items = all_items[:120]
 
         passdown_count = sum(1 for a in all_items if a.get("is_passdown"))
-        n_items        = len(all_items)
+        n_items = len(all_items)
 
         batch_size = 15
-        n_batches  = max(1, (n_items + batch_size - 1) // batch_size)
+        n_batches = max(1, (n_items + batch_size - 1) // batch_size)
 
-        print(f"[seed] analysing {n_items} items ({passdown_count} passdowns) in {n_batches} batches")
+        log.info(
+            "analysing %s items (%s passdowns) in %s batches", n_items, passdown_count, n_batches
+        )
         _seed_job["progress"] = f"Analysing {n_items} items ({passdown_count} passdowns)…"
 
         # Map pass
-        map_results  = []
+        map_results = []
         last_map_err = None
         for batch_num, batch_start in enumerate(range(0, n_items, batch_size), 1):
             if _seed_job.get("cancelled") or _scan_state.get("cancelled"):
                 _seed_job.update({"state": "idle", "status": "idle", "progress": "Cancelled."})
                 return
             _seed_job["progress"] = f"Map pass: batch {batch_num}/{n_batches}…"
-            batch = all_items[batch_start:batch_start + batch_size]
+            batch = all_items[batch_start : batch_start + batch_size]
             lines = []
             for a in batch:
-                source   = a.get("source", "?")
-                title    = a.get("title", "(no title)")
-                summary  = (a.get("summary", "") or "")[:120]
+                source = a.get("source", "?")
+                title = a.get("title", "(no title)")
+                summary = (a.get("summary", "") or "")[:120]
                 priority = a.get("priority", "low")
-                is_pd    = a.get("is_passdown", False)
-                suffix   = " [passdown]" if is_pd else ""
+                is_pd = a.get("is_passdown", False)
+                suffix = " [passdown]" if is_pd else ""
                 lines.append(f"[{source}]{suffix} {title}: {summary} ({priority})")
             items_block = "\n".join(lines)
 
@@ -242,38 +258,48 @@ def _run_seed_job(context: str) -> None:
                 existing_projects_block=existing_projects_block,
                 items_block=items_block,
             )
-            print(f"[seed] map batch {batch_num}/{n_batches}: {len(batch)} items")
+            log.info("map batch %s/%s: %s items", batch_num, n_batches, len(batch))
             try:
-                # No parsival-side throttle (squire#33): merLLM is the
+                # No parsival-side throttle (parsival#33): merLLM is the
                 # single source of truth for GPU concurrency, so we just
                 # call llm.generate directly and let merLLM's tracked
                 # queue do the gating.
                 text = llm.generate(
-                    prompt, format="json", temperature=0.2,
-                    num_predict=900, timeout=120,
+                    prompt,
+                    format="json",
+                    temperature=0.2,
+                    num_predict=900,
+                    timeout=120,
                     priority="background",
                 )
-                print(f"[seed] map batch {batch_num} raw response: {text!r}")
+                log.debug("map batch %s raw response: %r", batch_num, text)
                 data = json.loads(text or "{}")
-                print(f"[seed] map batch {batch_num}: {len(data.get('projects', []))} projects, {len(data.get('concerns', []))} concerns")
+                log.info(
+                    "map batch %s: %s projects, %s concerns",
+                    batch_num,
+                    len(data.get("projects", [])),
+                    len(data.get("concerns", [])),
+                )
                 map_results.append(data)
             except Exception as e:
                 last_map_err = str(e)
-                print(f"[seed] map batch {batch_start} failed: {e}")
+                log.error("map batch %s failed: %s", batch_start, e)
                 continue
 
-        print(f"[seed] map pass complete: {len(map_results)}/{n_batches} batches succeeded")
+        log.info("map pass complete: %s/%s batches succeeded", len(map_results), n_batches)
         if not map_results:
             err_detail = f" ({last_map_err})" if last_map_err else ""
-            _seed_job.update({
-                "state":          "error",
-                "status":         "error",
-                "progress":       f"All map batches failed{err_detail}",
-                "projects":       [],
-                "topics":         [],
-                "item_count":     n_items,
-                "passdown_count": passdown_count,
-            })
+            _seed_job.update(
+                {
+                    "state": "error",
+                    "status": "error",
+                    "progress": f"All map batches failed{err_detail}",
+                    "projects": [],
+                    "topics": [],
+                    "item_count": n_items,
+                    "passdown_count": passdown_count,
+                }
+            )
             return
 
         # Reduce pass
@@ -282,7 +308,9 @@ def _run_seed_job(context: str) -> None:
         for i, mr in enumerate(map_results):
             projects_str = json.dumps(mr.get("projects", []))
             concerns_str = json.dumps(mr.get("concerns", []))
-            themes_parts.append(f"Batch {i + 1}:\n  projects: {projects_str}\n  concerns: {concerns_str}")
+            themes_parts.append(
+                f"Batch {i + 1}:\n  projects: {projects_str}\n  concerns: {concerns_str}"
+            )
         themes_block = "\n\n".join(themes_parts)
 
         reduce_prompt = REDUCE_PROMPT.format(
@@ -295,23 +323,26 @@ def _run_seed_job(context: str) -> None:
         )
 
         try:
-            # See the map-pass note above (squire#33): merLLM owns GPU
+            # See the map-pass note above (parsival#33): merLLM owns GPU
             # concurrency; parsival just submits.
             text = llm.generate(
-                reduce_prompt, format="json", temperature=0.2,
-                num_predict=1800, timeout=180,
+                reduce_prompt,
+                format="json",
+                temperature=0.2,
+                num_predict=1800,
+                timeout=180,
                 priority="background",
             )
-            print(f"[seed] reduce raw response: {text!r}")
-            final    = json.loads(text or "{}")
+            log.debug("reduce raw response: %r", text)
+            final = json.loads(text or "{}")
             projects = final.get("projects", [])
-            topics   = final.get("topics", [])
-            print(f"[seed] reduce result: {len(projects)} projects, {len(topics)} topics")
+            topics = final.get("topics", [])
+            log.info("reduce result: %s projects, %s topics", len(projects), len(topics))
         except Exception as e:
-            print(f"[seed] reduce failed: {e}")
-            projects   = []
+            log.error("reduce failed: %s", e)
+            projects = []
             seen_names = set()
-            topics     = []
+            topics = []
             for mr in map_results:
                 for p in mr.get("projects", []):
                     nm = p.get("name", "")
@@ -320,19 +351,21 @@ def _run_seed_job(context: str) -> None:
                         projects.append(p)
                 topics.extend(mr.get("concerns", []))
             topics = list(dict.fromkeys(topics))
-            print(f"[seed] reduce fallback: {len(projects)} projects, {len(topics)} topics")
+            log.info("reduce fallback: %s projects, %s topics", len(projects), len(topics))
 
-        print(f"[seed] final projects: {json.dumps(projects, indent=2)}")
-        print(f"[seed] final topics: {topics}")
-        _seed_job.update({
-            "state":          "review",
-            "status":         "running",
-            "progress":       f"Analysis complete — {n_items} items reviewed.",
-            "projects":       projects,
-            "topics":         topics,
-            "item_count":     n_items,
-            "passdown_count": passdown_count,
-        })
+        log.info("final projects: %s", json.dumps(projects, indent=2))
+        log.info("final topics: %s", topics)
+        _seed_job.update(
+            {
+                "state": "review",
+                "status": "running",
+                "progress": f"Analysis complete — {n_items} items reviewed.",
+                "projects": projects,
+                "topics": topics,
+                "item_count": n_items,
+                "passdown_count": passdown_count,
+            }
+        )
 
     except Exception as e:
         _seed_job.update({"state": "error", "status": "error", "progress": str(e)})
@@ -340,9 +373,10 @@ def _run_seed_job(context: str) -> None:
 
 # ── Public interface ───────────────────────────────────────────────────────────
 
+
 def start(context: str) -> dict:
-    """
-    Start the seed state machine.  Always succeeds immediately.
+    """Start the seed state machine.  Always succeeds immediately.
+
     Returns the current _seed_job state.
     """
     global _seed_job
@@ -351,11 +385,11 @@ def start(context: str) -> dict:
         return _seed_job
 
     _seed_job = {
-        "state":    "waiting_for_ingest",
-        "status":   "running",
+        "state": "waiting_for_ingest",
+        "status": "running",
         "progress": "Waiting for ingest…",
-        "context":  context,
-        "item_count":     0,
+        "context": context,
+        "item_count": 0,
         "ingest_pending": 0,
     }
     threading.Thread(target=_run_seed_job, args=(context,), daemon=True).start()
@@ -378,8 +412,7 @@ def cancel() -> None:
 
 
 def apply(body: dict, background_tasks) -> dict:
-    """
-    Apply the seed editor's confirmed projects and topics to settings.
+    """Apply the seed editor's confirmed projects and topics to settings.
 
     Steps:
     1. Merges new projects into config.PROJECTS (skipping duplicates).
@@ -395,8 +428,8 @@ def apply(body: dict, background_tasks) -> dict:
     """
     global _seed_job
     suggested_projects = body.get("projects", [])
-    suggested_topics   = body.get("topics", [])
-    retag              = body.get("retag", True)
+    suggested_topics = body.get("topics", [])
+    retag = body.get("retag", True)
 
     with db.lock:
         existing = db.get_settings()
@@ -404,7 +437,7 @@ def apply(body: dict, background_tasks) -> dict:
     current_projects: list[dict] = existing.get("projects", list(config.PROJECTS))
     current_names = {p.get("name", "").lower(): i for i, p in enumerate(current_projects)}
 
-    projects_added  = 0
+    projects_added = 0
     projects_merged = 0
     for sp in suggested_projects:
         name = sp.get("name", "").strip()
@@ -417,14 +450,11 @@ def apply(body: dict, background_tasks) -> dict:
             # Merge: add any new keywords the seed found into the existing project
             idx = current_names[name_lower]
             existing_kw = set(
-                k.lower() for k in
-                current_projects[idx].get("keywords", [])
+                k.lower()
+                for k in current_projects[idx].get("keywords", [])
                 + current_projects[idx].get("learned_keywords", [])
             )
-            new_kw = [
-                k for k in sp.get("keywords", [])
-                if k and k.lower() not in existing_kw
-            ]
+            new_kw = [k for k in sp.get("keywords", []) if k and k.lower() not in existing_kw]
             if new_kw:
                 current_projects[idx].setdefault("keywords", []).extend(new_kw)
                 projects_merged += 1
@@ -437,16 +467,18 @@ def apply(body: dict, background_tasks) -> dict:
             continue
 
         # New project — add with all fields from the seed editor
-        current_projects.append({
-            "name":             name,
-            "parent":           sp.get("parent", ""),
-            "description":      sp.get("description", ""),
-            "keywords":         sp.get("keywords", []),
-            "senders":          sp.get("senders", []),
-            "channels":         [],
-            "learned_keywords": [],
-            "learned_senders":  [],
-        })
+        current_projects.append(
+            {
+                "name": name,
+                "parent": sp.get("parent", ""),
+                "description": sp.get("description", ""),
+                "keywords": sp.get("keywords", []),
+                "senders": sp.get("senders", []),
+                "channels": [],
+                "learned_keywords": [],
+                "learned_senders": [],
+            }
+        )
         current_names[name_lower] = len(current_projects) - 1
         projects_added += 1
 
@@ -462,7 +494,7 @@ def apply(body: dict, background_tasks) -> dict:
             topics_added += 1
     new_focus_topics = ", ".join(existing_topics)
 
-    existing["projects"]     = current_projects
+    existing["projects"] = current_projects
     existing["focus_topics"] = new_focus_topics
     with db.lock:
         db.save_settings(existing)
@@ -477,11 +509,13 @@ def apply(body: dict, background_tasks) -> dict:
         updates = []  # (item_id, [matching_project_names])
         for item in all_items:
             existing_tags = db.parse_project_tags(item.get("project_tag"))
-            text = " ".join([
-                item.get("title", ""),
-                item.get("body_preview", ""),
-                item.get("summary", ""),
-            ]).lower()
+            text = " ".join(
+                [
+                    item.get("title", ""),
+                    item.get("body_preview", ""),
+                    item.get("summary", ""),
+                ]
+            ).lower()
             matched = []
             for proj in new_projects:
                 if proj["name"] in existing_tags:
@@ -500,33 +534,40 @@ def apply(body: dict, background_tasks) -> dict:
                     db.update_item(item_id, {"project_tag": tag_val})
 
     def _seed_embed_and_correlate() -> None:
-        """
-        Background task run after apply() to warm the embedding and
-        situation layers from the existing corpus.
+        """Warm the embedding and situation layers from the existing corpus.
+
+        Background task run after apply().
 
         Waits for reanalysis to complete first so embeddings and
         situations are built from fully updated item data (with correct
         project tags, categories, and priorities from the LLM).
         """
         import time as _time
+
         # Give the reanalysis thread a moment to start and set running=True
         _time.sleep(3)
         while _scan_state.get("running"):
             _time.sleep(3)
-        print("[seed] reanalysis complete — starting embedding sweep...")
+        log.info("reanalysis complete — starting embedding sweep...")
         try:
             from embedder import embed, update_project
+
             with db.lock:
                 all_items = db.get_all_items()
             for item in all_items:
                 tags = db.parse_project_tags(item.get("project_tag"))
                 if not tags:
                     continue
-                text = " ".join(filter(None, [
-                    item.get("title", ""),
-                    item.get("body_preview", ""),
-                    item.get("summary", ""),
-                ]))
+                text = " ".join(
+                    filter(
+                        None,
+                        [
+                            item.get("title", ""),
+                            item.get("body_preview", ""),
+                            item.get("summary", ""),
+                        ],
+                    )
+                )
                 if not text.strip():
                     continue
                 try:
@@ -534,21 +575,21 @@ def apply(body: dict, background_tasks) -> dict:
                     if vector:
                         for tag in tags:
                             update_project(
-                                project_name = tag,
-                                item_id      = item.get("item_id", ""),
-                                vector       = vector,
-                                category     = item.get("category", "fyi"),
-                                hierarchy    = item.get("hierarchy", "general"),
-                                source       = item.get("source", ""),
-                                priority     = item.get("priority", "medium"),
+                                project_name=tag,
+                                item_id=item.get("item_id", ""),
+                                vector=vector,
+                                category=item.get("category", "fyi"),
+                                hierarchy=item.get("hierarchy", "general"),
+                                source=item.get("source", ""),
+                                priority=item.get("priority", "medium"),
                             )
                 except Exception as e:
-                    print(f"[seed] embed {item.get('item_id')}: {e}")
-            print("[seed] embedding sweep complete")
+                    log.info("embed %s: %s", item.get("item_id"), e)
+            log.info("embedding sweep complete")
         except Exception as e:
-            print(f"[seed] embedding sweep failed: {e}")
+            log.error("embedding sweep failed: %s", e)
 
-        print("[seed] starting situation formation sweep...")
+        log.info("starting situation formation sweep...")
         try:
             with db.lock:
                 all_items = db.get_all_items()
@@ -557,57 +598,66 @@ def apply(body: dict, background_tasks) -> dict:
                 _scan_state["situations_pending"] += len(item_ids)
             for iid in item_ids:
                 try:
+                    if _maybe_form_situation is None:
+                        raise RuntimeError("seeder.init() has not been called")
                     _maybe_form_situation(iid)
                 except Exception as e:
-                    print(f"[seed] situation sweep {iid}: {e}")
+                    log.info("situation sweep %s: %s", iid, e)
                 finally:
                     with db.lock:
-                        _scan_state["situations_pending"] = max(0, _scan_state["situations_pending"] - 1)
-            print(f"[seed] situation sweep complete ({len(item_ids)} items)")
+                        _scan_state["situations_pending"] = max(
+                            0, _scan_state["situations_pending"] - 1
+                        )
+            log.info("situation sweep complete (%s items)", len(item_ids))
         except Exception as e:
-            print(f"[seed] situation sweep failed: {e}")
+            log.error("situation sweep failed: %s", e)
 
     background_tasks.add_task(_seed_embed_and_correlate)
 
-    _seed_job.update({
-        "state":    "reanalyzing",
-        "status":   "running",
-        "progress": "Re-analyzing all items with new project config…",
-    })
+    _seed_job.update(
+        {
+            "state": "reanalyzing",
+            "status": "running",
+            "progress": "Re-analyzing all items with new project config…",
+        }
+    )
     threading.Thread(target=_run_reanalyze, daemon=True).start()
 
     def _monitor_reanalyze() -> None:
         import time
+
         time.sleep(1)
         while _scan_state.get("running"):
             _seed_job["progress"] = _scan_state.get("message", "Re-analyzing…")
             time.sleep(2)
-        _seed_job.update({
-            "state":    "scan_prompt",
-            "status":   "running",
-            "progress": "Re-analysis complete.",
-        })
+        _seed_job.update(
+            {
+                "state": "scan_prompt",
+                "status": "running",
+                "progress": "Re-analysis complete.",
+            }
+        )
 
     threading.Thread(target=_monitor_reanalyze, daemon=True).start()
 
     return {
-        "ok":              True,
-        "projects_added":  projects_added,
+        "ok": True,
+        "projects_added": projects_added,
         "projects_merged": projects_merged,
-        "topics_added":    topics_added,
-        "items_retagged":  items_retagged,
+        "topics_added": topics_added,
+        "items_retagged": items_retagged,
     }
 
 
 def run_scan(scan_state: dict) -> dict:
-    """
-    Transition the seed state machine to scanning and start a full connector scan.
+    """Transition the seed state machine to scanning and start a full connector scan.
 
     :param scan_state: The shared scan_state dict from app.py.
     :return: ``{"ok": True}``
     :raises fastapi.HTTPException 409: If a scan is already running.
     """
     from fastapi import HTTPException
+
     global _seed_job
     if scan_state["running"]:
         raise HTTPException(status_code=409, detail="A scan is already running.")
@@ -617,6 +667,7 @@ def run_scan(scan_state: dict) -> dict:
 
     def _monitor_scan() -> None:
         import time
+
         time.sleep(1)
         while scan_state.get("running"):
             _seed_job["progress"] = scan_state.get("message", "Scanning…")
@@ -628,8 +679,7 @@ def run_scan(scan_state: dict) -> dict:
 
 
 def skip_scan() -> dict:
-    """
-    Transition the seed state machine from scan_prompt to done without scanning.
+    """Transition the seed state machine from scan_prompt to done without scanning.
 
     :return: ``{"ok": True}``
     """

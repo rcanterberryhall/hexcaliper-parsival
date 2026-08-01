@@ -7,8 +7,13 @@ from models import RawItem
 
 def _raw(source="github", item_id="1", title="Test", body="content"):
     return RawItem(
-        source=source, item_id=item_id, title=title, body=body,
-        url="http://x", author="alice", timestamp="2024-01-01T00:00:00",
+        source=source,
+        item_id=item_id,
+        title=title,
+        body=body,
+        url="http://x",
+        author="alice",
+        timestamp="2024-01-01T00:00:00",
     )
 
 
@@ -53,8 +58,13 @@ def test_analyze_defaults_on_empty_response():
 def test_analyze_jira_fallback_creates_action_item():
     """Jira items always get an action item even if LLM returns nothing."""
     item = RawItem(
-        source="jira", item_id="PROJ-42", title="Fix login bug",
-        body="", url="", author="", timestamp="2024-01-01",
+        source="jira",
+        item_id="PROJ-42",
+        title="Fix login bug",
+        body="",
+        url="",
+        author="",
+        timestamp="2024-01-01",
         metadata={"due": "2024-04-01"},
     )
     with patch("agent.llm.generate", return_value="{}"):
@@ -67,9 +77,10 @@ def test_analyze_jira_fallback_creates_action_item():
 
 # ── build_prompt thread_todos hint (parsival#79) ───────────────────────────────
 
+
 def test_build_prompt_omits_thread_todos_hint_when_empty():
     prompt_empty = agent.build_prompt(_raw(), thread_todos=[])
-    prompt_none  = agent.build_prompt(_raw(), thread_todos=None)
+    prompt_none = agent.build_prompt(_raw(), thread_todos=None)
     prompt_default = agent.build_prompt(_raw())
 
     for p in (prompt_empty, prompt_none, prompt_default):
@@ -100,8 +111,7 @@ def test_analyze_passes_thread_todos_hint_to_llm():
         captured["prompt"] = prompt
         return "{}"
 
-    todos_list = [{"description": "Book the training room",
-                   "owner": "me", "deadline": None}]
+    todos_list = [{"description": "Book the training room", "owner": "me", "deadline": None}]
 
     with patch("agent.llm.generate", side_effect=fake_generate):
         agent.analyze(_raw(), thread_todos=todos_list)
@@ -146,6 +156,7 @@ def test_analyze_batch_skips_failed_items():
 
 
 # ── Recipient scope classification ───────────────────────────────────────────
+
 
 class TestComputeRecipientScope:
     def test_no_recipients_is_direct(self):
@@ -215,6 +226,7 @@ class TestComputeRecipientScope:
 
 # ── build_analysis_from_llm_json (shared helper) ──────────────────────────────
 
+
 class TestBuildAnalysisFromLlmJson:
     """The shared helper used by both analyze() (sync path) and the
     orchestrator batch poll path.  These tests pin down behaviour the two
@@ -222,37 +234,61 @@ class TestBuildAnalysisFromLlmJson:
 
     def _direct_scope(self):
         return {
-            "scope": "direct", "to_count": 1, "cc_count": 0, "total": 1,
-            "dls": [], "user_in_to": True, "user_in_cc": False,
+            "scope": "direct",
+            "to_count": 1,
+            "cc_count": 0,
+            "total": 1,
+            "dls": [],
+            "user_in_to": True,
+            "user_in_cc": False,
         }
 
     def _broadcast_scope(self):
         return {
-            "scope": "broadcast", "to_count": 0, "cc_count": 0, "total": 12,
-            "dls": [], "user_in_to": False, "user_in_cc": False,
+            "scope": "broadcast",
+            "to_count": 0,
+            "cc_count": 0,
+            "total": 12,
+            "dls": [],
+            "user_in_to": False,
+            "user_in_cc": False,
         }
 
     def test_full_payload_populates_every_field(self):
         item = RawItem(
-            source="outlook", item_id="x1", title="Ship the release",
-            body="please ship today", url="http://x", author="bob@co.com",
+            source="outlook",
+            item_id="x1",
+            title="Ship the release",
+            body="please ship today",
+            url="http://x",
+            author="bob@co.com",
             timestamp="2026-04-10T10:00:00+00:00",
-            metadata={"to": "user@co.com", "cc": "", "is_replied": False,
-                      "hierarchy": "general", "direction": "received"},
+            metadata={
+                "to": "user@co.com",
+                "cc": "",
+                "is_replied": False,
+                "hierarchy": "general",
+                "direction": "received",
+            },
         )
         payload = {
-            "has_action": True, "priority": "high", "category": "task",
+            "has_action": True,
+            "priority": "high",
+            "category": "task",
             "task_type": "review",
             "action_items": [{"description": "Ship it", "deadline": "2026-04-11", "owner": "me"}],
             "summary": "Ship the release",
             "urgency_reason": "deadline today",
             "hierarchy": "personal",
             "is_passdown": False,
-            "goals": ["release"], "key_dates": [{"label": "ship", "date": "2026-04-11"}],
+            "goals": ["release"],
+            "key_dates": [{"label": "ship", "date": "2026-04-11"}],
             "information_items": [{"fact": "v2.1 ready", "relevance": "release"}],
         }
         result = agent.build_analysis_from_llm_json(
-            item, json.dumps(payload), scope_info=self._direct_scope(),
+            item,
+            json.dumps(payload),
+            scope_info=self._direct_scope(),
         )
         assert result.priority == "high"
         assert result.category == "task"
@@ -266,11 +302,18 @@ class TestBuildAnalysisFromLlmJson:
 
     def test_empty_payload_uses_defaults(self):
         item = RawItem(
-            source="outlook", item_id="x2", title="Fallback title",
-            body="", url="", author="", timestamp="2026-04-10T10:00:00+00:00",
+            source="outlook",
+            item_id="x2",
+            title="Fallback title",
+            body="",
+            url="",
+            author="",
+            timestamp="2026-04-10T10:00:00+00:00",
         )
         result = agent.build_analysis_from_llm_json(
-            item, "{}", scope_info=self._direct_scope(),
+            item,
+            "{}",
+            scope_info=self._direct_scope(),
         )
         assert result.priority == "medium"
         assert result.category == "fyi"
@@ -279,11 +322,18 @@ class TestBuildAnalysisFromLlmJson:
 
     def test_malformed_json_uses_defaults(self):
         item = RawItem(
-            source="outlook", item_id="x3", title="t", body="", url="",
-            author="", timestamp="2026-04-10T10:00:00+00:00",
+            source="outlook",
+            item_id="x3",
+            title="t",
+            body="",
+            url="",
+            author="",
+            timestamp="2026-04-10T10:00:00+00:00",
         )
         result = agent.build_analysis_from_llm_json(
-            item, "{not json", scope_info=self._direct_scope(),
+            item,
+            "{not json",
+            scope_info=self._direct_scope(),
         )
         assert result.priority == "medium"
         assert result.category == "fyi"
@@ -291,12 +341,19 @@ class TestBuildAnalysisFromLlmJson:
 
     def test_jira_fallback_creates_action_item(self):
         item = RawItem(
-            source="jira", item_id="PROJ-99", title="Fix login bug",
-            body="", url="", author="", timestamp="2026-04-10T10:00:00+00:00",
+            source="jira",
+            item_id="PROJ-99",
+            title="Fix login bug",
+            body="",
+            url="",
+            author="",
+            timestamp="2026-04-10T10:00:00+00:00",
             metadata={"due": "2026-04-15"},
         )
         result = agent.build_analysis_from_llm_json(
-            item, "{}", scope_info=self._direct_scope(),
+            item,
+            "{}",
+            scope_info=self._direct_scope(),
         )
         assert len(result.action_items) == 1
         assert "Fix login bug" in result.action_items[0].description
@@ -304,27 +361,40 @@ class TestBuildAnalysisFromLlmJson:
 
     def test_fyi_clears_action_items(self):
         item = RawItem(
-            source="outlook", item_id="x4", title="t", body="", url="",
-            author="", timestamp="2026-04-10T10:00:00+00:00",
+            source="outlook",
+            item_id="x4",
+            title="t",
+            body="",
+            url="",
+            author="",
+            timestamp="2026-04-10T10:00:00+00:00",
         )
         payload = {
             "category": "fyi",
             "action_items": [{"description": "Hallucinated task", "owner": "me"}],
         }
         result = agent.build_analysis_from_llm_json(
-            item, json.dumps(payload), scope_info=self._direct_scope(),
+            item,
+            json.dumps(payload),
+            scope_info=self._direct_scope(),
         )
         assert result.action_items == []
         assert result.has_action is False
 
     def test_passdown_detected_from_title(self):
         item = RawItem(
-            source="outlook", item_id="p1", title="Day shift passdown",
-            body="see notes below", url="", author="ops@co.com",
+            source="outlook",
+            item_id="p1",
+            title="Day shift passdown",
+            body="see notes below",
+            url="",
+            author="ops@co.com",
             timestamp="2026-04-10T10:00:00+00:00",
         )
         result = agent.build_analysis_from_llm_json(
-            item, "{}", scope_info=self._direct_scope(),
+            item,
+            "{}",
+            scope_info=self._direct_scope(),
         )
         assert result.is_passdown is True
 
@@ -333,17 +403,25 @@ class TestBuildAnalysisFromLlmJson:
         Batch path used to only check the singular form — this test pins
         the helper's behaviour so the drift cannot return."""
         item = RawItem(
-            source="outlook", item_id="x5", title="t", body="", url="",
-            author="", timestamp="2026-04-10T10:00:00+00:00",
+            source="outlook",
+            item_id="x5",
+            title="t",
+            body="",
+            url="",
+            author="",
+            timestamp="2026-04-10T10:00:00+00:00",
         )
         payload = {"project_tags": ["alpha"]}
         # No projects configured → all tags pass through validator
         import config as _cfg
+
         _saved = _cfg.PROJECTS
         _cfg.PROJECTS = []
         try:
             result = agent.build_analysis_from_llm_json(
-                item, json.dumps(payload), scope_info=self._direct_scope(),
+                item,
+                json.dumps(payload),
+                scope_info=self._direct_scope(),
             )
         finally:
             _cfg.PROJECTS = _saved
@@ -353,16 +431,24 @@ class TestBuildAnalysisFromLlmJson:
     def test_project_tag_serialized_not_list(self):
         """Analysis.project_tag is Optional[str]; the helper must serialize."""
         item = RawItem(
-            source="outlook", item_id="x6", title="t", body="", url="",
-            author="", timestamp="2026-04-10T10:00:00+00:00",
+            source="outlook",
+            item_id="x6",
+            title="t",
+            body="",
+            url="",
+            author="",
+            timestamp="2026-04-10T10:00:00+00:00",
         )
         payload = {"project_tag": "beta"}
         import config as _cfg
+
         _saved = _cfg.PROJECTS
         _cfg.PROJECTS = []
         try:
             result = agent.build_analysis_from_llm_json(
-                item, json.dumps(payload), scope_info=self._direct_scope(),
+                item,
+                json.dumps(payload),
+                scope_info=self._direct_scope(),
             )
         finally:
             _cfg.PROJECTS = _saved
@@ -371,17 +457,27 @@ class TestBuildAnalysisFromLlmJson:
 
     def test_metadata_fields_propagate_to_analysis(self):
         item = RawItem(
-            source="outlook", item_id="x8", title="t", body="", url="",
-            author="", timestamp="2026-04-10T10:00:00+00:00",
+            source="outlook",
+            item_id="x8",
+            title="t",
+            body="",
+            url="",
+            author="",
+            timestamp="2026-04-10T10:00:00+00:00",
             metadata={
-                "to": "user@co.com", "cc": "cc@co.com",
-                "is_replied": True, "replied_at": "2026-04-10T11:00:00+00:00",
+                "to": "user@co.com",
+                "cc": "cc@co.com",
+                "is_replied": True,
+                "replied_at": "2026-04-10T11:00:00+00:00",
                 "direction": "sent",
-                "conversation_id": "C123", "conversation_topic": "Release",
+                "conversation_id": "C123",
+                "conversation_topic": "Release",
             },
         )
         result = agent.build_analysis_from_llm_json(
-            item, "{}", scope_info=self._direct_scope(),
+            item,
+            "{}",
+            scope_info=self._direct_scope(),
         )
         assert result.to_field == "user@co.com"
         assert result.cc_field == "cc@co.com"
@@ -392,10 +488,12 @@ class TestBuildAnalysisFromLlmJson:
         assert result.conversation_topic == "Release"
 
 
-# ── priority overrides (squire#38) ────────────────────────────────────────────
+# ── priority overrides (parsival#38) ────────────────────────────────────────────
+
 
 def test_priority_overrides_ctx_empty():
     import config
+
     prev = list(config.PRIORITY_OVERRIDES)
     config.PRIORITY_OVERRIDES = []
     try:
@@ -406,23 +504,34 @@ def test_priority_overrides_ctx_empty():
 
 def test_priority_overrides_ctx_groups_by_reason():
     import config
+
     prev = list(config.PRIORITY_OVERRIDES)
     config.PRIORITY_OVERRIDES = [
-        {"author": "boss@co.com", "project_tag": "Acme",
-         "title": "Weekly sync", "llm_priority": "low",
-         "user_priority": "high", "reason": "person_matters",
-         "created_at": "2026-04-12T10:00:00"},
-        {"author": "ops@co.com", "project_tag": "",
-         "title": "Outage", "llm_priority": "medium",
-         "user_priority": "high", "reason": "topic_hot",
-         "created_at": "2026-04-12T11:00:00"},
+        {
+            "author": "boss@co.com",
+            "project_tag": "Acme",
+            "title": "Weekly sync",
+            "llm_priority": "low",
+            "user_priority": "high",
+            "reason": "person_matters",
+            "created_at": "2026-04-12T10:00:00",
+        },
+        {
+            "author": "ops@co.com",
+            "project_tag": "",
+            "title": "Outage",
+            "llm_priority": "medium",
+            "user_priority": "high",
+            "reason": "topic_hot",
+            "created_at": "2026-04-12T11:00:00",
+        },
     ]
     try:
         out = agent._priority_overrides_ctx()
         assert "person_matters" in out
-        assert "topic_hot"       in out
-        assert "boss@co.com"     in out
-        assert "Acme"            in out
+        assert "topic_hot" in out
+        assert "boss@co.com" in out
+        assert "Acme" in out
         assert "LLM said low, user set high" in out
     finally:
         config.PRIORITY_OVERRIDES = prev
@@ -430,13 +539,19 @@ def test_priority_overrides_ctx_groups_by_reason():
 
 def test_build_prompt_includes_priority_overrides():
     import config
+
     prev = list(config.PRIORITY_OVERRIDES)
-    config.PRIORITY_OVERRIDES = [{
-        "author": "boss@co.com", "project_tag": "Acme",
-        "title": "Deadline incoming", "llm_priority": "low",
-        "user_priority": "high", "reason": "deadline_real",
-        "created_at": "2026-04-12T10:00:00",
-    }]
+    config.PRIORITY_OVERRIDES = [
+        {
+            "author": "boss@co.com",
+            "project_tag": "Acme",
+            "title": "Deadline incoming",
+            "llm_priority": "low",
+            "user_priority": "high",
+            "reason": "deadline_real",
+            "created_at": "2026-04-12T10:00:00",
+        }
+    ]
     try:
         prompt = agent.build_prompt(_raw())
         assert "Priority overrides" in prompt
@@ -451,6 +566,7 @@ class TestBodyCleaning:
 
     def test_strip_quoted_reply_tail_outlook_original_message(self):
         from agent import _strip_quoted_reply_tail
+
         body = (
             "Hi team, question about RV17.\n"
             "\n"
@@ -464,6 +580,7 @@ class TestBodyCleaning:
 
     def test_strip_quoted_reply_tail_on_date_wrote(self):
         from agent import _strip_quoted_reply_tail
+
         body = (
             "Did we get started on testing?\n"
             "\n"
@@ -476,6 +593,7 @@ class TestBodyCleaning:
 
     def test_strip_quoted_reply_tail_from_header_block(self):
         from agent import _strip_quoted_reply_tail
+
         body = (
             "Peter will cover while I'm out.\n"
             "\n"
@@ -493,15 +611,18 @@ class TestBodyCleaning:
 
     def test_strip_quoted_reply_tail_no_markers_returns_unchanged(self):
         from agent import _strip_quoted_reply_tail
+
         body = "Short message with no reply chain."
         assert _strip_quoted_reply_tail(body) == body
 
     def test_strip_quoted_reply_tail_handles_empty_string(self):
         from agent import _strip_quoted_reply_tail
+
         assert _strip_quoted_reply_tail("") == ""
 
     def test_strip_safelinks_preserves_visible_text_drops_tracking_url(self):
         from agent import _strip_safelinks
+
         body = (
             "Please see https://nam02.safelinks.protection.outlook.com/"
             "?url=https%3A%2F%2Fexample.com%2Fdoc&data=05%7C01%7Creid.hall"
@@ -515,6 +636,7 @@ class TestBodyCleaning:
 
     def test_clean_body_for_llm_composes_both(self):
         from agent import _clean_body_for_llm
+
         body = (
             "Current message body.\n"
             "See https://nam02.safelinks.protection.outlook.com/?url=x&data=reid.hall%40prismsystems.com\n"
@@ -531,10 +653,8 @@ class TestBodyCleaning:
 
     def test_strip_safelinks_preserves_trailing_punctuation(self):
         from agent import _strip_safelinks
-        body = (
-            "Go to https://nam02.safelinks.protection.outlook.com/?url=x&data=y. "
-            "Next sentence."
-        )
+
+        body = "Go to https://nam02.safelinks.protection.outlook.com/?url=x&data=y. Next sentence."
         out = _strip_safelinks(body)
         assert "safelinks" not in out.lower()
         # The period that ended the URL's sentence must survive.
@@ -542,6 +662,7 @@ class TestBodyCleaning:
 
     def test_strip_safelinks_multiple_urls(self):
         from agent import _strip_safelinks
+
         body = (
             "See https://a.safelinks.protection.outlook.com/?x=1 and "
             "https://b.safelinks.protection.outlook.com/?y=2 for details."
@@ -596,6 +717,7 @@ def test_prompt_contains_negative_owner_examples():
     """The PROMPT template must explicitly call out the three owner='me'
     traps we saw in real data (issue #83)."""
     from agent import PROMPT
+
     assert "quoted reply" in PROMPT.lower() or "reply chain" in PROMPT.lower()
     assert "@mention" in PROMPT.lower() or "@-mention" in PROMPT.lower()
     assert "third party" in PROMPT.lower() or "third-party" in PROMPT.lower()

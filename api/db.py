@@ -1,5 +1,4 @@
-"""
-db.py — SQLite database layer for Squire.
+"""db.py — SQLite database layer for Parsival.
 
 Replaces TinyDB with SQLite.  All document and graph data lives in a single
 SQLite file at ``config.DB_PATH``.  WAL mode allows concurrent reads while
@@ -36,13 +35,14 @@ the convention above is safe rather than load-bearing.
 The ``conn()`` function returns the thread-shared connection; callers can
 run raw SQL when the helpers do not cover a use-case.
 """
+
+import contextlib
 import json
 import os
 import re
 import sqlite3
 import threading
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
 
 import config
 
@@ -50,6 +50,7 @@ import config
 #
 # project_tag is stored as a JSON array string: '["P905","Seatbelts upgrades"]'
 # For backward compat, a bare string like "P905" is treated as '["P905"]'.
+
 
 def parse_project_tags(val) -> list[str]:
     """Parse a project_tag column value into a list of project names.
@@ -99,15 +100,16 @@ def item_has_any_project(item: dict) -> bool:
 
 # ── Module-level state ─────────────────────────────────────────────────────────
 
-lock = threading.RLock()         # re-entrant: callers may nest without self-deadlock
-_conn: Optional[sqlite3.Connection] = None
+lock = threading.RLock()  # re-entrant: callers may nest without self-deadlock
+_conn: sqlite3.Connection | None = None
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── Connection & schema ────────────────────────────────────────────────────────
+
 
 def conn() -> sqlite3.Connection:
     """Return the shared SQLite connection, creating it on first call."""
@@ -117,7 +119,7 @@ def conn() -> sqlite3.Connection:
         _conn = sqlite3.connect(
             config.DB_PATH,
             check_same_thread=False,
-            isolation_level=None,   # autocommit; we manage transactions manually
+            isolation_level=None,  # autocommit; we manage transactions manually
         )
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
@@ -129,8 +131,10 @@ def conn() -> sqlite3.Connection:
 
 
 def backfill_manual_todo_items() -> int:
-    """Create placeholder items rows for manual todos that predate the
-    synthesized-item model (is_manual=1, item_id IS NULL).
+    """Backfill placeholder items rows for legacy manual todos.
+
+    Covers todos that predate the synthesized-item model (is_manual=1,
+    item_id IS NULL).
 
     Each orphan todo gets item_id='manual_<todo_id>' on both the todo and
     a synthesized items row whose title/body seed from the todo description
@@ -147,28 +151,30 @@ def backfill_manual_todo_items() -> int:
     ).fetchall()
     for row in orphans:
         new_iid = f"manual_{row['id']}"
-        desc    = row["description"] or ""
-        upsert_item({
-            "item_id":      new_iid,
-            "source":       "manual",
-            "direction":    "received",
-            "title":        desc[:200],
-            "author":       "",
-            "timestamp":    row["created_at"] or _now_iso(),
-            "url":          "",
-            "has_action":   1,
-            "priority":     row["priority"] or "medium",
-            "category":     "task",
-            "summary":      "",
-            "action_items": "[]",
-            "hierarchy":    "general",
-            "project_tag":  row["project_tag"],
-            "goals":        "[]",
-            "key_dates":    "[]",
-            "information_items": "[]",
-            "body_preview": "",
-            "references":   "[]",
-        })
+        desc = row["description"] or ""
+        upsert_item(
+            {
+                "item_id": new_iid,
+                "source": "manual",
+                "direction": "received",
+                "title": desc[:200],
+                "author": "",
+                "timestamp": row["created_at"] or _now_iso(),
+                "url": "",
+                "has_action": 1,
+                "priority": row["priority"] or "medium",
+                "category": "task",
+                "summary": "",
+                "action_items": "[]",
+                "hierarchy": "general",
+                "project_tag": row["project_tag"],
+                "goals": "[]",
+                "key_dates": "[]",
+                "information_items": "[]",
+                "body_preview": "",
+                "references": "[]",
+            }
+        )
         c.execute("UPDATE todos SET item_id = ? WHERE id = ?", (new_iid, row["id"]))
     return len(orphans)
 
@@ -192,33 +198,30 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE situations ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
 
     # Contacts: provenance + manual-edit tracking for the signature parser
-    # (squire#31).  Each editable field gets a *_source column tagging its
+    # (parsival#31).  Each editable field gets a *_source column tagging its
     # origin: 'header' (scraped from To/CC/author), 'signature' (parsed from
     # email body), or 'manual' (user typed it in the UI).  Fields the user
     # has touched are also recorded in manually_edited_fields so the parser
     # can never overwrite them.  signature_confidence stores per-field
     # confidence scores (0..1) so the UI can show how sure the parser was.
     contact_cols = {row[1] for row in c.execute("PRAGMA table_info(contacts)").fetchall()}
-    for col in ("name_source", "phone_source", "employer_source",
-                "title_source", "address_source"):
+    for col in ("name_source", "phone_source", "employer_source", "title_source", "address_source"):
         if col not in contact_cols:
-            c.execute(
-                f"ALTER TABLE contacts ADD COLUMN {col} TEXT NOT NULL DEFAULT 'header'"
-            )
+            c.execute(f"ALTER TABLE contacts ADD COLUMN {col} TEXT NOT NULL DEFAULT 'header'")
     if "manually_edited_fields" not in contact_cols:
         c.execute(
             "ALTER TABLE contacts ADD COLUMN manually_edited_fields TEXT NOT NULL DEFAULT '[]'"
         )
     if "signature_confidence" not in contact_cols:
-        c.execute(
-            "ALTER TABLE contacts ADD COLUMN signature_confidence TEXT NOT NULL DEFAULT '{}'"
-        )
+        c.execute("ALTER TABLE contacts ADD COLUMN signature_confidence TEXT NOT NULL DEFAULT '{}'")
 
     # Look-ahead cards: procedure doc URL copied from template tasks on
     # instantiation (parsival#50).  Optional on manually-authored cards.
     card_cols = {row[1] for row in c.execute("PRAGMA table_info(lookahead_cards)").fetchall()}
     if "linked_procedure_doc" not in card_cols:
-        c.execute("ALTER TABLE lookahead_cards ADD COLUMN linked_procedure_doc TEXT NOT NULL DEFAULT ''")
+        c.execute(
+            "ALTER TABLE lookahead_cards ADD COLUMN linked_procedure_doc TEXT NOT NULL DEFAULT ''"
+        )
     # Per-card workweek mask (parsival#73). Empty string = all seven days active
     # (default). Non-empty mask uses the same comma-separated DOW format as
     # project_shifts.days (e.g. "M,T,W,Th,F" for a Mon-Fri work week). Drives
@@ -226,9 +229,13 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     # instantiation/reschedule math (offsets count only work days).
     if "work_days" not in card_cols:
         c.execute("ALTER TABLE lookahead_cards ADD COLUMN work_days TEXT NOT NULL DEFAULT ''")
-    tpl_task_cols = {row[1] for row in c.execute("PRAGMA table_info(lookahead_template_tasks)").fetchall()}
+    tpl_task_cols = {
+        row[1] for row in c.execute("PRAGMA table_info(lookahead_template_tasks)").fetchall()
+    }
     if tpl_task_cols and "work_days" not in tpl_task_cols:
-        c.execute("ALTER TABLE lookahead_template_tasks ADD COLUMN work_days TEXT NOT NULL DEFAULT ''")
+        c.execute(
+            "ALTER TABLE lookahead_template_tasks ADD COLUMN work_days TEXT NOT NULL DEFAULT ''"
+        )
 
     # Suggestions pool for cross-system LLM linking (parsival#50).  Rows
     # start pending and become concrete card_links once the user accepts.
@@ -245,8 +252,12 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
             FOREIGN KEY (card_id) REFERENCES lookahead_cards(id) ON DELETE CASCADE
         )
     """)
-    c.execute("CREATE INDEX IF NOT EXISTS idx_la_link_sugg_card ON lookahead_card_link_suggestions(card_id)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_la_link_sugg_decision ON lookahead_card_link_suggestions(decision)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_la_link_sugg_card ON lookahead_card_link_suggestions(card_id)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_la_link_sugg_decision ON lookahead_card_link_suggestions(decision)"
+    )
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS situation_events (
@@ -500,7 +511,7 @@ def _create_schema(c: sqlite3.Connection) -> None:
         is_manual        INTEGER NOT NULL DEFAULT 0,
         -- Provenance per editable field: 'header' | 'signature' | 'manual'.
         -- Defaults to 'header' because that is the only source that existed
-        -- before squire#31.  See _migrate_schema for the matching ALTERs.
+        -- before parsival#31.  See _migrate_schema for the matching ALTERs.
         name_source      TEXT    NOT NULL DEFAULT 'header',
         phone_source     TEXT    NOT NULL DEFAULT 'header',
         employer_source  TEXT    NOT NULL DEFAULT 'header',
@@ -700,6 +711,7 @@ def _create_schema(c: sqlite3.Connection) -> None:
 
 # ── Row helpers ────────────────────────────────────────────────────────────────
 
+
 def _row_to_dict(row) -> dict:
     """Convert a sqlite3.Row to a plain dict."""
     return dict(row) if row else None
@@ -711,7 +723,8 @@ def _rows_to_list(rows) -> list[dict]:
 
 # ── Item (analysis) operations ────────────────────────────────────────────────
 
-def get_item(item_id: str) -> Optional[dict]:
+
+def get_item(item_id: str) -> dict | None:
     """Fetch a single item by item_id."""
     c = conn()
     row = c.execute("SELECT * FROM items WHERE item_id = ?", (item_id,)).fetchone()
@@ -727,10 +740,12 @@ def get_items_by_project(project_tag: str) -> list[dict]:
     """Return all items tagged to a project (handles both single and multi-tag storage)."""
     # Exact match covers single-tag rows; JSON array rows need LIKE + parse check
     rows = _rows_to_list(
-        conn().execute(
+        conn()
+        .execute(
             "SELECT * FROM items WHERE project_tag = ? OR project_tag LIKE ?",
             (project_tag, f'%"{project_tag}"%'),
-        ).fetchall()
+        )
+        .fetchall()
     )
     return [r for r in rows if project_tag in parse_project_tags(r.get("project_tag"))]
 
@@ -738,25 +753,24 @@ def get_items_by_project(project_tag: str) -> list[dict]:
 def get_items_by_conversation(conversation_id: str) -> list[dict]:
     """Return all items in a conversation thread, ordered by timestamp."""
     return _rows_to_list(
-        conn().execute(
+        conn()
+        .execute(
             "SELECT * FROM items WHERE conversation_id = ? ORDER BY timestamp",
             (conversation_id,),
-        ).fetchall()
+        )
+        .fetchall()
     )
 
 
 def get_items_by_situation(situation_id: str) -> list[dict]:
     """Return all items linked to a situation."""
     return _rows_to_list(
-        conn().execute(
-            "SELECT * FROM items WHERE situation_id = ?", (situation_id,)
-        ).fetchall()
+        conn().execute("SELECT * FROM items WHERE situation_id = ?", (situation_id,)).fetchall()
     )
 
 
 def upsert_item(data: dict) -> None:
-    """
-    Insert or replace an item record.
+    """Insert or replace an item record.
 
     All JSON columns (action_items, goals, key_dates, information_items,
     references) are serialised if they arrive as Python objects.
@@ -766,10 +780,10 @@ def upsert_item(data: dict) -> None:
         if col in data and not isinstance(data[col], str):
             data[col] = json.dumps(data[col])
 
-    cols   = list(data.keys())
+    cols = list(data.keys())
     values = [data[k] for k in cols]
     placeholders = ", ".join("?" * len(cols))
-    col_names    = ", ".join(f'"{k}"' for k in cols)
+    col_names = ", ".join(f'"{k}"' for k in cols)
     updates = ", ".join(f'"{c}"=excluded."{c}"' for c in cols if c != "item_id")
 
     c.execute(
@@ -785,7 +799,7 @@ def update_item(item_id: str, updates: dict) -> None:
         return
     c = conn()
     set_clause = ", ".join(f'"{k}" = ?' for k in updates)
-    values     = list(updates.values()) + [item_id]
+    values = list(updates.values()) + [item_id]
     c.execute(f"UPDATE items SET {set_clause} WHERE item_id = ?", values)
 
 
@@ -819,13 +833,11 @@ def count_items() -> int:
 def get_items_with_pending_batch() -> list[dict]:
     """Return all items that have a batch_job_id set (awaiting batch result)."""
     return _rows_to_list(
-        conn().execute(
-            "SELECT * FROM items WHERE batch_job_id IS NOT NULL"
-        ).fetchall()
+        conn().execute("SELECT * FROM items WHERE batch_job_id IS NOT NULL").fetchall()
     )
 
 
-def set_batch_job_id(item_id: str, batch_job_id: Optional[str]) -> None:
+def set_batch_job_id(item_id: str, batch_job_id: str | None) -> None:
     """Set or clear the batch_job_id on an item row."""
     conn().execute(
         "UPDATE items SET batch_job_id = ? WHERE item_id = ?",
@@ -835,24 +847,28 @@ def set_batch_job_id(item_id: str, batch_job_id: Optional[str]) -> None:
 
 # ── Todo operations ────────────────────────────────────────────────────────────
 
+
 def get_todos(
     done: bool = False,
-    source: Optional[str] = None,
-    priority: Optional[str] = None,
-    project_tag: Optional[str] = None,
+    source: str | None = None,
+    priority: str | None = None,
+    project_tag: str | None = None,
 ) -> list[dict]:
     """Return todo rows with optional filters, sorted by priority then created_at."""
-    c    = conn()
-    sql  = "SELECT * FROM todos WHERE 1=1"
+    c = conn()
+    sql = "SELECT * FROM todos WHERE 1=1"
     args = []
     if not done:
-        sql  += " AND done = 0"
+        sql += " AND done = 0"
     if source:
-        sql  += " AND source = ?"; args.append(source)
+        sql += " AND source = ?"
+        args.append(source)
     if priority:
-        sql  += " AND priority = ?"; args.append(priority)
+        sql += " AND priority = ?"
+        args.append(priority)
     if project_tag:
-        sql  += " AND (project_tag = ? OR project_tag LIKE ?)"; args.extend([project_tag, f'%"{project_tag}"%'])
+        sql += " AND (project_tag = ? OR project_tag LIKE ?)"
+        args.extend([project_tag, f'%"{project_tag}"%'])
     sql += " ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, created_at"
     return _rows_to_list(c.execute(sql, args).fetchall())
 
@@ -866,10 +882,14 @@ def get_todos_for_item(item_id: str) -> list[dict]:
 
 def todo_exists(item_id: str, description: str) -> bool:
     """Check if a todo with this item_id+description already exists."""
-    row = conn().execute(
-        "SELECT 1 FROM todos WHERE item_id = ? AND description = ?",
-        (item_id, description),
-    ).fetchone()
+    row = (
+        conn()
+        .execute(
+            "SELECT 1 FROM todos WHERE item_id = ? AND description = ?",
+            (item_id, description),
+        )
+        .fetchone()
+    )
     return row is not None
 
 
@@ -891,11 +911,15 @@ def todo_exists_in_conversation(conversation_id: str, description: str) -> bool:
     """
     if not conversation_id:
         return False
-    rows = conn().execute(
-        "SELECT t.description FROM todos t JOIN items i ON t.item_id = i.item_id "
-        "WHERE i.conversation_id = ?",
-        (conversation_id,),
-    ).fetchall()
+    rows = (
+        conn()
+        .execute(
+            "SELECT t.description FROM todos t JOIN items i ON t.item_id = i.item_id "
+            "WHERE i.conversation_id = ?",
+            (conversation_id,),
+        )
+        .fetchall()
+    )
     target = _norm_desc(description)
     return any(_norm_desc(r[0]) == target for r in rows)
 
@@ -925,25 +949,26 @@ def get_open_todos_for_conversation(
         where_extra = " AND i.timestamp < ?"
         params.append(before_timestamp)
     params.append(int(limit))
-    rows = conn().execute(
-        "SELECT t.description, t.owner, t.deadline "
-        "FROM todos t JOIN items i ON t.item_id = i.item_id "
-        "WHERE i.conversation_id = ? AND t.done = 0" + where_extra + " "
-        "ORDER BY i.timestamp DESC LIMIT ?",
-        params,
-    ).fetchall()
-    return [
-        {"description": r[0], "owner": r[1], "deadline": r[2]}
-        for r in rows
-    ]
+    rows = (
+        conn()
+        .execute(
+            "SELECT t.description, t.owner, t.deadline "
+            "FROM todos t JOIN items i ON t.item_id = i.item_id "
+            "WHERE i.conversation_id = ? AND t.done = 0" + where_extra + " "
+            "ORDER BY i.timestamp DESC LIMIT ?",
+            params,
+        )
+        .fetchall()
+    )
+    return [{"description": r[0], "owner": r[1], "deadline": r[2]} for r in rows]
 
 
 def insert_todo(data: dict) -> int:
     """Insert a todo row and return its auto-generated id."""
-    c    = conn()
+    c = conn()
     cols = list(data.keys())
     placeholders = ", ".join("?" * len(cols))
-    col_names    = ", ".join(cols)
+    col_names = ", ".join(cols)
     cur = c.execute(
         f"INSERT INTO todos ({col_names}) VALUES ({placeholders})",
         [data[k] for k in cols],
@@ -957,7 +982,7 @@ def update_todo(todo_id: int, updates: dict) -> None:
         return
     c = conn()
     set_clause = ", ".join(f"{k} = ?" for k in updates)
-    values     = list(updates.values()) + [todo_id]
+    values = list(updates.values()) + [todo_id]
     c.execute(f"UPDATE todos SET {set_clause} WHERE id = ?", values)
 
 
@@ -967,7 +992,7 @@ def update_todos_for_item(item_id: str, updates: dict) -> None:
         return
     c = conn()
     set_clause = ", ".join(f"{k} = ?" for k in updates)
-    values     = list(updates.values()) + [item_id]
+    values = list(updates.values()) + [item_id]
     c.execute(f"UPDATE todos SET {set_clause} WHERE item_id = ?", values)
 
 
@@ -989,14 +1014,16 @@ def delete_item_by_id(item_id: str) -> None:
 def get_all_todos() -> list[dict]:
     """Return all todo rows (including done), ordered by priority then created_at."""
     return _rows_to_list(
-        conn().execute(
+        conn()
+        .execute(
             "SELECT * FROM todos ORDER BY "
             "CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, created_at"
-        ).fetchall()
+        )
+        .fetchall()
     )
 
 
-def get_todo_by_id(todo_id: int) -> Optional[dict]:
+def get_todo_by_id(todo_id: int) -> dict | None:
     """Fetch a single todo by its integer id."""
     row = conn().execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
     return _row_to_dict(row)
@@ -1008,31 +1035,40 @@ def count_assigned_open() -> int:
     Uses the idx_todos_status(done, status) index to avoid pulling full rows —
     the Assigned vtab badge only needs the count, not the payload.
     """
-    row = conn().execute(
-        "SELECT COUNT(*) FROM todos "
-        "WHERE done = 0 AND status = 'assigned' "
-        "AND assigned_to IS NOT NULL AND assigned_to != ''"
-    ).fetchone()
+    row = (
+        conn()
+        .execute(
+            "SELECT COUNT(*) FROM todos "
+            "WHERE done = 0 AND status = 'assigned' "
+            "AND assigned_to IS NOT NULL AND assigned_to != ''"
+        )
+        .fetchone()
+    )
     return int(row[0]) if row else 0
 
 
 # ── Intel operations ───────────────────────────────────────────────────────────
 
+
 def intel_exists(item_id: str, fact: str) -> bool:
     """Check if an intel row with this item_id+fact already exists."""
-    row = conn().execute(
-        "SELECT 1 FROM intel WHERE item_id = ? AND fact = ?",
-        (item_id, fact),
-    ).fetchone()
+    row = (
+        conn()
+        .execute(
+            "SELECT 1 FROM intel WHERE item_id = ? AND fact = ?",
+            (item_id, fact),
+        )
+        .fetchone()
+    )
     return row is not None
 
 
 def insert_intel(data: dict) -> None:
     """Insert an intel row."""
-    c    = conn()
+    c = conn()
     cols = list(data.keys())
     placeholders = ", ".join("?" * len(cols))
-    col_names    = ", ".join(cols)
+    col_names = ", ".join(cols)
     c.execute(
         f"INSERT INTO intel ({col_names}) VALUES ({placeholders})",
         [data[k] for k in cols],
@@ -1042,9 +1078,9 @@ def insert_intel(data: dict) -> None:
 def get_intel_for_item(item_id: str) -> list[dict]:
     """Return all intel rows for an item."""
     return _rows_to_list(
-        conn().execute(
-            "SELECT * FROM intel WHERE item_id = ? AND dismissed = 0", (item_id,)
-        ).fetchall()
+        conn()
+        .execute("SELECT * FROM intel WHERE item_id = ? AND dismissed = 0", (item_id,))
+        .fetchall()
     )
 
 
@@ -1054,10 +1090,12 @@ def get_intel_for_items(item_ids: list) -> list[dict]:
         return []
     placeholders = ", ".join("?" * len(item_ids))
     return _rows_to_list(
-        conn().execute(
+        conn()
+        .execute(
             f"SELECT * FROM intel WHERE item_id IN ({placeholders}) AND dismissed = 0",
             item_ids,
-        ).fetchall()
+        )
+        .fetchall()
     )
 
 
@@ -1083,7 +1121,7 @@ def update_intel_by_id(intel_id: int, updates: dict) -> None:
         return
     c = conn()
     set_clause = ", ".join(f"{k} = ?" for k in updates)
-    values     = list(updates.values()) + [intel_id]
+    values = list(updates.values()) + [intel_id]
     c.execute(f"UPDATE intel SET {set_clause} WHERE id = ?", values)
 
 
@@ -1100,12 +1138,11 @@ def update_intel_project(item_id: str, project_tag) -> None:
     else:
         tags = parse_project_tags(project_tag)
         primary = tags[0] if tags else None
-    conn().execute(
-        "UPDATE intel SET project_tag = ? WHERE item_id = ?", (primary, item_id)
-    )
+    conn().execute("UPDATE intel SET project_tag = ? WHERE item_id = ?", (primary, item_id))
 
 
 # ── Situation operations ───────────────────────────────────────────────────────
+
 
 def _parse_situation(d: dict) -> dict:
     """Parse JSON list columns on a situation dict in-place and return it."""
@@ -1121,18 +1158,23 @@ def _parse_situation(d: dict) -> dict:
     return d
 
 
-def get_situation(situation_id: str) -> Optional[dict]:
+def get_situation(situation_id: str) -> dict | None:
     """Fetch a single situation by situation_id, with JSON list columns parsed."""
-    row = conn().execute(
-        "SELECT * FROM situations WHERE situation_id = ?", (situation_id,)
-    ).fetchone()
+    row = (
+        conn()
+        .execute("SELECT * FROM situations WHERE situation_id = ?", (situation_id,))
+        .fetchone()
+    )
     return _parse_situation(_row_to_dict(row))
 
 
 def get_all_situations(include_dismissed: bool = False) -> list[dict]:
     """Return all situations with JSON list columns parsed."""
-    sql = "SELECT * FROM situations" if include_dismissed \
-          else "SELECT * FROM situations WHERE dismissed = 0"
+    sql = (
+        "SELECT * FROM situations"
+        if include_dismissed
+        else "SELECT * FROM situations WHERE dismissed = 0"
+    )
     return [_parse_situation(d) for d in _rows_to_list(conn().execute(sql).fetchall())]
 
 
@@ -1142,9 +1184,9 @@ def insert_situation(data: dict) -> None:
     for col in ("item_ids", "sources", "open_actions", "references"):
         if col in data and not isinstance(data[col], str):
             data[col] = json.dumps(data[col])
-    cols         = list(data.keys())
+    cols = list(data.keys())
     placeholders = ", ".join("?" * len(cols))
-    col_names    = ", ".join(f'"{k}"' for k in cols)
+    col_names = ", ".join(f'"{k}"' for k in cols)
     c.execute(
         f"INSERT INTO situations ({col_names}) VALUES ({placeholders})",
         [data[k] for k in cols],
@@ -1160,7 +1202,7 @@ def update_situation(situation_id: str, updates: dict) -> None:
         if col in updates and not isinstance(updates[col], str):
             updates[col] = json.dumps(updates[col])
     set_clause = ", ".join(f'"{k}" = ?' for k in updates)
-    values     = list(updates.values()) + [situation_id]
+    values = list(updates.values()) + [situation_id]
     c.execute(f"UPDATE situations SET {set_clause} WHERE situation_id = ?", values)
 
 
@@ -1172,13 +1214,13 @@ def delete_situation(situation_id: str) -> None:
 def get_situations_containing_item(item_id: str) -> list[dict]:
     """Return all situations (including dismissed) where item_ids contains item_id."""
     # item_ids stored as JSON array; filter in Python after fetching all
-    return [s for s in get_all_situations(include_dismissed=True)
-            if item_id in s.get("item_ids", [])]
+    return [
+        s for s in get_all_situations(include_dismissed=True) if item_id in s.get("item_ids", [])
+    ]
 
 
 def get_active_situations(lifecycle_statuses: list[str] | None = None) -> list[dict]:
-    """
-    Return situations filtered by lifecycle_status.
+    """Return situations filtered by lifecycle_status.
 
     If ``lifecycle_statuses`` is None, defaults to active statuses:
     ``new``, ``investigating``, ``waiting``.
@@ -1186,18 +1228,24 @@ def get_active_situations(lifecycle_statuses: list[str] | None = None) -> list[d
     if lifecycle_statuses is None:
         lifecycle_statuses = ["new", "investigating", "waiting"]
     placeholders = ", ".join("?" * len(lifecycle_statuses))
-    rows = conn().execute(
-        f"SELECT * FROM situations WHERE lifecycle_status IN ({placeholders})",
-        lifecycle_statuses,
-    ).fetchall()
+    rows = (
+        conn()
+        .execute(
+            f"SELECT * FROM situations WHERE lifecycle_status IN ({placeholders})",
+            lifecycle_statuses,
+        )
+        .fetchall()
+    )
     return [_parse_situation(_row_to_dict(r)) for r in rows]
 
 
-def insert_situation_event(situation_id: str, from_status: str | None,
-                           to_status: str, note: str | None = None) -> None:
+def insert_situation_event(
+    situation_id: str, from_status: str | None, to_status: str, note: str | None = None
+) -> None:
     """Log a lifecycle status transition event."""
-    from datetime import datetime, timezone
-    ts = datetime.now(timezone.utc).isoformat()
+    from datetime import datetime
+
+    ts = datetime.now(UTC).isoformat()
     conn().execute(
         "INSERT INTO situation_events (situation_id, from_status, to_status, timestamp, note) "
         "VALUES (?, ?, ?, ?, ?)",
@@ -1207,14 +1255,19 @@ def insert_situation_event(situation_id: str, from_status: str | None,
 
 def get_situation_events(situation_id: str) -> list[dict]:
     """Return all lifecycle events for a situation, oldest first."""
-    rows = conn().execute(
-        "SELECT * FROM situation_events WHERE situation_id=? ORDER BY id ASC",
-        (situation_id,),
-    ).fetchall()
+    rows = (
+        conn()
+        .execute(
+            "SELECT * FROM situation_events WHERE situation_id=? ORDER BY id ASC",
+            (situation_id,),
+        )
+        .fetchall()
+    )
     return [_row_to_dict(r) for r in rows]
 
 
 # ── User actions (attention model) ────────────────────────────────────────────
+
 
 def record_user_action(item_id: str, action_type: str) -> None:
     """Log a user interaction with an item for attention model training."""
@@ -1228,10 +1281,14 @@ def record_user_action(item_id: str, action_type: str) -> None:
 def get_user_actions(since_iso: str | None = None) -> list[dict]:
     """Return user actions, optionally filtered to those after *since_iso*."""
     if since_iso:
-        rows = conn().execute(
-            "SELECT * FROM user_actions WHERE timestamp >= ? ORDER BY id ASC",
-            (since_iso,),
-        ).fetchall()
+        rows = (
+            conn()
+            .execute(
+                "SELECT * FROM user_actions WHERE timestamp >= ? ORDER BY id ASC",
+                (since_iso,),
+            )
+            .fetchall()
+        )
     else:
         rows = conn().execute("SELECT * FROM user_actions ORDER BY id ASC").fetchall()
     return [_row_to_dict(r) for r in rows]
@@ -1244,7 +1301,8 @@ def count_user_actions() -> int:
 
 # ── Model state (attention centroids) ─────────────────────────────────────────
 
-def get_model_state(key: str) -> Optional[dict]:
+
+def get_model_state(key: str) -> dict | None:
     """Return a deserialized model state value, or None."""
     row = conn().execute("SELECT value FROM model_state WHERE key=?", (key,)).fetchone()
     if not row:
@@ -1266,6 +1324,7 @@ def set_model_state(key: str, value: dict) -> None:
 
 # ── lancellmot project aliases (parsival#43) ─────────────────────────────────────
 
+
 def upsert_lancellmot_alias(
     parsival_project: str,
     lancellmot_project_id: str,
@@ -1286,25 +1345,33 @@ def upsert_lancellmot_alias(
     )
 
 
-def get_lancellmot_alias_for_tag(parsival_project: str) -> Optional[dict]:
+def get_lancellmot_alias_for_tag(parsival_project: str) -> dict | None:
     """Return the alias row for a project name, or None if unmapped."""
-    row = conn().execute(
-        "SELECT parsival_project, lancellmot_project_id, lancellmot_project_name, "
-        "       created_at, updated_at "
-        "FROM lancellmot_aliases WHERE parsival_project = ?",
-        (parsival_project,),
-    ).fetchone()
+    row = (
+        conn()
+        .execute(
+            "SELECT parsival_project, lancellmot_project_id, lancellmot_project_name, "
+            "       created_at, updated_at "
+            "FROM lancellmot_aliases WHERE parsival_project = ?",
+            (parsival_project,),
+        )
+        .fetchone()
+    )
     return dict(row) if row else None
 
 
 def list_lancellmot_aliases() -> list[dict]:
     """Return all alias rows ordered by parsival project name."""
-    rows = conn().execute(
-        "SELECT parsival_project, lancellmot_project_id, lancellmot_project_name, "
-        "       created_at, updated_at "
-        "FROM lancellmot_aliases "
-        "ORDER BY parsival_project"
-    ).fetchall()
+    rows = (
+        conn()
+        .execute(
+            "SELECT parsival_project, lancellmot_project_id, lancellmot_project_name, "
+            "       created_at, updated_at "
+            "FROM lancellmot_aliases "
+            "ORDER BY parsival_project"
+        )
+        .fetchall()
+    )
     return [dict(r) for r in rows]
 
 
@@ -1317,6 +1384,7 @@ def delete_lancellmot_alias(parsival_project: str) -> None:
 
 
 # ── Settings operations ────────────────────────────────────────────────────────
+
 
 def get_settings() -> dict:
     """Return the settings blob as a dict."""
@@ -1342,6 +1410,7 @@ def save_settings(data: dict) -> None:
 
 # ── Briefing operations ────────────────────────────────────────────────────────
 
+
 def save_briefing(content: dict) -> None:
     """Persist the latest briefing, replacing any previous one."""
     c = conn()
@@ -1354,9 +1423,11 @@ def save_briefing(content: dict) -> None:
 
 def get_briefing() -> dict | None:
     """Return the latest briefing, or None if none exists."""
-    row = conn().execute(
-        "SELECT generated_at, content FROM briefings ORDER BY id DESC LIMIT 1"
-    ).fetchone()
+    row = (
+        conn()
+        .execute("SELECT generated_at, content FROM briefings ORDER BY id DESC LIMIT 1")
+        .fetchone()
+    )
     if not row:
         return None
     try:
@@ -1368,12 +1439,13 @@ def get_briefing() -> dict | None:
 
 # ── Scan log operations ────────────────────────────────────────────────────────
 
+
 def insert_scan_log(data: dict) -> None:
     """Insert a scan log entry."""
-    c    = conn()
+    c = conn()
     cols = list(data.keys())
     placeholders = ", ".join("?" * len(cols))
-    col_names    = ", ".join(cols)
+    col_names = ", ".join(cols)
     c.execute(
         f"INSERT INTO scan_logs ({col_names}) VALUES ({placeholders})",
         [data[k] for k in cols],
@@ -1383,26 +1455,21 @@ def insert_scan_log(data: dict) -> None:
 def get_scan_logs(limit: int = 20) -> list[dict]:
     """Return the most recent scan log entries."""
     return _rows_to_list(
-        conn().execute(
-            "SELECT * FROM scan_logs ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
+        conn().execute("SELECT * FROM scan_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     )
 
 
 def get_all_scan_logs() -> list[dict]:
     """Return all scan log entries, newest first."""
-    return _rows_to_list(
-        conn().execute("SELECT * FROM scan_logs ORDER BY id DESC").fetchall()
-    )
+    return _rows_to_list(conn().execute("SELECT * FROM scan_logs ORDER BY id DESC").fetchall())
 
 
 # ── Embedding operations ───────────────────────────────────────────────────────
 
-def get_embedding(project: str) -> Optional[dict]:
+
+def get_embedding(project: str) -> dict | None:
     """Return the embedding record for a project."""
-    row = conn().execute(
-        "SELECT * FROM embeddings WHERE project = ?", (project,)
-    ).fetchone()
+    row = conn().execute("SELECT * FROM embeddings WHERE project = ?", (project,)).fetchone()
     if not row:
         return None
     d = dict(row)
@@ -1447,15 +1514,25 @@ def delete_embedding_project(project: str) -> None:
 
 # ── Reset ──────────────────────────────────────────────────────────────────────
 
+
 def reset_data_tables() -> None:
     """Truncate all data tables while preserving settings."""
     c = conn()
-    for table in ("items", "todos", "intel", "situations", "scan_logs",
-                  "embeddings", "nodes", "edges"):
+    for table in (
+        "items",
+        "todos",
+        "intel",
+        "situations",
+        "scan_logs",
+        "embeddings",
+        "nodes",
+        "edges",
+    ):
         c.execute(f"DELETE FROM {table}")
 
 
 # ── Graph operations ───────────────────────────────────────────────────────────
+
 
 def upsert_node(node_id: str, node_type: str, label: str, properties: dict = None) -> None:
     """Insert or update a graph node."""
@@ -1475,8 +1552,9 @@ def upsert_edge(
     weight: float = 1.0,
     properties: dict = None,
 ) -> None:
-    """
-    Insert or update a graph edge.  Weight is updated to the new value if the
+    """Insert or update a graph edge.
+
+    Weight is updated to the new value if the
     edge already exists (e.g. accumulated co-occurrence count).
     """
     c = conn()
@@ -1489,37 +1567,33 @@ def upsert_edge(
     )
 
 
-def get_edges_from(node_id: str, edge_type: Optional[str] = None) -> list[dict]:
+def get_edges_from(node_id: str, edge_type: str | None = None) -> list[dict]:
     """Return all edges where src_id matches."""
-    c    = conn()
+    c = conn()
     if edge_type:
         rows = c.execute(
             "SELECT * FROM edges WHERE src_id = ? AND edge_type = ?",
             (node_id, edge_type),
         ).fetchall()
     else:
-        rows = c.execute(
-            "SELECT * FROM edges WHERE src_id = ?", (node_id,)
-        ).fetchall()
+        rows = c.execute("SELECT * FROM edges WHERE src_id = ?", (node_id,)).fetchall()
     return _rows_to_list(rows)
 
 
-def get_edges_to(node_id: str, edge_type: Optional[str] = None) -> list[dict]:
+def get_edges_to(node_id: str, edge_type: str | None = None) -> list[dict]:
     """Return all edges where dst_id matches."""
-    c    = conn()
+    c = conn()
     if edge_type:
         rows = c.execute(
             "SELECT * FROM edges WHERE dst_id = ? AND edge_type = ?",
             (node_id, edge_type),
         ).fetchall()
     else:
-        rows = c.execute(
-            "SELECT * FROM edges WHERE dst_id = ?", (node_id,)
-        ).fetchall()
+        rows = c.execute("SELECT * FROM edges WHERE dst_id = ?", (node_id,)).fetchall()
     return _rows_to_list(rows)
 
 
-def get_node(node_id: str) -> Optional[dict]:
+def get_node(node_id: str) -> dict | None:
     """Fetch a single node by id."""
     row = conn().execute("SELECT * FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
     return _row_to_dict(row)
@@ -1538,7 +1612,8 @@ def get_nodes_by_type(node_type: str) -> list[dict]:
 # contact_emails join table — every helper that returns a contact dict
 # attaches an "emails" key with the full list, primary first.
 
-def _attach_emails(contact: Optional[dict]) -> Optional[dict]:
+
+def _attach_emails(contact: dict | None) -> dict | None:
     """Attach the joined emails list to a contact dict (in place).
 
     Also decodes the JSON-typed columns (``manually_edited_fields``,
@@ -1547,11 +1622,15 @@ def _attach_emails(contact: Optional[dict]) -> Optional[dict]:
     """
     if not contact:
         return contact
-    rows = conn().execute(
-        "SELECT email, is_primary FROM contact_emails "
-        "WHERE contact_id = ? ORDER BY is_primary DESC, added_at",
-        (contact["contact_id"],),
-    ).fetchall()
+    rows = (
+        conn()
+        .execute(
+            "SELECT email, is_primary FROM contact_emails "
+            "WHERE contact_id = ? ORDER BY is_primary DESC, added_at",
+            (contact["contact_id"],),
+        )
+        .fetchall()
+    )
     contact["emails"] = [r["email"] for r in rows]
     contact["primary_email"] = next(
         (r["email"] for r in rows if r["is_primary"]),
@@ -1573,24 +1652,26 @@ def _attach_emails(contact: Optional[dict]) -> Optional[dict]:
     return contact
 
 
-def get_contact(contact_id: int) -> Optional[dict]:
+def get_contact(contact_id: int) -> dict | None:
     """Fetch a single contact by id, with emails attached."""
-    row = conn().execute(
-        "SELECT * FROM contacts WHERE contact_id = ?", (contact_id,)
-    ).fetchone()
+    row = conn().execute("SELECT * FROM contacts WHERE contact_id = ?", (contact_id,)).fetchone()
     return _attach_emails(_row_to_dict(row))
 
 
-def get_contact_by_email(email: str) -> Optional[dict]:
+def get_contact_by_email(email: str) -> dict | None:
     """Look up a contact by any of its email addresses (case-insensitive)."""
     if not email:
         return None
-    row = conn().execute(
-        "SELECT c.* FROM contacts c "
-        "JOIN contact_emails e ON e.contact_id = c.contact_id "
-        "WHERE LOWER(e.email) = LOWER(?)",
-        (email,),
-    ).fetchone()
+    row = (
+        conn()
+        .execute(
+            "SELECT c.* FROM contacts c "
+            "JOIN contact_emails e ON e.contact_id = c.contact_id "
+            "WHERE LOWER(e.email) = LOWER(?)",
+            (email,),
+        )
+        .fetchone()
+    )
     return _attach_emails(_row_to_dict(row))
 
 
@@ -1599,15 +1680,19 @@ def find_contacts_by_name(name: str) -> list[dict]:
     if not name:
         return []
     pattern = f"%{name.strip()}%"
-    rows = conn().execute(
-        "SELECT * FROM contacts WHERE LOWER(name) LIKE LOWER(?) "
-        "ORDER BY source_count DESC, last_seen DESC",
-        (pattern,),
-    ).fetchall()
+    rows = (
+        conn()
+        .execute(
+            "SELECT * FROM contacts WHERE LOWER(name) LIKE LOWER(?) "
+            "ORDER BY source_count DESC, last_seen DESC",
+            (pattern,),
+        )
+        .fetchall()
+    )
     return [_attach_emails(dict(r)) for r in rows]
 
 
-def list_contacts(query: Optional[str] = None, limit: int = 500) -> list[dict]:
+def list_contacts(query: str | None = None, limit: int = 500) -> list[dict]:
     """Return contacts ordered by most-recently-seen, optionally filtered.
 
     `query` matches against name, employer, title, or any associated email
@@ -1664,35 +1749,31 @@ def insert_contact(data: dict) -> int:
 
     default_source = "manual" if is_manual else "header"
     payload = {
-        "name":             data.get("name", "") or "",
-        "phone":            data.get("phone", "") or "",
-        "employer":         data.get("employer", "") or "",
-        "title":            data.get("title", "") or "",
+        "name": data.get("name", "") or "",
+        "phone": data.get("phone", "") or "",
+        "employer": data.get("employer", "") or "",
+        "title": data.get("title", "") or "",
         "employer_address": data.get("employer_address", "") or "",
-        "notes":            data.get("notes", "") or "",
-        "first_seen":       data.get("first_seen") or now,
-        "last_seen":        data.get("last_seen")  or now,
-        "source_count":     data.get("source_count", 0),
-        "last_item_id":     data.get("last_item_id"),
-        "is_manual":        1 if is_manual else 0,
-        "name_source":      data.get("name_source")     or default_source,
-        "phone_source":     data.get("phone_source")    or default_source,
-        "employer_source":  data.get("employer_source") or default_source,
-        "title_source":     data.get("title_source")    or default_source,
-        "address_source":   data.get("address_source")  or default_source,
-        "manually_edited_fields": json.dumps(
-            data.get("manually_edited_fields") or auto_edited
-        ),
-        "signature_confidence":   json.dumps(
-            data.get("signature_confidence") or {}
-        ),
-        "created_at":       now,
-        "updated_at":       now,
+        "notes": data.get("notes", "") or "",
+        "first_seen": data.get("first_seen") or now,
+        "last_seen": data.get("last_seen") or now,
+        "source_count": data.get("source_count", 0),
+        "last_item_id": data.get("last_item_id"),
+        "is_manual": 1 if is_manual else 0,
+        "name_source": data.get("name_source") or default_source,
+        "phone_source": data.get("phone_source") or default_source,
+        "employer_source": data.get("employer_source") or default_source,
+        "title_source": data.get("title_source") or default_source,
+        "address_source": data.get("address_source") or default_source,
+        "manually_edited_fields": json.dumps(data.get("manually_edited_fields") or auto_edited),
+        "signature_confidence": json.dumps(data.get("signature_confidence") or {}),
+        "created_at": now,
+        "updated_at": now,
     }
-    cols   = list(payload.keys())
+    cols = list(payload.keys())
     values = [payload[k] for k in cols]
     placeholders = ", ".join("?" * len(cols))
-    col_names    = ", ".join(f'"{k}"' for k in cols)
+    col_names = ", ".join(f'"{k}"' for k in cols)
     cur = c.execute(
         f"INSERT INTO contacts ({col_names}) VALUES ({placeholders})",
         values,
@@ -1703,15 +1784,13 @@ def insert_contact(data: dict) -> int:
     for idx, email in enumerate(emails):
         if not email:
             continue
-        try:
+        # email already attached to a different contact — skip
+        with contextlib.suppress(sqlite3.IntegrityError):
             c.execute(
                 "INSERT INTO contact_emails (contact_id, email, is_primary, added_at) "
                 "VALUES (?, ?, ?, ?)",
                 (contact_id, email.lower(), 1 if idx == 0 else 0, now),
             )
-        except sqlite3.IntegrityError:
-            # email already attached to a different contact — skip
-            pass
     return contact_id
 
 
@@ -1727,11 +1806,24 @@ def update_contact(contact_id: int, updates: dict) -> None:
     if not updates:
         return
     allowed = {
-        "name", "phone", "employer", "title", "employer_address", "notes",
-        "first_seen", "last_seen", "source_count", "last_item_id", "is_manual",
-        "name_source", "phone_source", "employer_source", "title_source",
+        "name",
+        "phone",
+        "employer",
+        "title",
+        "employer_address",
+        "notes",
+        "first_seen",
+        "last_seen",
+        "source_count",
+        "last_item_id",
+        "is_manual",
+        "name_source",
+        "phone_source",
+        "employer_source",
+        "title_source",
         "address_source",
-        "manually_edited_fields", "signature_confidence",
+        "manually_edited_fields",
+        "signature_confidence",
     }
     clean = {k: v for k, v in updates.items() if k in allowed}
     if not clean:
@@ -1739,13 +1831,13 @@ def update_contact(contact_id: int, updates: dict) -> None:
     # Serialise structured columns if the caller passed a list/dict.
     for json_col in ("manually_edited_fields", "signature_confidence"):
         if json_col in clean and not isinstance(clean[json_col], str):
-            clean[json_col] = json.dumps(clean[json_col] or ([] if json_col.endswith("fields") else {}))
+            clean[json_col] = json.dumps(
+                clean[json_col] or ([] if json_col.endswith("fields") else {})
+            )
     clean["updated_at"] = _now_iso()
     set_clause = ", ".join(f'"{k}" = ?' for k in clean)
-    values     = list(clean.values()) + [contact_id]
-    conn().execute(
-        f"UPDATE contacts SET {set_clause} WHERE contact_id = ?", values
-    )
+    values = list(clean.values()) + [contact_id]
+    conn().execute(f"UPDATE contacts SET {set_clause} WHERE contact_id = ?", values)
 
 
 def delete_contact(contact_id: int) -> None:
@@ -1754,8 +1846,11 @@ def delete_contact(contact_id: int) -> None:
 
 
 def add_contact_email(contact_id: int, email: str, is_primary: bool = False) -> bool:
-    """Attach an email to a contact.  Returns False if the email is already
-    attached to another contact (caller can decide whether to merge)."""
+    """Attach an email to a contact.
+
+    Returns False if the email is already
+    attached to another contact (caller can decide whether to merge).
+    """
     if not email:
         return False
     c = conn()
@@ -1772,8 +1867,7 @@ def add_contact_email(contact_id: int, email: str, is_primary: bool = False) -> 
             (contact_id,),
         )
     c.execute(
-        "INSERT INTO contact_emails (contact_id, email, is_primary, added_at) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT INTO contact_emails (contact_id, email, is_primary, added_at) VALUES (?, ?, ?, ?)",
         (contact_id, email, 1 if is_primary else 0, _now_iso()),
     )
     return True
@@ -1790,8 +1884,8 @@ def remove_contact_email(contact_id: int, email: str) -> None:
 def upsert_contact_from_header(
     display_name: str,
     email: str,
-    item_id: Optional[str] = None,
-    item_timestamp: Optional[str] = None,
+    item_id: str | None = None,
+    item_timestamp: str | None = None,
 ) -> int:
     """Idempotently record a contact seen in an email header.
 
@@ -1827,7 +1921,7 @@ def upsert_contact_from_header(
         # Bump counters and last_seen; fill in name if missing.
         new_name = existing["name"] or (display_name or "").strip()
         first_seen = min(existing["first_seen"] or seen_at, seen_at)
-        last_seen  = max(existing["last_seen"]  or seen_at, seen_at)
+        last_seen = max(existing["last_seen"] or seen_at, seen_at)
         c.execute(
             "UPDATE contacts SET name = ?, first_seen = ?, last_seen = ?, "
             "source_count = source_count + 1, last_item_id = ?, updated_at = ? "
@@ -1844,8 +1938,7 @@ def upsert_contact_from_header(
     )
     contact_id = cur.lastrowid
     c.execute(
-        "INSERT INTO contact_emails (contact_id, email, is_primary, added_at) "
-        "VALUES (?, ?, 1, ?)",
+        "INSERT INTO contact_emails (contact_id, email, is_primary, added_at) VALUES (?, ?, 1, ?)",
         (contact_id, email_lc, now),
     )
     return contact_id
@@ -1857,10 +1950,10 @@ def upsert_contact_from_header(
 # the two-week look-ahead view.  Helpers return plain dicts (with relation
 # lists inlined) so the API layer can hand them straight to the frontend.
 
-_CARD_STATUSES   = ("planned", "in_progress", "done", "blocked")
-_RESOURCE_TYPES  = ("person", "equipment", "space", "part", "supply")
+_CARD_STATUSES = ("planned", "in_progress", "done", "blocked")
+_RESOURCE_TYPES = ("person", "equipment", "space", "part", "supply")
 _RESOURCE_STATUSES = ("needed", "secured", "consumed")
-_LINK_TYPES      = ("todo", "situation", "key_date", "item")
+_LINK_TYPES = ("todo", "situation", "key_date", "item")
 
 
 def _card_with_relations(row: dict) -> dict:
@@ -1870,7 +1963,8 @@ def _card_with_relations(row: dict) -> dict:
     c = conn()
     cid = row["id"]
     row["depends_on"] = [
-        r["depends_on_id"] for r in c.execute(
+        r["depends_on_id"]
+        for r in c.execute(
             "SELECT depends_on_id FROM lookahead_card_deps WHERE card_id = ?", (cid,)
         ).fetchall()
     ]
@@ -1881,7 +1975,8 @@ def _card_with_relations(row: dict) -> dict:
         ).fetchall()
     ]
     row["resources"] = [
-        dict(r) for r in c.execute(
+        dict(r)
+        for r in c.execute(
             "SELECT cr.resource_id, cr.quantity, cr.status, r.name, r.type "
             "FROM lookahead_card_resources cr "
             "JOIN lookahead_resources r ON r.id = cr.resource_id "
@@ -1892,16 +1987,21 @@ def _card_with_relations(row: dict) -> dict:
     return row
 
 
-def get_lookahead_card(card_id: str) -> Optional[dict]:
+def get_lookahead_card(card_id: str) -> dict | None:
+    """Return one card with its dependencies, links and resources hydrated.
+
+    :param card_id: The card's UUID.
+    :return: The card dict, or ``None`` if no such card exists.
+    """
     row = conn().execute("SELECT * FROM lookahead_cards WHERE id = ?", (card_id,)).fetchone()
     return _card_with_relations(_row_to_dict(row)) if row else None
 
 
-def list_lookahead_cards(project: Optional[str] = None,
-                         start_date: Optional[str] = None,
-                         end_date: Optional[str] = None) -> list[dict]:
+def list_lookahead_cards(
+    project: str | None = None, start_date: str | None = None, end_date: str | None = None
+) -> list[dict]:
     """List cards, optionally filtered by project and an overlapping date window."""
-    sql  = "SELECT * FROM lookahead_cards"
+    sql = "SELECT * FROM lookahead_cards"
     args: list = []
     where: list[str] = []
     if project:
@@ -1935,9 +2035,9 @@ def upsert_lookahead_card(data: dict) -> dict:
     else:
         data.setdefault("created_at", now)
         data.setdefault("updated_at", now)
-        cols   = list(data.keys())
+        cols = list(data.keys())
         placeholders = ", ".join("?" * len(cols))
-        col_names    = ", ".join(f'"{k}"' for k in cols)
+        col_names = ", ".join(f'"{k}"' for k in cols)
         c.execute(
             f"INSERT INTO lookahead_cards ({col_names}) VALUES ({placeholders})",
             [data[k] for k in cols],
@@ -1946,10 +2046,28 @@ def upsert_lookahead_card(data: dict) -> dict:
 
 
 def delete_lookahead_card(card_id: str) -> None:
+    """Delete a card.
+
+    Dependency, link and resource rows are removed by ``ON DELETE CASCADE``, so
+    this does not need to clean them up itself.  Deleting a card that does not
+    exist is a no-op rather than an error.
+
+    :param card_id: The card's UUID.
+    """
     conn().execute("DELETE FROM lookahead_cards WHERE id = ?", (card_id,))
 
 
 def set_card_dependencies(card_id: str, depends_on_ids: list[str]) -> None:
+    """Replace a card's dependency set wholesale.
+
+    Existing rows are deleted first, so passing an empty or ``None`` list clears
+    the dependencies.  A card listing itself is skipped -- a self-dependency is
+    meaningless and would make the card permanently unschedulable.  Duplicates
+    are absorbed by ``INSERT OR IGNORE``.
+
+    :param card_id: The dependent card's UUID.
+    :param depends_on_ids: UUIDs this card should depend on.
+    """
     c = conn()
     c.execute("DELETE FROM lookahead_card_deps WHERE card_id = ?", (card_id,))
     for dep_id in depends_on_ids or []:
@@ -1985,13 +2103,17 @@ def set_card_links(card_id: str, links: list[dict]) -> None:
         )
 
 
-def get_card_todo_id(card_id: str) -> Optional[int]:
+def get_card_todo_id(card_id: str) -> int | None:
     """Return the integer todo id linked to this card, or None."""
-    row = conn().execute(
-        "SELECT target_id FROM lookahead_card_links "
-        "WHERE card_id = ? AND link_type = 'todo' LIMIT 1",
-        (card_id,),
-    ).fetchone()
+    row = (
+        conn()
+        .execute(
+            "SELECT target_id FROM lookahead_card_links "
+            "WHERE card_id = ? AND link_type = 'todo' LIMIT 1",
+            (card_id,),
+        )
+        .fetchone()
+    )
     if not row:
         return None
     try:
@@ -2002,11 +2124,14 @@ def get_card_todo_id(card_id: str) -> Optional[int]:
 
 def get_cards_for_todo(todo_id: int) -> list[str]:
     """Return card ids linked to a todo (usually zero or one)."""
-    rows = conn().execute(
-        "SELECT card_id FROM lookahead_card_links "
-        "WHERE link_type = 'todo' AND target_id = ?",
-        (str(todo_id),),
-    ).fetchall()
+    rows = (
+        conn()
+        .execute(
+            "SELECT card_id FROM lookahead_card_links WHERE link_type = 'todo' AND target_id = ?",
+            (str(todo_id),),
+        )
+        .fetchall()
+    )
     return [r[0] for r in rows]
 
 
@@ -2026,12 +2151,16 @@ def set_card_todo_link(card_id: str, todo_id: int) -> None:
 
 def list_cards_without_todo() -> list[dict]:
     """Return all cards that have no linked todo."""
-    rows = conn().execute(
-        "SELECT c.* FROM lookahead_cards c "
-        "LEFT JOIN lookahead_card_links l "
-        "  ON l.card_id = c.id AND l.link_type = 'todo' "
-        "WHERE l.card_id IS NULL"
-    ).fetchall()
+    rows = (
+        conn()
+        .execute(
+            "SELECT c.* FROM lookahead_cards c "
+            "LEFT JOIN lookahead_card_links l "
+            "  ON l.card_id = c.id AND l.link_type = 'todo' "
+            "WHERE l.card_id IS NULL"
+        )
+        .fetchall()
+    )
     return _rows_to_list(rows)
 
 
@@ -2043,7 +2172,7 @@ def set_card_resources(card_id: str, entries: list[dict]) -> None:
         rid = e.get("resource_id")
         if rid is None:
             continue
-        qty    = float(e.get("quantity", 1))
+        qty = float(e.get("quantity", 1))
         status = e.get("status", "needed")
         if status not in _RESOURCE_STATUSES:
             status = "needed"
@@ -2055,6 +2184,16 @@ def set_card_resources(card_id: str, entries: list[dict]) -> None:
 
 
 def set_card_resource_status(card_id: str, resource_id: int, status: str) -> None:
+    """Set the fulfilment status of one resource assigned to one card.
+
+    This is the BOM status the board cycles through (e.g. ordered / received).
+    A pairing that is not currently assigned updates nothing rather than raising.
+
+    :param card_id: The card's UUID.
+    :param resource_id: The assigned resource's integer primary key.
+    :param status: One of ``_RESOURCE_STATUSES``.
+    :raises ValueError: If ``status`` is not a recognised status.
+    """
     if status not in _RESOURCE_STATUSES:
         raise ValueError(f"invalid status: {status}")
     conn().execute(
@@ -2065,7 +2204,14 @@ def set_card_resource_status(card_id: str, resource_id: int, status: str) -> Non
 
 # ── Resources (global catalog) ────────────────────────────────────────────────
 
-def list_resources(type_filter: Optional[str] = None) -> list[dict]:
+
+def list_resources(type_filter: str | None = None) -> list[dict]:
+    """List the global resource catalog, ordered by type then name.
+
+    :param type_filter: Optional resource type to restrict to; ``None`` returns
+        every resource.
+    :return: Resource rows as dicts.
+    """
     sql = "SELECT * FROM lookahead_resources"
     args: list = []
     if type_filter:
@@ -2075,13 +2221,29 @@ def list_resources(type_filter: Optional[str] = None) -> list[dict]:
     return _rows_to_list(conn().execute(sql, args).fetchall())
 
 
-def get_resource(resource_id: int) -> Optional[dict]:
-    row = conn().execute("SELECT * FROM lookahead_resources WHERE id = ?",
-                         (int(resource_id),)).fetchone()
+def get_resource(resource_id: int) -> dict | None:
+    """Return one resource from the global catalog.
+
+    :param resource_id: The resource's integer primary key.
+    :return: The resource dict, or ``None`` if no such resource exists.
+    """
+    row = (
+        conn()
+        .execute("SELECT * FROM lookahead_resources WHERE id = ?", (int(resource_id),))
+        .fetchone()
+    )
     return _row_to_dict(row)
 
 
 def create_resource(name: str, type_: str, notes: str = "") -> dict:
+    """Add a resource to the global catalog.
+
+    :param name: Display name; surrounding whitespace is stripped.
+    :param type_: One of ``_RESOURCE_TYPES``.
+    :param notes: Optional free-text note.
+    :return: The newly created resource dict.
+    :raises ValueError: If ``type_`` is not a recognised resource type.
+    """
     if type_ not in _RESOURCE_TYPES:
         raise ValueError(f"invalid resource type: {type_}")
     cur = conn().execute(
@@ -2091,7 +2253,18 @@ def create_resource(name: str, type_: str, notes: str = "") -> dict:
     return get_resource(cur.lastrowid)
 
 
-def update_resource(resource_id: int, updates: dict) -> Optional[dict]:
+def update_resource(resource_id: int, updates: dict) -> dict | None:
+    """Patch a resource's ``name``, ``type`` or ``notes``.
+
+    Keys outside that set are ignored rather than rejected, so a caller may hand
+    over a whole request body.  An update containing none of them is a no-op that
+    still returns the current row.
+
+    :param resource_id: The resource's integer primary key.
+    :param updates: Partial field/value mapping.
+    :return: The updated resource dict, or ``None`` if it does not exist.
+    :raises ValueError: If ``type`` is present but not a recognised type.
+    """
     allowed = {k: v for k, v in updates.items() if k in ("name", "type", "notes")}
     if not allowed:
         return get_resource(resource_id)
@@ -2106,13 +2279,26 @@ def update_resource(resource_id: int, updates: dict) -> Optional[dict]:
 
 
 def delete_resource(resource_id: int) -> None:
+    """Remove a resource from the global catalog.
+
+    Per-card assignments referencing it are removed by ``ON DELETE CASCADE``.
+
+    :param resource_id: The resource's integer primary key.
+    """
     conn().execute("DELETE FROM lookahead_resources WHERE id = ?", (int(resource_id),))
 
 
 # ── Project shift schedules ───────────────────────────────────────────────────
 
-def list_project_shifts(project_tag: Optional[str] = None) -> list[dict]:
-    sql  = "SELECT * FROM project_shifts"
+
+def list_project_shifts(project_tag: str | None = None) -> list[dict]:
+    """List shift definitions, ordered by project then shift number.
+
+    :param project_tag: Optional project to restrict to; ``None`` returns the
+        shift schedules for every project.
+    :return: Shift rows as dicts.
+    """
+    sql = "SELECT * FROM project_shifts"
     args: list = []
     if project_tag:
         sql += " WHERE project_tag = ?"
@@ -2125,8 +2311,8 @@ def upsert_project_shift(project_tag: str, shift_num: int, data: dict) -> dict:
     """Insert or update a single shift row for a project."""
     label = data.get("label", "")
     start_time = data.get("start_time", "")
-    end_time   = data.get("end_time", "")
-    days       = data.get("days", "")
+    end_time = data.get("end_time", "")
+    days = data.get("days", "")
     conn().execute(
         "INSERT INTO project_shifts (project_tag, shift_num, label, start_time, end_time, days) "
         "VALUES (?, ?, ?, ?, ?, ?) "
@@ -2137,14 +2323,26 @@ def upsert_project_shift(project_tag: str, shift_num: int, data: dict) -> dict:
         "  days = excluded.days",
         (project_tag, int(shift_num), label, start_time, end_time, days),
     )
-    row = conn().execute(
-        "SELECT * FROM project_shifts WHERE project_tag = ? AND shift_num = ?",
-        (project_tag, int(shift_num)),
-    ).fetchone()
+    row = (
+        conn()
+        .execute(
+            "SELECT * FROM project_shifts WHERE project_tag = ? AND shift_num = ?",
+            (project_tag, int(shift_num)),
+        )
+        .fetchone()
+    )
     return _row_to_dict(row)
 
 
 def delete_project_shift(project_tag: str, shift_num: int) -> None:
+    """Delete one shift from a project's schedule.
+
+    Cards already scheduled against this shift number are left untouched; the
+    shift row only defines the label and hours the board renders.
+
+    :param project_tag: The project the shift belongs to.
+    :param shift_num: The shift's number within that project.
+    """
     conn().execute(
         "DELETE FROM project_shifts WHERE project_tag = ? AND shift_num = ?",
         (project_tag, int(shift_num)),
@@ -2167,11 +2365,13 @@ def _template_with_tasks(row: dict) -> dict:
         return None
     c = conn()
     tid = row["id"]
-    tasks = _rows_to_list(c.execute(
-        "SELECT * FROM lookahead_template_tasks "
-        "WHERE template_id = ? ORDER BY offset_start_days, offset_start_shift, local_id",
-        (tid,),
-    ).fetchall())
+    tasks = _rows_to_list(
+        c.execute(
+            "SELECT * FROM lookahead_template_tasks "
+            "WHERE template_id = ? ORDER BY offset_start_days, offset_start_shift, local_id",
+            (tid,),
+        ).fetchall()
+    )
     # Inline deps and resource requirements per task.
     deps_by_task: dict[str, list[str]] = {}
     for r in c.execute(
@@ -2195,14 +2395,27 @@ def _template_with_tasks(row: dict) -> dict:
     return row
 
 
-def get_template(template_id: str) -> Optional[dict]:
-    row = conn().execute(
-        "SELECT * FROM lookahead_templates WHERE id = ?", (template_id,)
-    ).fetchone()
+def get_template(template_id: str) -> dict | None:
+    """Return one template with its task graph attached.
+
+    Each task in the returned ``tasks`` list carries its own ``depends_on`` local
+    ids and ``resource_requirements``.
+
+    :param template_id: The template's UUID.
+    :return: The template dict, or ``None`` if no such template exists.
+    """
+    row = (
+        conn().execute("SELECT * FROM lookahead_templates WHERE id = ?", (template_id,)).fetchone()
+    )
     return _template_with_tasks(_row_to_dict(row)) if row else None
 
 
-def list_templates(owner: Optional[str] = None) -> list[dict]:
+def list_templates(owner: str | None = None) -> list[dict]:
+    """List templates, each with its task graph attached, ordered by name.
+
+    :param owner: Optional owner to restrict to; ``None`` returns every template.
+    :return: Template dicts, hydrated the same way as :func:`get_template`.
+    """
     sql = "SELECT * FROM lookahead_templates"
     args: list = []
     if owner:
@@ -2216,12 +2429,9 @@ def list_templates(owner: Optional[str] = None) -> list[dict]:
 def _write_template_tasks(template_id: str, tasks: list[dict]) -> None:
     """Replace all tasks + deps + resource requirements for a template."""
     c = conn()
-    c.execute("DELETE FROM lookahead_template_task_resources WHERE template_id = ?",
-              (template_id,))
-    c.execute("DELETE FROM lookahead_template_task_deps WHERE template_id = ?",
-              (template_id,))
-    c.execute("DELETE FROM lookahead_template_tasks WHERE template_id = ?",
-              (template_id,))
+    c.execute("DELETE FROM lookahead_template_task_resources WHERE template_id = ?", (template_id,))
+    c.execute("DELETE FROM lookahead_template_task_deps WHERE template_id = ?", (template_id,))
+    c.execute("DELETE FROM lookahead_template_tasks WHERE template_id = ?", (template_id,))
     for t in tasks or []:
         local_id = str(t.get("local_id") or "").strip()
         if not local_id:
@@ -2231,14 +2441,17 @@ def _write_template_tasks(template_id: str, tasks: list[dict]) -> None:
             "(template_id, local_id, title, offset_start_days, offset_start_shift, "
             " duration_shifts, shift_preference, work_days, linked_procedure_doc) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (template_id, local_id,
-             (t.get("title") or "").strip(),
-             int(t.get("offset_start_days", 0)),
-             int(t.get("offset_start_shift", 1)),
-             max(1, int(t.get("duration_shifts", 1))),
-             int(t.get("shift_preference", 0)),
-             (t.get("work_days") or "").strip(),
-             (t.get("linked_procedure_doc") or "").strip()),
+            (
+                template_id,
+                local_id,
+                (t.get("title") or "").strip(),
+                int(t.get("offset_start_days", 0)),
+                int(t.get("offset_start_shift", 1)),
+                max(1, int(t.get("duration_shifts", 1))),
+                int(t.get("shift_preference", 0)),
+                (t.get("work_days") or "").strip(),
+                (t.get("linked_procedure_doc") or "").strip(),
+            ),
         )
         for dep in t.get("depends_on") or []:
             dep = str(dep).strip()
@@ -2251,7 +2464,7 @@ def _write_template_tasks(template_id: str, tasks: list[dict]) -> None:
             )
         for req in t.get("resource_requirements") or []:
             rtype = (req.get("resource_type") or "").strip()
-            role  = (req.get("role") or "").strip()
+            role = (req.get("role") or "").strip()
             named = req.get("named_resource_id")
             # At least one of rtype/role/named must be present.
             if not rtype and not role and named in (None, ""):
@@ -2260,9 +2473,14 @@ def _write_template_tasks(template_id: str, tasks: list[dict]) -> None:
                 "INSERT INTO lookahead_template_task_resources "
                 "(template_id, task_local_id, resource_type, role, named_resource_id, quantity) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (template_id, local_id, rtype, role,
-                 int(named) if named not in (None, "") else None,
-                 float(req.get("quantity", 1))),
+                (
+                    template_id,
+                    local_id,
+                    rtype,
+                    role,
+                    int(named) if named not in (None, "") else None,
+                    float(req.get("quantity", 1)),
+                ),
             )
 
 
@@ -2279,19 +2497,22 @@ def create_template(data: dict) -> dict:
         "(id, name, description, owner, version, duration_unit, default_project_tag, "
         " created_at, updated_at) "
         "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
-        (tid,
-         (data.get("name") or "").strip(),
-         (data.get("description") or "").strip(),
-         (data.get("owner") or "").strip(),
-         unit,
-         (data.get("default_project_tag") or "").strip(),
-         now, now),
+        (
+            tid,
+            (data.get("name") or "").strip(),
+            (data.get("description") or "").strip(),
+            (data.get("owner") or "").strip(),
+            unit,
+            (data.get("default_project_tag") or "").strip(),
+            now,
+            now,
+        ),
     )
     _write_template_tasks(tid, data.get("tasks") or [])
     return get_template(tid)
 
 
-def update_template(template_id: str, updates: dict) -> Optional[dict]:
+def update_template(template_id: str, updates: dict) -> dict | None:
     """Apply partial update. Bumps ``version`` unconditionally."""
     current = get_template(template_id)
     if not current:
@@ -2316,6 +2537,15 @@ def update_template(template_id: str, updates: dict) -> Optional[dict]:
 
 
 def delete_template(template_id: str) -> None:
+    """Delete a template and its task graph.
+
+    Tasks, dependencies and resource requirements go with it via
+    ``ON DELETE CASCADE``.  Cards already instantiated from this template are
+    deliberately left in place -- they are concrete scheduled work, and deleting
+    the pattern they came from should not erase them.
+
+    :param template_id: The template's UUID.
+    """
     conn().execute("DELETE FROM lookahead_templates WHERE id = ?", (template_id,))
 
 
@@ -2324,7 +2554,7 @@ def delete_template(template_id: str) -> None:
 # DOW tokens match project_shifts.days format: "M,T,W,Th,F,Sa,Su".
 # Python's date.weekday(): 0=Mon ... 6=Sun.
 _DOW_TOKEN_TO_WEEKDAY = {"M": 0, "T": 1, "W": 2, "Th": 3, "F": 4, "Sa": 5, "Su": 6}
-_WORKWEEK_BUSINESS    = frozenset({0, 1, 2, 3, 4})  # Mon-Fri
+_WORKWEEK_BUSINESS = frozenset({0, 1, 2, 3, 4})  # Mon-Fri
 
 
 def _parse_work_days(mask: str) -> frozenset[int]:
@@ -2366,6 +2596,7 @@ def _add_days(date_str: str, n: int, unit: str, work_days: str = "") -> str:
     only work days (weekends or other off-days are skipped).
     """
     from datetime import date, timedelta
+
     y, m, d = (int(x) for x in date_str.split("-"))
     cur = date(y, m, d)
     wd = _resolve_workweek(unit, work_days)
@@ -2382,8 +2613,9 @@ def _add_days(date_str: str, n: int, unit: str, work_days: str = "") -> str:
     return cur.isoformat()
 
 
-def _duration_to_end(start_date: str, start_shift: int, duration_shifts: int,
-                     unit: str, work_days: str = "") -> tuple[str, int]:
+def _duration_to_end(
+    start_date: str, start_shift: int, duration_shifts: int, unit: str, work_days: str = ""
+) -> tuple[str, int]:
     """Convert a (start_date, start_shift, duration) triple into (end_date, end_shift)."""
     total_shifts = max(1, int(duration_shifts))
     # Each day holds up to 3 shifts.  Shifts past 3 wrap to the next day.
@@ -2396,10 +2628,12 @@ def _duration_to_end(start_date: str, start_shift: int, duration_shifts: int,
     return end_date, end_shift
 
 
-def instantiate_template(template_id: str, start_date: str,
-                         project_tag: str, owner: str = "") -> Optional[dict]:
+def instantiate_template(
+    template_id: str, start_date: str, project_tag: str, owner: str = ""
+) -> dict | None:
     """Materialise a template instance.  Returns ``{instance, cards}``."""
     import uuid as _uuid
+
     tpl = get_template(template_id)
     if not tpl:
         return None
@@ -2412,8 +2646,15 @@ def instantiate_template(template_id: str, start_date: str,
         "INSERT INTO lookahead_template_instances "
         "(id, template_id, template_version, start_date, project_tag, owner, "
         " status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?)",
-        (instance_id, template_id, int(tpl["version"]), start_date, project,
-         (owner or tpl.get("owner") or "").strip(), now),
+        (
+            instance_id,
+            template_id,
+            int(tpl["version"]),
+            start_date,
+            project,
+            (owner or tpl.get("owner") or "").strip(),
+            now,
+        ),
     )
     # Pass 1: create every card with computed dates.
     local_to_card: dict[str, str] = {}
@@ -2423,10 +2664,11 @@ def instantiate_template(template_id: str, start_date: str,
         # Per-task work_days mask (parsival#73) overrides the template's
         # duration_unit for this task's date math and propagates to the card.
         task_wd = (task.get("work_days") or "").strip()
-        s_date  = _add_days(start_date, int(task["offset_start_days"]), unit, task_wd)
+        s_date = _add_days(start_date, int(task["offset_start_days"]), unit, task_wd)
         s_shift = int(task["offset_start_shift"]) or 1
         e_date, e_shift = _duration_to_end(
-            s_date, s_shift, int(task["duration_shifts"]), unit, task_wd)
+            s_date, s_shift, int(task["duration_shifts"]), unit, task_wd
+        )
         c.execute(
             "INSERT INTO lookahead_cards "
             "(id, title, project, assignee, start_date, start_shift_num, "
@@ -2434,11 +2676,22 @@ def instantiate_template(template_id: str, start_date: str,
             " linked_procedure_doc, template_instance_id, template_task_local_id, "
             " created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', '', ?, ?, ?, ?, ?, ?)",
-            (card_id, task["title"], project, "",
-             s_date, s_shift, e_date, e_shift,
-             task_wd,
-             task.get("linked_procedure_doc", ""),
-             instance_id, task["local_id"], now, now),
+            (
+                card_id,
+                task["title"],
+                project,
+                "",
+                s_date,
+                s_shift,
+                e_date,
+                e_shift,
+                task_wd,
+                task.get("linked_procedure_doc", ""),
+                instance_id,
+                task["local_id"],
+                now,
+                now,
+            ),
         )
         # Copy resource requirements to BOM entries (named_resource_id only).
         for req in task["resource_requirements"]:
@@ -2472,20 +2725,32 @@ def _annotate_instance_outdated(inst: dict) -> dict:
     """
     if not inst:
         return inst
-    cur = conn().execute(
-        "SELECT version FROM lookahead_templates WHERE id = ?",
-        (inst["template_id"],),
-    ).fetchone()
+    cur = (
+        conn()
+        .execute(
+            "SELECT version FROM lookahead_templates WHERE id = ?",
+            (inst["template_id"],),
+        )
+        .fetchone()
+    )
     current = int(cur["version"]) if cur else int(inst.get("template_version") or 1)
     inst["template_current_version"] = current
     inst["outdated"] = current > int(inst.get("template_version") or 0)
     return inst
 
 
-def get_instance(instance_id: str) -> Optional[dict]:
-    row = conn().execute(
-        "SELECT * FROM lookahead_template_instances WHERE id = ?", (instance_id,)
-    ).fetchone()
+def get_instance(instance_id: str) -> dict | None:
+    """Return one template instance with its cohort of cards attached.
+
+    :param instance_id: The instance's UUID.
+    :return: The instance dict including its ``cards``, or ``None`` if no such
+        instance exists.
+    """
+    row = (
+        conn()
+        .execute("SELECT * FROM lookahead_template_instances WHERE id = ?", (instance_id,))
+        .fetchone()
+    )
     if not row:
         return None
     inst = dict(row)
@@ -2494,8 +2759,14 @@ def get_instance(instance_id: str) -> Optional[dict]:
     return _annotate_instance_outdated(inst)
 
 
-def list_instances(project: Optional[str] = None,
-                   status: Optional[str] = None) -> list[dict]:
+def list_instances(project: str | None = None, status: str | None = None) -> list[dict]:
+    """List template instances, optionally filtered by project and status.
+
+    :param project: Optional project tag to restrict to.
+    :param status: Optional instance status to restrict to (see
+        ``_INSTANCE_STATUSES``).
+    :return: Instance rows as dicts.
+    """
     sql = "SELECT * FROM lookahead_template_instances"
     args: list = []
     where: list[str] = []
@@ -2513,15 +2784,27 @@ def list_instances(project: Optional[str] = None,
 
 
 def list_lookahead_cards_for_instance(instance_id: str) -> list[dict]:
-    rows = _rows_to_list(conn().execute(
-        "SELECT * FROM lookahead_cards WHERE template_instance_id = ? "
-        "ORDER BY start_date, start_shift_num, id",
-        (instance_id,),
-    ).fetchall())
+    """List the cards created by one template instantiation, in schedule order.
+
+    This is the cohort a reschedule moves together: every card stamped with the
+    same ``template_instance_id`` shifts by the same delta.
+
+    :param instance_id: The instance's UUID.
+    :return: Card dicts, hydrated the same way as :func:`get_lookahead_card`.
+    """
+    rows = _rows_to_list(
+        conn()
+        .execute(
+            "SELECT * FROM lookahead_cards WHERE template_instance_id = ? "
+            "ORDER BY start_date, start_shift_num, id",
+            (instance_id,),
+        )
+        .fetchall()
+    )
     return [_card_with_relations(r) for r in rows]
 
 
-def reschedule_instance(instance_id: str, new_start_date: str) -> Optional[dict]:
+def reschedule_instance(instance_id: str, new_start_date: str) -> dict | None:
     """Shift all cards attached to the instance by (new_start_date - old_start_date).
 
     Uses the instance's ``duration_unit`` via its template to honour
@@ -2532,7 +2815,8 @@ def reschedule_instance(instance_id: str, new_start_date: str) -> Optional[dict]
     inst = c.execute(
         "SELECT i.*, t.duration_unit FROM lookahead_template_instances i "
         "JOIN lookahead_templates t ON t.id = i.template_id "
-        "WHERE i.id = ?", (instance_id,),
+        "WHERE i.id = ?",
+        (instance_id,),
     ).fetchone()
     if not inst:
         return None
@@ -2542,9 +2826,11 @@ def reschedule_instance(instance_id: str, new_start_date: str) -> Optional[dict]
     # Delta in calendar days — we apply it per-card using the same unit so
     # business-day templates stay business-day aligned.
     from datetime import date
+
     def _as_date(s):
         y, m, d = (int(x) for x in s.split("-"))
         return date(y, m, d)
+
     delta_calendar = (_as_date(new_start_date) - _as_date(old_start)).days
     if delta_calendar == 0:
         return get_instance(instance_id)
@@ -2553,6 +2839,7 @@ def reschedule_instance(instance_id: str, new_start_date: str) -> Optional[dict]
     # empty/all-7-days workweek shift by calendar delta; restricted workweeks
     # shift by their own work-day count so relative spacing stays intact.
     from datetime import timedelta
+
     a, b = sorted([_as_date(old_start), _as_date(new_start_date)])
 
     def _count_work_days(wd: frozenset[int]) -> int:
@@ -2574,13 +2861,12 @@ def reschedule_instance(instance_id: str, new_start_date: str) -> Optional[dict]
         if wd not in workweek_cache:
             workweek_cache[wd] = _count_work_days(wd)
         card_delta = workweek_cache[wd]
-        card_unit  = "business_days" if (wd and len(wd) < 7) else unit
-        card_wd    = card.get("work_days") or ""
+        card_unit = "business_days" if (wd and len(wd) < 7) else unit
+        card_wd = card.get("work_days") or ""
         new_s = _add_days(card["start_date"], card_delta, card_unit, card_wd)
-        new_e = _add_days(card["end_date"],   card_delta, card_unit, card_wd)
+        new_e = _add_days(card["end_date"], card_delta, card_unit, card_wd)
         c.execute(
-            "UPDATE lookahead_cards SET start_date = ?, end_date = ?, updated_at = ? "
-            "WHERE id = ?",
+            "UPDATE lookahead_cards SET start_date = ?, end_date = ?, updated_at = ? WHERE id = ?",
             (new_s, new_e, now, card["id"]),
         )
     c.execute(
@@ -2590,7 +2876,7 @@ def reschedule_instance(instance_id: str, new_start_date: str) -> Optional[dict]
     return get_instance(instance_id)
 
 
-def upgrade_instance(instance_id: str) -> Optional[dict]:
+def upgrade_instance(instance_id: str) -> dict | None:
     """Re-apply the current template version to an existing instance.
 
     Per parsival#60: the user opted in to this upgrade.  Existing cards keep
@@ -2602,6 +2888,7 @@ def upgrade_instance(instance_id: str) -> Optional[dict]:
     Dependencies are rebuilt from the current template graph.
     """
     import uuid as _uuid
+
     c = conn()
     inst_row = c.execute(
         "SELECT * FROM lookahead_template_instances WHERE id = ?", (instance_id,)
@@ -2616,14 +2903,16 @@ def upgrade_instance(instance_id: str) -> Optional[dict]:
         return get_instance(instance_id)  # already current
 
     start_date = inst["start_date"]
-    project    = inst["project_tag"]
-    unit       = tpl["duration_unit"]
-    now        = _now_iso()
+    project = inst["project_tag"]
+    unit = tpl["duration_unit"]
+    now = _now_iso()
 
-    existing = _rows_to_list(c.execute(
-        "SELECT * FROM lookahead_cards WHERE template_instance_id = ?",
-        (instance_id,),
-    ).fetchall())
+    existing = _rows_to_list(
+        c.execute(
+            "SELECT * FROM lookahead_cards WHERE template_instance_id = ?",
+            (instance_id,),
+        ).fetchall()
+    )
     card_by_local: dict[str, dict] = {
         r["template_task_local_id"]: r for r in existing if r["template_task_local_id"]
     }
@@ -2633,10 +2922,11 @@ def upgrade_instance(instance_id: str) -> Optional[dict]:
     for task in tpl["tasks"]:
         local_id = task["local_id"]
         task_wd = (task.get("work_days") or "").strip()
-        s_date  = _add_days(start_date, int(task["offset_start_days"]), unit, task_wd)
+        s_date = _add_days(start_date, int(task["offset_start_days"]), unit, task_wd)
         s_shift = int(task["offset_start_shift"]) or 1
         e_date, e_shift = _duration_to_end(
-            s_date, s_shift, int(task["duration_shifts"]), unit, task_wd)
+            s_date, s_shift, int(task["duration_shifts"]), unit, task_wd
+        )
         existing_card = card_by_local.get(local_id)
         if existing_card:
             cid = existing_card["id"]
@@ -2645,9 +2935,17 @@ def upgrade_instance(instance_id: str) -> Optional[dict]:
                 "start_shift_num = ?, end_date = ?, end_shift_num = ?, "
                 "work_days = ?, linked_procedure_doc = ?, updated_at = ? "
                 "WHERE id = ?",
-                (task["title"], s_date, s_shift, e_date, e_shift,
-                 task_wd,
-                 task.get("linked_procedure_doc", ""), now, cid),
+                (
+                    task["title"],
+                    s_date,
+                    s_shift,
+                    e_date,
+                    e_shift,
+                    task_wd,
+                    task.get("linked_procedure_doc", ""),
+                    now,
+                    cid,
+                ),
             )
         else:
             cid = str(_uuid.uuid4())
@@ -2658,11 +2956,22 @@ def upgrade_instance(instance_id: str) -> Optional[dict]:
                 " linked_procedure_doc, template_instance_id, template_task_local_id, "
                 " created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', '', ?, ?, ?, ?, ?, ?)",
-                (cid, task["title"], project, "",
-                 s_date, s_shift, e_date, e_shift,
-                 task_wd,
-                 task.get("linked_procedure_doc", ""),
-                 instance_id, local_id, now, now),
+                (
+                    cid,
+                    task["title"],
+                    project,
+                    "",
+                    s_date,
+                    s_shift,
+                    e_date,
+                    e_shift,
+                    task_wd,
+                    task.get("linked_procedure_doc", ""),
+                    instance_id,
+                    local_id,
+                    now,
+                    now,
+                ),
             )
         local_to_card_id[local_id] = cid
 
@@ -2682,9 +2991,7 @@ def upgrade_instance(instance_id: str) -> Optional[dict]:
     # Deps for cards whose local_id was dropped from the template stay alone;
     # those cards are no longer part of the template graph.
     for cid in local_to_card_id.values():
-        c.execute(
-            "DELETE FROM lookahead_card_deps WHERE card_id = ?", (cid,)
-        )
+        c.execute("DELETE FROM lookahead_card_deps WHERE card_id = ?", (cid,))
     for task in tpl["tasks"]:
         cid = local_to_card_id[task["local_id"]]
         for dep_local in task["depends_on"]:
@@ -2703,7 +3010,17 @@ def upgrade_instance(instance_id: str) -> Optional[dict]:
     return get_instance(instance_id)
 
 
-def set_instance_status(instance_id: str, status: str) -> Optional[dict]:
+def set_instance_status(instance_id: str, status: str) -> dict | None:
+    """Move a template instance to a new lifecycle status.
+
+    The instance's cards are not touched: cancelling an instance records that the
+    cohort is no longer being pursued without deleting the scheduled work.
+
+    :param instance_id: The instance's UUID.
+    :param status: One of ``_INSTANCE_STATUSES``.
+    :return: The updated instance dict, or ``None`` if it does not exist.
+    :raises ValueError: If ``status`` is not a recognised instance status.
+    """
     if status not in _INSTANCE_STATUSES:
         raise ValueError(f"invalid instance status: {status}")
     conn().execute(
@@ -2716,15 +3033,11 @@ def set_instance_status(instance_id: str, status: str) -> Optional[dict]:
 def delete_instance(instance_id: str) -> None:
     """Delete an instance and its still-attached cards.  Detached cards stay."""
     c = conn()
-    c.execute(
-        "DELETE FROM lookahead_cards WHERE template_instance_id = ?", (instance_id,)
-    )
-    c.execute(
-        "DELETE FROM lookahead_template_instances WHERE id = ?", (instance_id,)
-    )
+    c.execute("DELETE FROM lookahead_cards WHERE template_instance_id = ?", (instance_id,))
+    c.execute("DELETE FROM lookahead_template_instances WHERE id = ?", (instance_id,))
 
 
-def detach_card(card_id: str) -> Optional[dict]:
+def detach_card(card_id: str) -> dict | None:
     """Remove the card from its template instance without deleting it."""
     conn().execute(
         "UPDATE lookahead_cards SET template_instance_id = NULL, "
@@ -2764,10 +3077,10 @@ def maybe_autocomplete_instance(instance_id: str) -> None:
 # ``lookahead_card_links`` table and stay marked ``decision='accepted'`` so
 # the annotator doesn't re-propose them.
 
-def list_card_suggestions(card_id: str,
-                          include_decided: bool = False) -> list[dict]:
+
+def list_card_suggestions(card_id: str, include_decided: bool = False) -> list[dict]:
     """Return suggestions for a card.  Pending only by default."""
-    sql = ("SELECT * FROM lookahead_card_link_suggestions WHERE card_id = ?")
+    sql = "SELECT * FROM lookahead_card_link_suggestions WHERE card_id = ?"
     args: list = [card_id]
     if not include_decided:
         sql += " AND decision IS NULL"
@@ -2775,8 +3088,9 @@ def list_card_suggestions(card_id: str,
     return _rows_to_list(conn().execute(sql, args).fetchall())
 
 
-def add_card_suggestion(card_id: str, link_type: str, target_id: str,
-                        reason: str = "") -> Optional[dict]:
+def add_card_suggestion(
+    card_id: str, link_type: str, target_id: str, reason: str = ""
+) -> dict | None:
     """Insert a new pending suggestion.  Deduped on (card, type, target)."""
     if link_type not in _LINK_TYPES:
         return None
@@ -2803,7 +3117,7 @@ def add_card_suggestion(card_id: str, link_type: str, target_id: str,
     return _row_to_dict(row)
 
 
-def decide_card_suggestion(suggestion_id: int, decision: str) -> Optional[dict]:
+def decide_card_suggestion(suggestion_id: int, decision: str) -> dict | None:
     """Accept or reject a suggestion.  Accepted ones also become card_links."""
     if decision not in ("accepted", "rejected"):
         raise ValueError(f"invalid decision: {decision}")
@@ -2815,8 +3129,7 @@ def decide_card_suggestion(suggestion_id: int, decision: str) -> Optional[dict]:
     if not row:
         return None
     c.execute(
-        "UPDATE lookahead_card_link_suggestions "
-        "SET decision = ?, decided_at = ? WHERE id = ?",
+        "UPDATE lookahead_card_link_suggestions SET decision = ?, decided_at = ? WHERE id = ?",
         (decision, _now_iso(), int(suggestion_id)),
     )
     if decision == "accepted":
@@ -2825,19 +3138,21 @@ def decide_card_suggestion(suggestion_id: int, decision: str) -> Optional[dict]:
             "(card_id, link_type, target_id) VALUES (?, ?, ?)",
             (row["card_id"], row["link_type"], row["target_id"]),
         )
-    return _row_to_dict(c.execute(
-        "SELECT * FROM lookahead_card_link_suggestions WHERE id = ?",
-        (int(suggestion_id),),
-    ).fetchone())
+    return _row_to_dict(
+        c.execute(
+            "SELECT * FROM lookahead_card_link_suggestions WHERE id = ?",
+            (int(suggestion_id),),
+        ).fetchone()
+    )
 
 
 # ── Slack scan dedup (parsival#69) ────────────────────────────────────────────
 
-def slack_unseen_message_ts(team: str, channel_id: str,
-                            ts_list: list[str]) -> set[str]:
-    """
-    Return the subset of ``ts_list`` that has not yet been recorded as seen
-    for the given ``(team, channel_id)``.
+
+def slack_unseen_message_ts(team: str, channel_id: str, ts_list: list[str]) -> set[str]:
+    """Return the timestamps in ``ts_list`` not yet recorded as seen.
+
+    Scoped to the given ``(team, channel_id)``.
 
     Used by ``connector_slack._fetch_for_token`` to keep only newly-surfaced
     messages in each scan.  The connector calls this to filter the raw
@@ -2862,10 +3177,8 @@ def slack_unseen_message_ts(team: str, channel_id: str,
     return {ts for ts in ts_list if ts not in seen}
 
 
-def slack_mark_messages_seen(team: str, channel_id: str,
-                             ts_list: list[str]) -> None:
-    """
-    Record ``(team, channel_id, ts)`` tuples as already surfaced.
+def slack_mark_messages_seen(team: str, channel_id: str, ts_list: list[str]) -> None:
+    """Record ``(team, channel_id, ts)`` tuples as already surfaced.
 
     Called by the Slack connector right after it emits a ``RawItem`` built
     from ``ts_list`` so subsequent scans can skip those messages.  Uses
@@ -2883,26 +3196,29 @@ def slack_mark_messages_seen(team: str, channel_id: str,
     )
 
 
-def candidate_items_for_card(project: str, start_date: str, end_date: str,
-                             limit: int = 40) -> list[dict]:
-    """Return items tagged to the same project whose timestamp sits near the
-    card window.  Used as the shortlist the LLM ranks against the card.
+def candidate_items_for_card(
+    project: str, start_date: str, end_date: str, limit: int = 40
+) -> list[dict]:
+    """Return same-project items whose timestamp sits near the card window.
+
+    Used as the shortlist the LLM ranks against the card.
     """
     if not project:
         return []
     # Widen the window by two weeks on each side — correlations aren't always
     # same-week, and the LLM can still reject out-of-scope candidates.
     from datetime import date, timedelta
+
     def _as_date(s):
         y, m, d = (int(x) for x in s.split("-"))
         return date(y, m, d)
+
     try:
         lo = (_as_date(start_date) - timedelta(days=14)).isoformat()
-        hi = (_as_date(end_date)   + timedelta(days=14)).isoformat()
+        hi = (_as_date(end_date) + timedelta(days=14)).isoformat()
     except Exception:
         lo, hi = "", "9999"
     items = get_items_by_project(project)
-    pruned = [i for i in items
-              if lo <= (i.get("timestamp", "")[:10] or "") <= hi]
+    pruned = [i for i in items if lo <= (i.get("timestamp", "")[:10] or "") <= hi]
     pruned.sort(key=lambda i: i.get("timestamp") or "", reverse=True)
     return pruned[:limit]

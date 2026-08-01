@@ -1,5 +1,4 @@
-"""
-crypto.py — At-rest encryption for connection credentials.
+"""crypto.py — At-rest encryption for connection credentials.
 
 Uses Fernet (AES-128-CBC + HMAC-SHA256) from the cryptography package.
 A Fernet key is derived from the CREDENTIALS_KEY env var using SHA-256.
@@ -27,10 +26,10 @@ Secret fields (shared with routers/connections.py)
 ─────────────────────────────────────────────────────────────────────────────
   SECRET_FIELDS = {"password", "client_secret", "token"}
 """
+
 import base64
 import hashlib
 import logging
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -47,10 +46,12 @@ def _get_fernet():
         return _fernet
     # Import here to avoid circular imports at module load time.
     import config
+
     key_str = config.CREDENTIALS_KEY
     if not key_str:
         return None
     from cryptography.fernet import Fernet
+
     # Derive a 32-byte Fernet key from the passphrase using SHA-256.
     # CREDENTIALS_KEY should be a strong random value (e.g. a UUID4 or 32 random
     # bytes encoded as hex).  SHA-256 is used as a key-derivation convenience —
@@ -66,8 +67,8 @@ def _is_encrypted(value: str) -> bool:
 
 
 def encrypt_secret(plaintext: str) -> str:
-    """
-    Encrypt *plaintext* with Fernet if a key is configured.
+    """Encrypt *plaintext* with Fernet if a key is configured.
+
     Returns *plaintext* unchanged when no key is set (pass-through mode).
     Values that already look encrypted are returned unchanged.
     """
@@ -82,8 +83,8 @@ def encrypt_secret(plaintext: str) -> str:
 
 
 def decrypt_secret(value: str) -> str:
-    """
-    Decrypt *value* if it is a Fernet token and a key is configured.
+    """Decrypt *value* if it is a Fernet token and a key is configured.
+
     Returns *value* unchanged when no key is set or the value is plaintext.
     """
     if not value:

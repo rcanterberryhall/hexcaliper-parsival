@@ -4,29 +4,29 @@ Exercises _maybe_form_situation, _rescore_situation, and _update_situation_recor
 directly. The existing test_situations.py only tests HTTP endpoints against
 pre-inserted fixture data; it never exercises the formation logic itself.
 """
+
 import json
 import uuid
 from unittest.mock import patch
 
+from app import (
+    Q,
+    analyses,
+    scan_state,
+    situations_tbl,
+)
 from situation_manager import (
     _maybe_form_situation,
     _rescore_situation,
     _update_situation_record,
 )
-from app import (
-    analyses,
-    situations_tbl,
-    intel_tbl,
-    scan_state,
-    Q,
-)
 
 MOCK_SYNTHESIS = {
-    "title":        "Test Situation",
-    "summary":      "Two related items detected.",
-    "status":       "in_progress",
+    "title": "Test Situation",
+    "summary": "Two related items detected.",
+    "status": "in_progress",
     "open_actions": [],
-    "key_context":  None,
+    "key_context": None,
 }
 
 
@@ -40,29 +40,31 @@ def _insert_analysis(
     timestamp=None,
     situation_id=None,
 ):
-    analyses.insert({
-        "item_id":           item_id,
-        "source":            source,
-        "title":             f"Item {item_id}",
-        "author":            "alice",
-        "timestamp":         timestamp or "2026-03-17T10:00:00+00:00",
-        "url":               "",
-        "has_action":        False,
-        "priority":          priority,
-        "category":          "fyi",
-        "summary":           f"Summary of {item_id}",
-        "urgency":           None,
-        "action_items":      "[]",
-        "goals":             "[]",
-        "key_dates":         "[]",
-        "information_items": "[]",
-        "body_preview":      f"body of {item_id}",
-        "hierarchy":         hierarchy,
-        "project_tag":       project_tag,
-        "references":        json.dumps(refs or []),
-        "situation_id":      situation_id,
-        "processed_at":      "2026-03-17T10:00:00+00:00",
-    })
+    analyses.insert(
+        {
+            "item_id": item_id,
+            "source": source,
+            "title": f"Item {item_id}",
+            "author": "alice",
+            "timestamp": timestamp or "2026-03-17T10:00:00+00:00",
+            "url": "",
+            "has_action": False,
+            "priority": priority,
+            "category": "fyi",
+            "summary": f"Summary of {item_id}",
+            "urgency": None,
+            "action_items": "[]",
+            "goals": "[]",
+            "key_dates": "[]",
+            "information_items": "[]",
+            "body_preview": f"body of {item_id}",
+            "hierarchy": hierarchy,
+            "project_tag": project_tag,
+            "references": json.dumps(refs or []),
+            "situation_id": situation_id,
+            "processed_at": "2026-03-17T10:00:00+00:00",
+        }
+    )
 
 
 def _insert_situation(
@@ -72,27 +74,30 @@ def _insert_situation(
     score=1.0,
     score_updated_at="2026-03-17T10:00:00+00:00",
 ):
-    situations_tbl.insert({
-        "situation_id":     sit_id,
-        "title":            "Existing Situation",
-        "summary":          "Things are happening.",
-        "status":           "in_progress",
-        "item_ids":         item_ids,
-        "sources":          ["jira"],
-        "project_tag":      project_tag,
-        "score":            score,
-        "priority":         "medium",
-        "open_actions":     [],
-        "references":       [],
-        "key_context":      None,
-        "last_updated":     "2026-03-17T10:00:00+00:00",
-        "created_at":       "2026-03-17T10:00:00+00:00",
-        "score_updated_at": score_updated_at,
-        "dismissed":        False,
-    })
+    situations_tbl.insert(
+        {
+            "situation_id": sit_id,
+            "title": "Existing Situation",
+            "summary": "Things are happening.",
+            "status": "in_progress",
+            "item_ids": item_ids,
+            "sources": ["jira"],
+            "project_tag": project_tag,
+            "score": score,
+            "priority": "medium",
+            "open_actions": [],
+            "references": [],
+            "key_context": None,
+            "last_updated": "2026-03-17T10:00:00+00:00",
+            "created_at": "2026-03-17T10:00:00+00:00",
+            "score_updated_at": score_updated_at,
+            "dismissed": False,
+        }
+    )
 
 
 # ── Formation from shared references ─────────────────────────────────────────
+
 
 def test_forms_situation_from_shared_reference():
     _insert_analysis("a1", refs=["proj-42"])
@@ -157,8 +162,7 @@ def test_rescores_existing_situation_when_item_already_member():
     sit_id = str(uuid.uuid4())
     _insert_analysis("a1", refs=[], situation_id=sit_id)
     _insert_analysis("a2", refs=[], situation_id=sit_id)
-    _insert_situation(sit_id, ["a1", "a2"],
-                      score_updated_at="2020-01-01T00:00:00+00:00")
+    _insert_situation(sit_id, ["a1", "a2"], score_updated_at="2020-01-01T00:00:00+00:00")
 
     _maybe_form_situation("a1")
 
@@ -170,12 +174,9 @@ def test_rescores_existing_situation_when_item_already_member():
 
 def test_rescore_situation_updates_score_field():
     sit_id = str(uuid.uuid4())
-    _insert_analysis("b1", priority="high", hierarchy="user",
-                     timestamp="2026-03-25T08:00:00+00:00")
-    _insert_analysis("b2", priority="high", hierarchy="user",
-                     timestamp="2026-03-25T08:00:00+00:00")
-    _insert_situation(sit_id, ["b1", "b2"], score=0.0,
-                      score_updated_at="2020-01-01T00:00:00+00:00")
+    _insert_analysis("b1", priority="high", hierarchy="user", timestamp="2026-03-25T08:00:00+00:00")
+    _insert_analysis("b2", priority="high", hierarchy="user", timestamp="2026-03-25T08:00:00+00:00")
+    _insert_situation(sit_id, ["b1", "b2"], score=0.0, score_updated_at="2020-01-01T00:00:00+00:00")
 
     _rescore_situation(sit_id)
 
@@ -200,25 +201,41 @@ def test_update_situation_record_runs_synthesis():
 
 # ── Completed actions context (parsival#56) ──────────────────────────────────
 
+
 def test_synthesis_receives_completed_actions_from_done_todos():
     """The narrative call should be told which action items are already done so
     it doesn't restate finished work as still pending (parsival#56)."""
     import db as _db
+
     sit_id = str(uuid.uuid4())
     _insert_analysis("d1", refs=["proj-77"])
     _insert_analysis("d2", refs=["proj-77"])
     _insert_situation(sit_id, ["d1", "d2"])
     # One done todo on d1, one open todo on d2 — only the done one should reach
     # the synthesizer's completed_actions argument.
-    _db.insert_todo({"item_id": "d1", "description": "Order the part",
-                     "done": 1, "status": "done", "owner": "Alice",
-                     "created_at": "2026-04-12T10:00:00+00:00"})
-    _db.insert_todo({"item_id": "d2", "description": "Schedule the lift",
-                     "done": 0, "status": "open",
-                     "created_at": "2026-04-13T10:00:00+00:00"})
+    _db.insert_todo(
+        {
+            "item_id": "d1",
+            "description": "Order the part",
+            "done": 1,
+            "status": "done",
+            "owner": "Alice",
+            "created_at": "2026-04-12T10:00:00+00:00",
+        }
+    )
+    _db.insert_todo(
+        {
+            "item_id": "d2",
+            "description": "Schedule the lift",
+            "done": 0,
+            "status": "open",
+            "created_at": "2026-04-13T10:00:00+00:00",
+        }
+    )
 
-    with patch("situation_manager._correlator.synthesize_situation",
-               return_value=MOCK_SYNTHESIS) as synth:
+    with patch(
+        "situation_manager._correlator.synthesize_situation", return_value=MOCK_SYNTHESIS
+    ) as synth:
         _update_situation_record(sit_id, ["d1", "d2"])
 
     kwargs = synth.call_args.kwargs
@@ -232,21 +249,28 @@ def test_synthesize_prompt_includes_completed_actions_block():
     """When completed_actions are passed, the prompt rendered to the LLM must
     contain the Completed actions section (parsival#56)."""
     import correlator as _correlator_mod
+
     captured = {}
 
     def fake_generate(prompt, **kw):
         captured["prompt"] = prompt
         return '{"title":"t","summary":"s","status":"in_progress","open_actions":[],"key_context":null}'
 
-    items = [{"source": "email", "title": "Lift planning",
-              "summary": "Crew is staging the rig",
-              "priority": "high", "category": "task"}]
-    completed = [{"description": "Confirm crane reservation",
-                  "owner": "Alice", "done": 1}]
-    with patch("correlator.config.OLLAMA_URL", "http://stub"), \
-         patch("correlator.llm.generate", side_effect=fake_generate):
-        _correlator_mod.synthesize_situation(
-            items, "Bob", completed_actions=completed)
+    items = [
+        {
+            "source": "email",
+            "title": "Lift planning",
+            "summary": "Crew is staging the rig",
+            "priority": "high",
+            "category": "task",
+        }
+    ]
+    completed = [{"description": "Confirm crane reservation", "owner": "Alice", "done": 1}]
+    with (
+        patch("correlator.config.OLLAMA_URL", "http://stub"),
+        patch("correlator.llm.generate", side_effect=fake_generate),
+    ):
+        _correlator_mod.synthesize_situation(items, "Bob", completed_actions=completed)
 
     assert "Completed actions" in captured["prompt"]
     assert "Confirm crane reservation" in captured["prompt"]
@@ -255,16 +279,20 @@ def test_synthesize_prompt_includes_completed_actions_block():
 def test_synthesize_prompt_omits_completed_block_when_empty():
     """No completed todos means no Completed actions noise in the prompt."""
     import correlator as _correlator_mod
+
     captured = {}
 
     def fake_generate(prompt, **kw):
         captured["prompt"] = prompt
         return '{"title":"t","summary":"s","status":"in_progress","open_actions":[],"key_context":null}'
 
-    items = [{"source": "email", "title": "x", "summary": "y",
-              "priority": "low", "category": "fyi"}]
-    with patch("correlator.config.OLLAMA_URL", "http://stub"), \
-         patch("correlator.llm.generate", side_effect=fake_generate):
+    items = [
+        {"source": "email", "title": "x", "summary": "y", "priority": "low", "category": "fyi"}
+    ]
+    with (
+        patch("correlator.config.OLLAMA_URL", "http://stub"),
+        patch("correlator.llm.generate", side_effect=fake_generate),
+    ):
         _correlator_mod.synthesize_situation(items, "Bob")
 
     # The trailing prompt instruction always references "Completed actions";
@@ -305,6 +333,7 @@ def test_situation_project_tag_consensus():
         _update_situation_record(sit["situation_id"], all_ids)
 
     import db as _db
+
     updated = situations_tbl.get(Q.situation_id == sit["situation_id"])
     tags = _db.parse_project_tags(updated["project_tag"])
     assert "alpha" in tags

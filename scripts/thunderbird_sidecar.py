@@ -2,7 +2,7 @@
 thunderbird_sidecar.py — Thunderbird email ingestion sidecar (Ubuntu / Linux).
 
 Reads recent emails from Thunderbird's local mbox/Maildir cache on disk
-and POSTs them to the Squire ``/ingest`` endpoint.  No API tokens or IT
+and POSTs them to the Parsival ``/ingest`` endpoint.  No API tokens or IT
 involvement required — Thunderbird must be configured to keep a local copy
 of messages.
 
@@ -25,21 +25,23 @@ Requirements:
     - Account Settings → Synchronization & Storage →
       "Keep messages for this account on this computer" must be checked.
 """
+
 import email
 import email.header
 import hashlib
 import mailbox
 import re
 import sys
-import requests
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
+import requests
+
 # ── Config ────────────────────────────────────────────────────────────────────
-PAGE_API_URL   = "http://localhost:8082/page/api"
+PAGE_API_URL = "http://localhost:8082/page/api"
 LOOKBACK_HOURS = 48
-MAX_EMAILS     = 75
+MAX_EMAILS = 75
 
 # Leave as None to auto-detect, or set explicitly:
 # THUNDERBIRD_PROFILE = "/home/youruser/.thunderbird/abc123.default-release"
@@ -61,7 +63,7 @@ def find_profile() -> Path:
         sys.exit("ERROR: ~/.thunderbird/profiles.ini not found")
 
     current_path = None
-    is_default   = False
+    is_default = False
     default_path = None
 
     for line in profiles_ini.read_text().splitlines():
@@ -73,7 +75,7 @@ def find_profile() -> Path:
         elif line == "" and current_path:
             if is_default:
                 default_path = current_path
-            is_default   = False
+            is_default = False
             current_path = None
 
     if not default_path:
@@ -85,11 +87,7 @@ def find_profile() -> Path:
     if not default_path:
         sys.exit("ERROR: Could not locate a Thunderbird profile directory")
 
-    profile = (
-        tb_dir / default_path
-        if not Path(default_path).is_absolute()
-        else Path(default_path)
-    )
+    profile = tb_dir / default_path if not Path(default_path).is_absolute() else Path(default_path)
     print(f"Profile: {profile}")
     return profile
 
@@ -115,7 +113,7 @@ def find_account_dir(profile: Path) -> Path:
 def decode_header_val(val: str) -> str:
     try:
         parts = email.header.decode_header(val or "")
-        out   = []
+        out = []
         for part, charset in parts:
             if isinstance(part, bytes):
                 out.append(part.decode(charset or "utf-8", errors="replace"))
@@ -130,21 +128,22 @@ def extract_body(msg: email.message.Message) -> str:
     body = ""
     if msg.is_multipart():
         for part in msg.walk():
-            if (part.get_content_type() == "text/plain"
-                    and "attachment" not in str(part.get("Content-Disposition", ""))):
+            if part.get_content_type() == "text/plain" and "attachment" not in str(
+                part.get("Content-Disposition", "")
+            ):
                 try:
                     charset = part.get_content_charset() or "utf-8"
-                    body    = part.get_payload(decode=True).decode(charset, errors="replace")
+                    body = part.get_payload(decode=True).decode(charset, errors="replace")
                     break
                 except Exception:
                     continue
     else:
         try:
             charset = msg.get_content_charset() or "utf-8"
-            body    = msg.get_payload(decode=True).decode(charset, errors="replace")
+            body = msg.get_payload(decode=True).decode(charset, errors="replace")
         except Exception:
             pass
-    return re.sub(r'\n{3,}', '\n\n', body).strip()
+    return re.sub(r"\n{3,}", "\n\n", body).strip()
 
 
 def parse_date(msg) -> datetime | None:
@@ -153,7 +152,7 @@ def parse_date(msg) -> datetime | None:
         return None
     try:
         dt = parsedate_to_datetime(date_str)
-        return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
     except Exception:
         return None
 
@@ -191,9 +190,9 @@ def load_messages(account_dir: Path, cutoff: datetime) -> list:
     else:
         # Fallback: find any inbox-like mbox file
         candidates = [
-            f for f in account_dir.iterdir()
-            if f.is_file() and not f.suffix == ".msf"
-            and f.name.lower().startswith("inbox")
+            f
+            for f in account_dir.iterdir()
+            if f.is_file() and f.suffix != ".msf" and f.name.lower().startswith("inbox")
         ]
         if candidates:
             print(f"Reading mbox (fallback): {candidates[0]}")
@@ -220,40 +219,44 @@ def load_messages(account_dir: Path, cutoff: datetime) -> list:
 
 
 def fetch() -> list[dict]:
-    profile     = Path(THUNDERBIRD_PROFILE) if THUNDERBIRD_PROFILE else find_profile()
+    profile = Path(THUNDERBIRD_PROFILE) if THUNDERBIRD_PROFILE else find_profile()
     account_dir = find_account_dir(profile)
-    cutoff      = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
-    raw_msgs    = load_messages(account_dir, cutoff)
+    cutoff = datetime.now(UTC) - timedelta(hours=LOOKBACK_HOURS)
+    raw_msgs = load_messages(account_dir, cutoff)
 
     raw_msgs.sort(
-        key=lambda m: parse_date(m) or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda m: parse_date(m) or datetime.min.replace(tzinfo=UTC),
         reverse=True,
     )
     raw_msgs = raw_msgs[:MAX_EMAILS]
 
     items = []
     for msg in raw_msgs:
-        subject  = decode_header_val(msg.get("Subject", "(no subject)"))
-        sender   = decode_header_val(msg.get("From", ""))
+        subject = decode_header_val(msg.get("Subject", "(no subject)"))
+        sender = decode_header_val(msg.get("From", ""))
         to_field = decode_header_val(msg.get("To", ""))
         cc_field = decode_header_val(msg.get("CC", ""))
-        body     = extract_body(msg)
-        dt       = parse_date(msg) or datetime.now(timezone.utc)
-        msg_id   = msg.get("Message-ID", "").strip("<>")
-        item_id  = msg_id if msg_id else hashlib.sha1(
-            f"{sender}{subject}{dt.isoformat()}".encode()
-        ).hexdigest()[:20]
+        body = extract_body(msg)
+        dt = parse_date(msg) or datetime.now(UTC)
+        msg_id = msg.get("Message-ID", "").strip("<>")
+        item_id = (
+            msg_id
+            if msg_id
+            else hashlib.sha1(f"{sender}{subject}{dt.isoformat()}".encode()).hexdigest()[:20]
+        )
 
-        items.append({
-            "source":    "outlook",          # same label as win32com path
-            "item_id":   f"tb_{item_id}",
-            "title":     subject,
-            "body":      body[:3000],
-            "url":       "",
-            "author":    sender,
-            "timestamp": dt.isoformat(),
-            "metadata":  {"via": "thunderbird", "to": to_field, "cc": cc_field},
-        })
+        items.append(
+            {
+                "source": "outlook",  # same label as win32com path
+                "item_id": f"tb_{item_id}",
+                "title": subject,
+                "body": body[:3000],
+                "url": "",
+                "author": sender,
+                "timestamp": dt.isoformat(),
+                "metadata": {"via": "thunderbird", "to": to_field, "cc": cc_field},
+            }
+        )
 
     return items
 
@@ -266,7 +269,9 @@ def post(items: list[dict]) -> None:
         r = requests.post(f"{PAGE_API_URL}/ingest", json={"items": items}, timeout=30)
         r.raise_for_status()
         result = r.json()
-        print(f"Sent {len(items)} → accepted {result.get('received','?')}, skipped {result.get('skipped','?')}")
+        print(
+            f"Sent {len(items)} → accepted {result.get('received', '?')}, skipped {result.get('skipped', '?')}"
+        )
     except requests.ConnectionError:
         sys.exit(f"ERROR: Could not reach API at {PAGE_API_URL} — is Docker running?")
     except Exception as e:

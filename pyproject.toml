@@ -1,0 +1,110 @@
+# Tooling configuration for parsival.
+#
+# Code-style standard (gatehouse STANDARDS.md CODE-004): PEP 8 for style, PEP 257
+# for docstring conventions, Google docstring style. The pinned toolchain below is
+# the arbiter — where the formatter/linter and the written standard disagree, the
+# tool's output wins. Exact versions are pinned in requirements-dev.txt (CODE-003)
+# so the formatter cannot drift between a developer's machine and CI.
+#
+# This file deliberately declares no [project] or [build-system] table: parsival is
+# a deployed service, not a distributable package. pytest configuration stays in
+# pytest.ini, which remains authoritative.
+
+# ── ruff: formatter + linter (CODE-003) ───────────────────────────────────────
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".worktrees", "data", "__pycache__", "web"]
+
+[tool.ruff.format]
+# Double quotes and trailing magic commas match the existing tree, so the first
+# tree-wide format pass reflows layout without also churning every string literal.
+quote-style = "double"
+skip-magic-trailing-comma = false
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors        — PEP 8
+    "W",    # pycodestyle warnings      — PEP 8
+    "F",    # pyflakes                  — unused imports/vars, undefined names
+    "I",    # isort                     — import ordering
+    "B",    # flake8-bugbear            — likely bugs
+    "UP",   # pyupgrade                 — modern 3.12 idiom
+    "SIM",  # flake8-simplify
+    "D",    # pydocstyle                — PEP 257 (DOC-002)
+]
+
+ignore = [
+    # Line length is enforced by the formatter, which reflows code but will not
+    # break an over-long string literal or URL. Flagging those as lint errors
+    # would only produce noqa noise, so E501 is left to `ruff format`.
+    "E501",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests are documented by their names and assertions; docstring rules would add
+# ceremony without adding information. conftest.py must mutate sys.path and set
+# DB_PATH before importing the app, which is an intentional import-order break.
+# F401 is deliberately NOT ignored here: unused test imports are cruft, and the
+# suite itself catches any import that was actually load-bearing.
+"tests/**" = ["D", "E402", "E741"]
+
+# app.py calls logging.basicConfig() and primes psutil's CPU-percent interval
+# counter between imports: basicConfig must run before any other module creates a
+# logger, and the psutil prime must precede first real use. Both are deliberate
+# ordering requirements, not oversights.
+"api/app.py" = ["E402"]
+
+# Late imports that document a dependency direction (avoiding import cycles with
+# app.py) rather than an accident.
+"api/agent.py" = ["E402"]
+"api/config.py" = ["E402"]
+"api/orchestrator.py" = ["E402"]
+"api/situation_manager.py" = ["E402"]
+
+# Host-side sidecars are operator-facing CLIs: stdout IS their interface, and
+# their module docstrings carry the usage text.
+"scripts/**" = ["D"]
+
+# ── mypy: type checking (CODE-001) ────────────────────────────────────────────
+
+[tool.mypy]
+python_version = "3.12"
+# No mypy_path here. api/ has an __init__.py (DOC-006), so pointing the search
+# path at it as well would let mypy reach the same file as both `api.db` and `db`
+# and it aborts with "source file found twice under different module names".
+# Modules are therefore addressed as api.* below. Runtime imports are unaffected:
+# conftest.py and the container workdir put api/ on sys.path independently.
+ignore_missing_imports = true
+warn_unused_configs = true
+# Deliberately not --strict. parsival predates type checking; the gate below is a
+# ratchet, not a rubber stamp — see the override block.
+check_untyped_defs = false
+
+# RATCHET (documented deviation from CODE-001's spirit, not its letter):
+#
+# 14 of parsival's 22 api/ modules are already type-clean and ARE enforced — a
+# regression in any of them fails CI, and any new module is enforced by default.
+# The 8 modules below carry pre-existing errors (69 of them, mostly Optional
+# handling that predates any type checker). They are excluded so the gate is
+# green and meaningful today rather than disabled outright.
+#
+# Each entry is debt with a name on it. Remove a module from this list once its
+# errors are fixed; the list only ever shrinks. Do not add to it — a new module
+# arriving with type errors should be fixed, not exempted.
+[[tool.mypy.overrides]]
+module = [
+    "api.app",
+    "api.db",
+    "api.connector_github",
+    "api.connector_teams",
+    "api.connector_slack",
+    "api.correlator",
+    "api.embedder",
+    "api.orchestrator",
+]
+ignore_errors = true

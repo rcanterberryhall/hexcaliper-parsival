@@ -1,5 +1,4 @@
-"""
-connector_jira.py — Jira Cloud data connector.
+"""connector_jira.py — Jira Cloud data connector.
 
 Queries the Jira REST API v3 using a JQL expression to retrieve issues
 assigned to the current user.  Issue bodies are extracted from Atlassian
@@ -9,19 +8,20 @@ the analysis pipeline.
 Requires ``config.JIRA_EMAIL``, ``config.JIRA_TOKEN``, and
 ``config.JIRA_DOMAIN`` to be set.
 """
+
 import logging
-import requests
-from requests.auth import HTTPBasicAuth
-from datetime import datetime, timedelta, timezone
-from models import RawItem
+from datetime import UTC, datetime, timedelta
+
 import config
+import requests
+from models import RawItem
+from requests.auth import HTTPBasicAuth
 
 log = logging.getLogger(__name__)
 
 
 def _auth() -> HTTPBasicAuth:
-    """
-    Build HTTP Basic Auth credentials for the Jira REST API.
+    """Build HTTP Basic Auth credentials for the Jira REST API.
 
     :return: HTTPBasicAuth instance using the configured email and API token.
     :rtype: requests.auth.HTTPBasicAuth
@@ -30,8 +30,7 @@ def _auth() -> HTTPBasicAuth:
 
 
 def _base() -> str:
-    """
-    Build the Jira REST API v3 base URL for the configured domain.
+    """Build the Jira REST API v3 base URL for the configured domain.
 
     :return: Base URL string, e.g. ``"https://yourcompany.atlassian.net/rest/api/3"``.
     :rtype: str
@@ -40,8 +39,7 @@ def _base() -> str:
 
 
 def _text(adf) -> str:
-    """
-    Recursively extract plain text from an Atlassian Document Format node.
+    """Recursively extract plain text from an Atlassian Document Format node.
 
     ADF is a nested JSON structure used by Jira for rich-text fields.  This
     function walks the tree and concatenates all text leaf nodes.
@@ -60,8 +58,7 @@ def _text(adf) -> str:
 
 
 def fetch() -> list[RawItem]:
-    """
-    Fetch Jira issues matching the configured JQL query.
+    """Fetch Jira issues matching the configured JQL query.
 
     Skips gracefully if credentials or domain are absent or still set to
     placeholder values.  All returned issues are included regardless of the
@@ -79,34 +76,34 @@ def fetch() -> list[RawItem]:
         return []
 
     items: list[RawItem] = []
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=config.LOOKBACK_HOURS)
+    cutoff = datetime.now(UTC) - timedelta(hours=config.LOOKBACK_HOURS)
 
     try:
         r = requests.get(
             f"{_base()}/search",
-            auth    = _auth(),
-            params  = {
-                "jql":        config.JIRA_JQL,
+            auth=_auth(),
+            params={
+                "jql": config.JIRA_JQL,
                 "maxResults": 50,
-                "fields":     "summary,description,status,priority,reporter,updated,duedate,comment,issuetype,project",
+                "fields": "summary,description,status,priority,reporter,updated,duedate,comment,issuetype,project",
             },
-            headers = {"Accept": "application/json"},
-            timeout = 15,
+            headers={"Accept": "application/json"},
+            timeout=15,
         )
         r.raise_for_status()
 
         for issue in r.json().get("issues", []):
-            f        = issue["fields"]
-            updated  = datetime.fromisoformat(f["updated"].replace("Z", "+00:00"))
-            desc     = _text(f.get("description"))
-            status   = f.get("status", {}).get("name", "")
+            f = issue["fields"]
+            updated = datetime.fromisoformat(f["updated"].replace("Z", "+00:00"))
+            desc = _text(f.get("description"))
+            status = f.get("status", {}).get("name", "")
             priority = f.get("priority", {}).get("name", "Medium")
-            due      = f.get("duedate", "")
-            project  = f.get("project", {}).get("name", "")
+            due = f.get("duedate", "")
+            project = f.get("project", {}).get("name", "")
             reporter = f.get("reporter", {}).get("displayName", "")
 
             # Append the most recent comment for additional context.
-            comments     = f.get("comment", {}).get("comments", [])
+            comments = f.get("comment", {}).get("comments", [])
             last_comment = ""
             if comments:
                 lc = comments[-1]
@@ -122,22 +119,24 @@ def fetch() -> list[RawItem]:
                 f"{desc}{last_comment}"
             )
 
-            items.append(RawItem(
-                source    = "jira",
-                item_id   = issue["key"],
-                title     = f"[{issue['key']}] {f.get('summary', '')}",
-                body      = body[:3000],
-                url       = f"https://{config.JIRA_DOMAIN}/browse/{issue['key']}",
-                author    = reporter,
-                timestamp = f["updated"],
-                metadata  = {
-                    "status":    status,
-                    "priority":  priority,
-                    "due":       due,
-                    "project":   project,
-                    "is_recent": updated > cutoff,
-                },
-            ))
+            items.append(
+                RawItem(
+                    source="jira",
+                    item_id=issue["key"],
+                    title=f"[{issue['key']}] {f.get('summary', '')}",
+                    body=body[:3000],
+                    url=f"https://{config.JIRA_DOMAIN}/browse/{issue['key']}",
+                    author=reporter,
+                    timestamp=f["updated"],
+                    metadata={
+                        "status": status,
+                        "priority": priority,
+                        "due": due,
+                        "project": project,
+                        "is_recent": updated > cutoff,
+                    },
+                )
+            )
 
     except Exception as e:
         log.error("error: %s", e)

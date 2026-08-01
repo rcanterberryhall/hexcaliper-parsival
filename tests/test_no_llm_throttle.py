@@ -1,4 +1,4 @@
-"""Regression test for squire#33: parsival has no GPU-concurrency throttle.
+"""Regression test for parsival#33: parsival has no GPU-concurrency throttle.
 
 Background
 ----------
@@ -11,7 +11,7 @@ became strictly subtractive — the lower of the two concurrency limits
 won, and ours was hard-coded to 1, silently halving sync-path throughput
 on a 2-GPU stack.
 
-The fix in squire#33 deletes ``_sem`` and every ``with _sem:`` block.
+The fix in parsival#33 deletes ``_sem`` and every ``with _sem:`` block.
 **This test is the regression pin** that proves no other parsival-side
 throttle has crept back in: it kicks two ``process_ingest_items`` calls
 from two threads, blocks both inside ``analyze`` on a shared
@@ -26,12 +26,12 @@ the three pipeline functions and has no global state to set up — but the
 guarantee covers all three (run_scan / run_reanalyze / process_ingest_items),
 because none of them now wrap the call site.
 """
+
 import threading
-import time
 from unittest.mock import patch
 
 import orchestrator
-from models import RawItem, Analysis
+from models import Analysis, RawItem
 
 
 def _raw(item_id):
@@ -48,10 +48,18 @@ def _raw(item_id):
 
 def _analysis(item_id):
     return Analysis(
-        item_id=item_id, source="outlook", title=f"item {item_id}",
-        author="alice", timestamp="2026-04-10T12:00:00+00:00",
-        url="", has_action=False, priority="low", category="fyi",
-        action_items=[], summary="S", urgency_reason=None,
+        item_id=item_id,
+        source="outlook",
+        title=f"item {item_id}",
+        author="alice",
+        timestamp="2026-04-10T12:00:00+00:00",
+        url="",
+        has_action=False,
+        priority="low",
+        category="fyi",
+        action_items=[],
+        summary="S",
+        urgency_reason=None,
     )
 
 
@@ -92,16 +100,19 @@ def test_sync_path_allows_concurrent_llm_calls():
 
     # No-op the side-effects (DB writes, graph indexing, situation
     # spawning) — this test only cares about call-site concurrency.
-    with patch("orchestrator.analyze", side_effect=fake_analyze), \
-         patch.object(orchestrator, "_save_analysis", lambda *a, **k: None), \
-         patch.object(orchestrator, "_spawn_situation_task", lambda *a, **k: None), \
-         patch("orchestrator.graph.index_item", lambda *a, **k: None):
-
+    with (
+        patch("orchestrator.analyze", side_effect=fake_analyze),
+        patch.object(orchestrator, "_save_analysis", lambda *a, **k: None),
+        patch.object(orchestrator, "_spawn_situation_task", lambda *a, **k: None),
+        patch("orchestrator.graph.index_item", lambda *a, **k: None),
+    ):
         t1 = threading.Thread(
-            target=orchestrator.process_ingest_items, args=([_raw("a")],),
+            target=orchestrator.process_ingest_items,
+            args=([_raw("a")],),
         )
         t2 = threading.Thread(
-            target=orchestrator.process_ingest_items, args=([_raw("b")],),
+            target=orchestrator.process_ingest_items,
+            args=([_raw("b")],),
         )
         t1.start()
         t2.start()
@@ -112,13 +123,11 @@ def test_sync_path_allows_concurrent_llm_calls():
         try:
             assert arrived, (
                 "Only one thread reached analyze() — parsival is gating "
-                "LLM traffic on its own side. squire#33 says merLLM is "
+                "LLM traffic on its own side. parsival#33 says merLLM is "
                 "the single source of truth for GPU concurrency; "
                 "delete whatever throttle was added back."
             )
-            assert concurrent_peak >= 2, (
-                f"concurrent_peak={concurrent_peak}, expected >= 2"
-            )
+            assert concurrent_peak >= 2, f"concurrent_peak={concurrent_peak}, expected >= 2"
         finally:
             release.set()
             t1.join(timeout=5.0)
@@ -160,11 +169,12 @@ def test_single_ingest_batch_fans_out_over_merllm(monkeypatch):
         assert released, "release event was never signalled — test deadlocked"
         return _analysis(item.item_id)
 
-    with patch("orchestrator.analyze", side_effect=fake_analyze), \
-         patch.object(orchestrator, "_save_analysis", lambda *a, **k: None), \
-         patch.object(orchestrator, "_spawn_situation_task", lambda *a, **k: None), \
-         patch("orchestrator.graph.index_item", lambda *a, **k: None):
-
+    with (
+        patch("orchestrator.analyze", side_effect=fake_analyze),
+        patch.object(orchestrator, "_save_analysis", lambda *a, **k: None),
+        patch.object(orchestrator, "_spawn_situation_task", lambda *a, **k: None),
+        patch("orchestrator.graph.index_item", lambda *a, **k: None),
+    ):
         worker = threading.Thread(
             target=orchestrator.process_ingest_items,
             args=([_raw("a"), _raw("b"), _raw("c"), _raw("d")],),
@@ -176,9 +186,7 @@ def test_single_ingest_batch_fans_out_over_merllm(monkeypatch):
                 "serialising items inside a single ingest batch. "
                 "parsival#75: fan items out so merLLM sees >1 job."
             )
-            assert concurrent_peak >= 2, (
-                f"concurrent_peak={concurrent_peak}, expected >= 2"
-            )
+            assert concurrent_peak >= 2, f"concurrent_peak={concurrent_peak}, expected >= 2"
         finally:
             release.set()
             worker.join(timeout=5.0)
@@ -193,9 +201,9 @@ def test_orchestrator_has_no_concurrency_semaphore():
     instead of waiting for the threading test above to flake.
     """
     assert not hasattr(orchestrator, "_sem"), (
-        "orchestrator._sem was re-introduced — see squire#33. "
+        "orchestrator._sem was re-introduced — see parsival#33. "
         "merLLM owns GPU concurrency; parsival never gates LLM traffic."
     )
     assert not hasattr(orchestrator, "get_sem"), (
-        "orchestrator.get_sem was re-introduced — see squire#33."
+        "orchestrator.get_sem was re-introduced — see parsival#33."
     )

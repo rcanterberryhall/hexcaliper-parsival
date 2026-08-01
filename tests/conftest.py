@@ -11,12 +11,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 _tmp = tempfile.mkdtemp()
 os.environ["DB_PATH"] = os.path.join(_tmp, "test.db")
 
-import pytest
-from fastapi.testclient import TestClient
-from app import app, analyses, todos, scan_logs, settings_tbl, situations_tbl, intel_tbl, embeddings_tbl, briefings_tbl
 import config
-import seeder
 import orchestrator
+import pytest
+import seeder
+from app import (
+    analyses,
+    app,
+    briefings_tbl,
+    embeddings_tbl,
+    intel_tbl,
+    scan_logs,
+    settings_tbl,
+    situations_tbl,
+    todos,
+)
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture(scope="session")
@@ -37,6 +47,7 @@ def clear_db():
     briefings_tbl.truncate()
     # Contacts tables don't have a TinyDB-compat proxy; wipe them directly.
     import db as _db
+
     _db.conn().execute("DELETE FROM contact_emails")
     _db.conn().execute("DELETE FROM contacts")
     _db.conn().execute("DELETE FROM lancellmot_aliases")

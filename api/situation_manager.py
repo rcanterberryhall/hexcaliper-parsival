@@ -1,5 +1,4 @@
-"""
-situation_manager.py — Situation formation, scoring, and response helpers.
+"""situation_manager.py — Situation formation, scoring, and response helpers.
 
 Owns all situation-lifecycle logic extracted from app.py:
   _maybe_form_situation()    — correlate an item and form or merge situations
@@ -14,11 +13,12 @@ Owns all situation-lifecycle logic extracted from app.py:
 Uses db.py directly for all persistence.  scan_state is injected via init()
 so situation formation can check the cancellation flag.
 """
+
 import json
 import logging
 import threading
 import uuid as _uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import config
 import correlator as _correlator
@@ -32,8 +32,7 @@ _scan_state: dict = {}
 
 
 def init(scan_state: dict) -> None:
-    """
-    Inject shared scan state from app.py and start the score-decay daemon.
+    """Inject shared scan state from app.py and start the score-decay daemon.
 
     Must be called once at startup before any route handlers execute.
     """
@@ -44,14 +43,14 @@ def init(scan_state: dict) -> None:
 
 def now_iso() -> str:
     """Return the current UTC time as an ISO 8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── Priority helper ────────────────────────────────────────────────────────────
 
+
 def _pri_rank(p: str) -> int:
-    """
-    Convert a priority string to a numeric rank for comparison.
+    """Convert a priority string to a numeric rank for comparison.
 
     :param p: Priority string — ``"high"``, ``"medium"``, or ``"low"``.
     :type p: str
@@ -79,9 +78,9 @@ def _completed_todos_for_items(item_ids: list) -> list[dict]:
 
 # ── Score decay ────────────────────────────────────────────────────────────────
 
+
 def _rescore_situation(sit_id: str) -> None:
-    """
-    Recompute only the urgency score for a single situation without re-running LLM synthesis.
+    """Recompute only the urgency score for a single situation without re-running LLM synthesis.
 
     Cheaper than ``_update_situation_record`` — used by the 30-minute decay
     loop (``_score_decay_loop``) and when a newly saved item correlates with
@@ -109,8 +108,7 @@ def _rescore_situation(sit_id: str) -> None:
 
 
 def _rescore_all_situations() -> None:
-    """
-    Recompute urgency scores for all non-dismissed situations.
+    """Recompute urgency scores for all non-dismissed situations.
 
     Iterates every situation that is not marked ``dismissed`` and calls
     ``_rescore_situation`` on each.  Exceptions for individual situations are
@@ -131,6 +129,7 @@ def _rescore_all_situations() -> None:
 def _score_decay_loop():
     """Recompute situation scores every 30 minutes to reflect recency decay."""
     import time
+
     while True:
         time.sleep(1800)
         try:
@@ -141,9 +140,9 @@ def _score_decay_loop():
 
 # ── Situation record management ────────────────────────────────────────────────
 
+
 def _update_situation_record(sit_id: str, item_ids: list) -> None:
-    """
-    Reload cluster records and recompute score and LLM synthesis for an existing situation.
+    """Reload cluster records and recompute score and LLM synthesis for an existing situation.
 
     Fetches all analysis records for ``item_ids``, re-runs
     ``correlator.synthesize_situation`` (full LLM pass) and
@@ -168,20 +167,25 @@ def _update_situation_record(sit_id: str, item_ids: list) -> None:
 
         with db.lock:
             cluster_intel = db.get_intel_for_items(list(set(item_ids)))
-            cluster_done  = _completed_todos_for_items(item_ids)
-        synthesis   = _correlator.synthesize_situation(
+            cluster_done = _completed_todos_for_items(item_ids)
+        synthesis = _correlator.synthesize_situation(
             cluster_records,
             config.USER_NAME or "the user",
             intel_items=cluster_intel,
             completed_actions=cluster_done,
         )
-        score       = _correlator.score_situation(item_ids, cluster_records)
-        max_pri     = max(cluster_records, key=lambda r: _pri_rank(r.get("priority", "low")))
-        all_refs    = list(set(r for rec in cluster_records
-                               for raw in [rec.get("references")]
-                               for r in (json.loads(raw) if isinstance(raw, str) and raw else (raw or []))))
-        sources     = list(set(r.get("source", "") for r in cluster_records))
-        last_ts     = max((r.get("timestamp", "") for r in cluster_records), default=now_iso())
+        score = _correlator.score_situation(item_ids, cluster_records)
+        max_pri = max(cluster_records, key=lambda r: _pri_rank(r.get("priority", "low")))
+        all_refs = list(
+            set(
+                r
+                for rec in cluster_records
+                for raw in [rec.get("references")]
+                for r in (json.loads(raw) if isinstance(raw, str) and raw else (raw or []))
+            )
+        )
+        sources = list(set(r.get("source", "") for r in cluster_records))
+        last_ts = max((r.get("timestamp", "") for r in cluster_records), default=now_iso())
         # Collect all project tags across cluster members (handles multi-tag)
         all_proj = set()
         for r in cluster_records:
@@ -189,18 +193,18 @@ def _update_situation_record(sit_id: str, item_ids: list) -> None:
         proj_tag_val = db.serialize_project_tags(sorted(all_proj)) if all_proj else None
 
         updates = {
-            "item_ids":         item_ids,
-            "sources":          sources,
-            "score":            score,
-            "priority":         max_pri.get("priority", "medium"),
-            "title":            synthesis.get("title") or "",
-            "summary":          synthesis.get("summary") or "",
-            "status":           synthesis.get("status") or "in_progress",
-            "open_actions":     synthesis.get("open_actions") or [],
-            "key_context":      synthesis.get("key_context"),
-            "references":       all_refs,
-            "last_updated":     last_ts,
-            "project_tag":      proj_tag_val,
+            "item_ids": item_ids,
+            "sources": sources,
+            "score": score,
+            "priority": max_pri.get("priority", "medium"),
+            "title": synthesis.get("title") or "",
+            "summary": synthesis.get("summary") or "",
+            "status": synthesis.get("status") or "in_progress",
+            "open_actions": synthesis.get("open_actions") or [],
+            "key_context": synthesis.get("key_context"),
+            "references": all_refs,
+            "last_updated": last_ts,
+            "project_tag": proj_tag_val,
             "score_updated_at": now_iso(),
         }
         with db.lock:
@@ -212,8 +216,7 @@ def _update_situation_record(sit_id: str, item_ids: list) -> None:
 
 
 def _sync_situation_tags_for_item(item_id: str) -> None:
-    """
-    Recompute ``project_tag`` on every situation that contains ``item_id``.
+    """Recompute ``project_tag`` on every situation that contains ``item_id``.
 
     Collects the union of all member project tags (multi-tag aware).
 
@@ -223,12 +226,12 @@ def _sync_situation_tags_for_item(item_id: str) -> None:
     with db.lock:
         affected = db.get_situations_containing_item(item_id)
     for sit in affected:
-        sit_id   = sit.get("situation_id")
-        mem_ids  = sit.get("item_ids", [])
+        sit_id = sit.get("situation_id")
+        mem_ids = sit.get("item_ids", [])
         with db.lock:
             members = [db.get_item(iid) for iid in mem_ids]
-        members   = [m for m in members if m]
-        all_tags  = set()
+        members = [m for m in members if m]
+        all_tags = set()
         for m in members:
             all_tags.update(db.parse_project_tags(m.get("project_tag")))
         new_tag = db.serialize_project_tags(sorted(all_tags)) if all_tags else None
@@ -238,8 +241,7 @@ def _sync_situation_tags_for_item(item_id: str) -> None:
 
 
 def _sync_situation_tags_all() -> None:
-    """
-    Recompute ``project_tag`` on every situation.
+    """Recompute ``project_tag`` on every situation.
 
     Called after a bulk project-tag change (e.g. project deletion in
     ``save_settings``).  Multi-tag aware — collects union of member tags.
@@ -247,12 +249,12 @@ def _sync_situation_tags_all() -> None:
     with db.lock:
         all_sits = db.get_all_situations(include_dismissed=True)
     for sit in all_sits:
-        sit_id   = sit.get("situation_id")
-        mem_ids  = sit.get("item_ids", [])
+        sit_id = sit.get("situation_id")
+        mem_ids = sit.get("item_ids", [])
         with db.lock:
             members = [db.get_item(iid) for iid in mem_ids]
-        members   = [m for m in members if m]
-        all_tags  = set()
+        members = [m for m in members if m]
+        all_tags = set()
         for m in members:
             all_tags.update(db.parse_project_tags(m.get("project_tag")))
         new_tag = db.serialize_project_tags(sorted(all_tags)) if all_tags else None
@@ -263,10 +265,11 @@ def _sync_situation_tags_all() -> None:
 
 # ── Formation ──────────────────────────────────────────────────────────────────
 
+
 def _maybe_form_situation(item_id: str) -> None:
-    """
-    Attempt to correlate a newly saved item with existing analyses and form
-    or update a ``Situation`` record.
+    """Correlate a newly saved item with existing analyses.
+
+    Forms or updates a ``Situation`` record when a correlation is found.
 
     Algorithm:
     1. Load the item's stored record and parse its cross-source reference
@@ -293,7 +296,7 @@ def _maybe_form_situation(item_id: str) -> None:
         from embedder import get_item_vector
 
         with db.lock:
-            record       = db.get_item(item_id)
+            record = db.get_item(item_id)
             all_analyses = db.get_all_items()
         if not record:
             return
@@ -304,9 +307,11 @@ def _maybe_form_situation(item_id: str) -> None:
         except Exception:
             refs = []
 
-        vector     = get_item_vector(item_id)
-        project    = record.get("project_tag")
-        candidates = _correlator.find_correlated_candidates(item_id, refs, vector or [], project, all_analyses)
+        vector = get_item_vector(item_id)
+        project = record.get("project_tag")
+        candidates = _correlator.find_correlated_candidates(
+            item_id, refs, vector or [], project, all_analyses
+        )
 
         if not candidates:
             # No new correlations — but rescore existing situation if item is already in one
@@ -359,45 +364,50 @@ def _maybe_form_situation(item_id: str) -> None:
         # Create new situation
         with db.lock:
             cluster_intel = db.get_intel_for_items(list(set(all_ids)))
-            cluster_done  = _completed_todos_for_items(all_ids)
-        synthesis   = _correlator.synthesize_situation(
+            cluster_done = _completed_todos_for_items(all_ids)
+        synthesis = _correlator.synthesize_situation(
             cluster_records,
             config.USER_NAME or "the user",
             intel_items=cluster_intel,
             completed_actions=cluster_done,
         )
-        score       = _correlator.score_situation(all_ids, cluster_records)
-        max_pri     = max(cluster_records, key=lambda r: _pri_rank(r.get("priority", "low")))
-        all_refs    = list(set(r for rec in cluster_records
-                               for raw in [rec.get("references")]
-                               for r in (json.loads(raw) if isinstance(raw, str) and raw else (raw or []))))
+        score = _correlator.score_situation(all_ids, cluster_records)
+        max_pri = max(cluster_records, key=lambda r: _pri_rank(r.get("priority", "low")))
+        all_refs = list(
+            set(
+                r
+                for rec in cluster_records
+                for raw in [rec.get("references")]
+                for r in (json.loads(raw) if isinstance(raw, str) and raw else (raw or []))
+            )
+        )
         all_proj = set()
         for r in cluster_records:
             all_proj.update(db.parse_project_tags(r.get("project_tag")))
         proj_tag_val = db.serialize_project_tags(sorted(all_proj)) if all_proj else None
-        sources      = list(set(r.get("source", "") for r in cluster_records))
-        last_ts      = max((r.get("timestamp", "") for r in cluster_records), default=now_iso())
+        sources = list(set(r.get("source", "") for r in cluster_records))
+        last_ts = max((r.get("timestamp", "") for r in cluster_records), default=now_iso())
 
-        sit_id  = str(_uuid.uuid4())
+        sit_id = str(_uuid.uuid4())
         sit_doc = {
-            "situation_id":     sit_id,
-            "title":            synthesis.get("title", "Correlated situation"),
-            "summary":          synthesis.get("summary", ""),
-            "status":           synthesis.get("status", "in_progress"),
-            "item_ids":         all_ids,
-            "sources":          sources,
-            "project_tag":      proj_tag_val,
-            "score":            score,
-            "priority":         max_pri.get("priority", "medium"),
-            "open_actions":     synthesis.get("open_actions", []),
-            "references":       all_refs,
-            "key_context":        synthesis.get("key_context"),
-            "last_updated":       last_ts,
-            "created_at":         now_iso(),
-            "score_updated_at":   now_iso(),
-            "dismissed":          False,
-            "lifecycle_status":   "new",
-            "notes":              "",
+            "situation_id": sit_id,
+            "title": synthesis.get("title", "Correlated situation"),
+            "summary": synthesis.get("summary", ""),
+            "status": synthesis.get("status", "in_progress"),
+            "item_ids": all_ids,
+            "sources": sources,
+            "project_tag": proj_tag_val,
+            "score": score,
+            "priority": max_pri.get("priority", "medium"),
+            "open_actions": synthesis.get("open_actions", []),
+            "references": all_refs,
+            "key_context": synthesis.get("key_context"),
+            "last_updated": last_ts,
+            "created_at": now_iso(),
+            "score_updated_at": now_iso(),
+            "dismissed": False,
+            "lifecycle_status": "new",
+            "notes": "",
         }
         with db.lock:
             db.insert_situation(sit_doc)
@@ -411,8 +421,7 @@ def _maybe_form_situation(item_id: str) -> None:
 
 
 def _spawn_situation_task(item_id: str) -> None:
-    """
-    Spawn ``_maybe_form_situation`` in a daemon thread and track it in ``scan_state``.
+    """Spawn ``_maybe_form_situation`` in a daemon thread and track it in ``scan_state``.
 
     Increments ``_scan_state["situations_pending"]`` before starting the thread
     and decrements it in a ``finally`` block so the counter stays accurate even
@@ -436,10 +445,12 @@ def _spawn_situation_task(item_id: str) -> None:
 
 # ── Split / merge ────────────────────────────────────────────────────────────
 
+
 def _rescore_lightweight(sit_id: str, item_ids: list) -> None:
-    """
-    Recompute ``score``, ``priority``, ``sources``, ``last_updated``, and
-    ``project_tag`` for a situation without invoking the LLM.
+    """Recompute a situation's derived fields without invoking the LLM.
+
+    Covers ``score``, ``priority``, ``sources``, ``last_updated``, and
+    ``project_tag``.
 
     Used after split/merge so the caller sees a consistent record without
     paying for synthesis.  The user can trigger full rescoring via
@@ -450,24 +461,27 @@ def _rescore_lightweight(sit_id: str, item_ids: list) -> None:
     records = [r for r in records if r]
     if not records:
         return
-    score    = _correlator.score_situation(item_ids, records)
-    max_pri  = max(records, key=lambda r: _pri_rank(r.get("priority", "low")))
-    sources  = list(set(r.get("source", "") for r in records))
-    last_ts  = max((r.get("timestamp", "") for r in records), default=now_iso())
+    score = _correlator.score_situation(item_ids, records)
+    max_pri = max(records, key=lambda r: _pri_rank(r.get("priority", "low")))
+    sources = list(set(r.get("source", "") for r in records))
+    last_ts = max((r.get("timestamp", "") for r in records), default=now_iso())
     all_proj = set()
     for r in records:
         all_proj.update(db.parse_project_tags(r.get("project_tag")))
     proj_tag_val = db.serialize_project_tags(sorted(all_proj)) if all_proj else None
     with db.lock:
-        db.update_situation(sit_id, {
-            "item_ids":         item_ids,
-            "sources":          sources,
-            "score":            score,
-            "priority":         max_pri.get("priority", "medium"),
-            "last_updated":     last_ts,
-            "project_tag":      proj_tag_val,
-            "score_updated_at": now_iso(),
-        })
+        db.update_situation(
+            sit_id,
+            {
+                "item_ids": item_ids,
+                "sources": sources,
+                "score": score,
+                "priority": max_pri.get("priority", "medium"),
+                "last_updated": last_ts,
+                "project_tag": proj_tag_val,
+                "score_updated_at": now_iso(),
+            },
+        )
 
 
 def split_situation(
@@ -475,8 +489,7 @@ def split_situation(
     item_ids_to_split: list[str],
     new_title: str | None = None,
 ) -> str:
-    """
-    Move a subset of items out of ``sit_id`` into a brand-new situation.
+    """Move a subset of items out of ``sit_id`` into a brand-new situation.
 
     Both situations are rescored lightweight (no LLM).  The caller gets back
     the new situation's UUID so the UI can focus it.
@@ -497,47 +510,52 @@ def split_situation(
         raise ValueError(f"items not in source situation: {unknown}")
     remaining = [i for i in src_ids if i not in item_ids_to_split]
     if not remaining:
-        raise ValueError("split would empty the source situation — dismiss or keep at least one item")
+        raise ValueError(
+            "split would empty the source situation — dismiss or keep at least one item"
+        )
     if len(item_ids_to_split) == len(src_ids):
         raise ValueError("cannot split all items — would empty source")
 
     new_sit_id = str(_uuid.uuid4())
-    title = new_title or f"{src.get('title','Split')} (split)"
+    title = new_title or f"{src.get('title', 'Split')} (split)"
     sit_doc = {
-        "situation_id":     new_sit_id,
-        "title":            title,
-        "summary":          src.get("summary") or "",
-        "status":           src.get("status") or "in_progress",
-        "item_ids":         item_ids_to_split,
-        "sources":          [],
-        "project_tag":      None,
-        "score":            0.0,
-        "priority":         src.get("priority") or "medium",
-        "open_actions":     [],
-        "references":       [],
-        "key_context":      None,
-        "last_updated":     now_iso(),
-        "created_at":       now_iso(),
+        "situation_id": new_sit_id,
+        "title": title,
+        "summary": src.get("summary") or "",
+        "status": src.get("status") or "in_progress",
+        "item_ids": item_ids_to_split,
+        "sources": [],
+        "project_tag": None,
+        "score": 0.0,
+        "priority": src.get("priority") or "medium",
+        "open_actions": [],
+        "references": [],
+        "key_context": None,
+        "last_updated": now_iso(),
+        "created_at": now_iso(),
         "score_updated_at": now_iso(),
-        "dismissed":        False,
+        "dismissed": False,
         "lifecycle_status": "new",
-        "notes":            f"Split from {sit_id}",
+        "notes": f"Split from {sit_id}",
     }
     with db.lock:
         db.insert_situation(sit_doc)
         for iid in item_ids_to_split:
             db.update_item(iid, {"situation_id": new_sit_id})
         db.insert_situation_event(new_sit_id, None, "new", f"split from {sit_id}")
-        db.insert_situation_event(sit_id, None, src.get("lifecycle_status") or "new",
-                                  f"split {len(item_ids_to_split)} item(s) to {new_sit_id}")
+        db.insert_situation_event(
+            sit_id,
+            None,
+            src.get("lifecycle_status") or "new",
+            f"split {len(item_ids_to_split)} item(s) to {new_sit_id}",
+        )
     _rescore_lightweight(sit_id, remaining)
     _rescore_lightweight(new_sit_id, item_ids_to_split)
     return new_sit_id
 
 
 def merge_situations(target_id: str, source_id: str) -> None:
-    """
-    Merge ``source_id`` into ``target_id``.
+    """Merge ``source_id`` into ``target_id``.
 
     All source items are relinked to the target, the target is rescored
     lightweight, and the source is dismissed with reason ``merged_into:<id>``
@@ -562,25 +580,29 @@ def merge_situations(target_id: str, source_id: str) -> None:
         for iid in source.get("item_ids", []):
             db.update_item(iid, {"situation_id": target_id})
         prev = source.get("lifecycle_status", "new")
-        db.update_situation(source_id, {
-            "dismissed":        1,
-            "dismiss_reason":   f"merged_into:{target_id}",
-            "lifecycle_status": "dismissed",
-            "item_ids":         [],
-        })
-        db.insert_situation_event(source_id, prev, "dismissed",
-                                  f"merged into {target_id}")
-        db.insert_situation_event(target_id, None,
-                                  target.get("lifecycle_status") or "new",
-                                  f"merged in {source_id} "
-                                  f"({len(source.get('item_ids', []))} items)")
+        db.update_situation(
+            source_id,
+            {
+                "dismissed": 1,
+                "dismiss_reason": f"merged_into:{target_id}",
+                "lifecycle_status": "dismissed",
+                "item_ids": [],
+            },
+        )
+        db.insert_situation_event(source_id, prev, "dismissed", f"merged into {target_id}")
+        db.insert_situation_event(
+            target_id,
+            None,
+            target.get("lifecycle_status") or "new",
+            f"merged in {source_id} ({len(source.get('item_ids', []))} items)",
+        )
     _rescore_lightweight(target_id, combined_ids)
 
 
 # ── Stale-decay helpers ──────────────────────────────────────────────────────
 
 # A situation in "waiting" for this many days without activity is flagged stale.
-STALE_WAITING_DAYS       = 7
+STALE_WAITING_DAYS = 7
 # A situation in "investigating" for this many days without activity is flagged.
 STALE_INVESTIGATING_DAYS = 14
 
@@ -593,15 +615,14 @@ def _days_since(ts: str | None) -> float | None:
         s = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+            dt = dt.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - dt).total_seconds() / 86400.0
     except Exception:
         return None
 
 
 def _compute_stale_flag(sit: dict) -> str | None:
-    """
-    Return a stale-decay label for ``sit`` or None if it's fresh.
+    """Return a stale-decay label for ``sit`` or None if it's fresh.
 
     Labels:
       * ``"stale_waiting"``       — in ``waiting`` ≥ STALE_WAITING_DAYS with no
@@ -628,9 +649,9 @@ def _compute_stale_flag(sit: dict) -> str | None:
 
 # ── Response builder ───────────────────────────────────────────────────────────
 
+
 def _situation_response(sit: dict) -> dict:
-    """
-    Build the API response dict for a situation.
+    """Build the API response dict for a situation.
 
     Fetches a lightweight summary (``item_id``, ``source``, ``title``,
     ``priority``, ``timestamp``) for each contributing analysis and includes
@@ -649,51 +670,50 @@ def _situation_response(sit: dict) -> dict:
             all_todos.extend(db.get_todos_for_item(iid))
     items = [
         {
-            "item_id":   r.get("item_id"),
-            "source":    r.get("source"),
-            "title":     r.get("title"),
-            "priority":  r.get("priority"),
+            "item_id": r.get("item_id"),
+            "source": r.get("source"),
+            "title": r.get("title"),
+            "priority": r.get("priority"),
             "timestamp": r.get("timestamp"),
         }
-        for r in items_raw if r
+        for r in items_raw
+        if r
     ]
-    done_keys = {
-        (t["item_id"], t["description"])
-        for t in all_todos if t.get("done")
-    }
-    from datetime import datetime, timezone
-    follow_up_date   = sit.get("follow_up_date")
+    done_keys = {(t["item_id"], t["description"]) for t in all_todos if t.get("done")}
+    from datetime import datetime
+
+    follow_up_date = sit.get("follow_up_date")
     follow_up_overdue = False
     if follow_up_date:
         try:
             fud = datetime.fromisoformat(follow_up_date.rstrip("Z"))
-            follow_up_overdue = fud < datetime.now(timezone.utc).replace(tzinfo=None)
+            follow_up_overdue = fud < datetime.now(UTC).replace(tzinfo=None)
         except Exception:
             pass
 
     return {
-        "situation_id":    sit.get("situation_id"),
-        "title":           sit.get("title"),
-        "summary":         sit.get("summary"),
-        "status":          sit.get("status"),
+        "situation_id": sit.get("situation_id"),
+        "title": sit.get("title"),
+        "summary": sit.get("summary"),
+        "status": sit.get("status"),
         "lifecycle_status": sit.get("lifecycle_status", "new"),
-        "score":           sit.get("score", 0.0),
-        "priority":        sit.get("priority"),
-        "sources":         sit.get("sources", []),
-        "project_tag":     sit.get("project_tag"),
-        "open_actions":    [
+        "score": sit.get("score", 0.0),
+        "priority": sit.get("priority"),
+        "sources": sit.get("sources", []),
+        "project_tag": sit.get("project_tag"),
+        "open_actions": [
             {**a, "done": (a.get("source_item_id"), a.get("description")) in done_keys}
             for a in sit.get("open_actions", [])
         ],
-        "references":      sit.get("references", []),
-        "key_context":     sit.get("key_context"),
-        "last_updated":    sit.get("last_updated"),
-        "created_at":      sit.get("created_at"),
-        "dismissed":       sit.get("dismissed", False),
-        "follow_up_date":  follow_up_date,
+        "references": sit.get("references", []),
+        "key_context": sit.get("key_context"),
+        "last_updated": sit.get("last_updated"),
+        "created_at": sit.get("created_at"),
+        "dismissed": sit.get("dismissed", False),
+        "follow_up_date": follow_up_date,
         "follow_up_overdue": follow_up_overdue,
-        "notes":           sit.get("notes", ""),
-        "item_count":      len(items),
-        "items":           items,
-        "stale_flag":      _compute_stale_flag(sit),
+        "notes": sit.get("notes", ""),
+        "item_count": len(items),
+        "items": items,
+        "stale_flag": _compute_stale_flag(sit),
     }
