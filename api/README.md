@@ -1121,6 +1121,18 @@ non-package neighbours and external services rather than sibling packages:
   The rejection is recorded rather than deleted so the annotator does not keep
   re-proposing the same pairing.  Re-deciding is a 400; an unknown id a 404.
   </details>
+- `list_lancellmot_aliases_route()` — List all parsival-project → lancellmot-project aliases (Settings audit).
+- `put_lancellmot_alias(payload: dict)` — Upsert a single project-tag → lancellmot-project alias.
+- `delete_lancellmot_alias_route(parsival_project: str)` — Remove a project-tag alias.
+- `get_lancellmot_projects()` — Proxy lancellmot's project list (populates the Settings dropdown).
+- `docs_for_tag(tag: str, limit: int=5)` — Resolve a project tag to its lancellmot documents for the card chip.
+  <details><summary>full docstring</summary>
+
+  Returns one of three shapes the UI renders as distinct chip states:
+  ``ok`` (resolved, with docs), ``unmapped`` (no alias), or ``unreachable``
+  (lancellmot down). The DB lookup holds ``db.lock``; the network call does
+  not, so a slow lancellmot never blocks other DB work.
+  </details>
 
 ### `api.attention`
 *attention.py — Adaptive attention model for Parsival.*
@@ -1470,6 +1482,10 @@ non-package neighbours and external services rather than sibling packages:
 - `count_user_actions() -> int` — Return total number of recorded user actions.
 - `get_model_state(key: str) -> dict | None` — Return a deserialized model state value, or None.
 - `set_model_state(key: str, value: dict) -> None` — Upsert a model state value (serialized as JSON).
+- `upsert_lancellmot_alias(parsival_project: str, lancellmot_project_id: str, lancellmot_project_name: str) -> None` — Create or update the lancellmot mapping for a parsival project name.
+- `get_lancellmot_alias_for_tag(parsival_project: str) -> dict | None` — Return the alias row for a project name, or None if unmapped.
+- `list_lancellmot_aliases() -> list[dict]` — Return all alias rows ordered by parsival project name.
+- `delete_lancellmot_alias(parsival_project: str) -> None` — Remove the alias for a project name; a no-op if it does not exist.
 - `get_settings() -> dict` — Return the settings blob as a dict.
 - `save_settings(data: dict) -> None` — Persist the settings blob (upsert on id=1).
 - `save_briefing(content: dict) -> None` — Persist the latest briefing, replacing any previous one.
@@ -1840,6 +1856,17 @@ non-package neighbours and external services rather than sibling packages:
   :param context_items: Output of ``get_context()``.
   :return: Multi-line string ready to embed in the analysis prompt, or
            empty string if ``context_items`` is empty.
+  </details>
+
+### `api.lancellmot_client`
+*HTTP client for lancellmot's workspace + documents API (parsival#43).*
+
+- `LancellmotUnavailable` — Raised on network error, timeout, or non-2xx response from lancellmot.
+- `list_projects() -> list[dict]` — Return all lancellmot projects. Raises LancellmotUnavailable on failure.
+- `list_documents(project_id: str, limit: int=5) -> list[dict]` — Return the first ``limit`` documents for a lancellmot project.
+  <details><summary>full docstring</summary>
+
+  Raises LancellmotUnavailable on network error, timeout, or non-2xx response.
   </details>
 
 ### `api.llm`
