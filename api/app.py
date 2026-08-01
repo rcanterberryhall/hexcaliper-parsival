@@ -2665,7 +2665,7 @@ def split_situation_endpoint(situation_id: str, body: dict):
     try:
         new_sit_id = situation_manager.split_situation(situation_id, item_ids, new_title)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {
         "ok": True,
         "new_situation_id": new_sit_id,
@@ -2693,7 +2693,7 @@ def merge_situation_endpoint(situation_id: str, body: dict):
     try:
         situation_manager.merge_situations(situation_id, source_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"ok": True, "situation_id": situation_id}
 
 
@@ -2870,7 +2870,7 @@ def submit_deep_analysis(situation_id: str):
         r.raise_for_status()
         job_id = r.json().get("id")
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"merLLM unreachable: {exc}")
+        raise HTTPException(status_code=502, detail=f"merLLM unreachable: {exc}") from exc
 
     # Record attention signals
     for iid in item_ids:
@@ -2912,7 +2912,7 @@ def save_deep_analysis(situation_id: str, body: dict):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"merLLM unreachable: {exc}")
+        raise HTTPException(status_code=502, detail=f"merLLM unreachable: {exc}") from exc
 
     item_ids = sit.get("item_ids", [])
     anchor_item_id = item_ids[0] if item_ids else None
@@ -2948,7 +2948,7 @@ def proxy_batch_status(job_id: str):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"merLLM unreachable: {exc}")
+        raise HTTPException(status_code=502, detail=f"merLLM unreachable: {exc}") from exc
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -3659,8 +3659,8 @@ def _card_input(body: dict, *, require_all: bool = False) -> dict:
         if k in data:
             try:
                 data[k] = int(data[k])
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail=f"{k} must be an integer")
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=f"{k} must be an integer") from exc
     if "start_date" in data and "end_date" in data:
         if data["end_date"] < data["start_date"]:
             raise HTTPException(status_code=400, detail="end_date before start_date")
@@ -3885,7 +3885,7 @@ def lookahead_update_resource(resource_id: int, body: dict):
         with db.lock:
             res = db.update_resource(resource_id, body)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not res:
         raise HTTPException(status_code=404, detail="resource not found")
     return res
@@ -4026,7 +4026,7 @@ def lookahead_create_template(body: dict):
         try:
             return db.create_template(data)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.patch("/lookahead/templates/{template_id}")
@@ -4042,7 +4042,7 @@ def lookahead_update_template(template_id: str, body: dict):
         try:
             tpl = db.update_template(template_id, body)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not tpl:
         raise HTTPException(status_code=404, detail="template not found")
     return tpl
@@ -4126,7 +4126,7 @@ def lookahead_update_instance(instance_id: str, body: dict):
             try:
                 inst = db.set_instance_status(instance_id, body["status"])
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
     return inst
 
 
@@ -4351,7 +4351,7 @@ def lookahead_accept_suggestion(suggestion_id: int):
         try:
             row = db.decide_card_suggestion(suggestion_id, "accepted")
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not row:
         raise HTTPException(status_code=404, detail="suggestion not found")
     return row
@@ -4368,7 +4368,7 @@ def lookahead_reject_suggestion(suggestion_id: int):
         try:
             row = db.decide_card_suggestion(suggestion_id, "rejected")
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not row:
         raise HTTPException(status_code=404, detail="suggestion not found")
     return row
@@ -4392,7 +4392,7 @@ def put_lancellmot_alias(payload: dict):
         lid = payload["lancellmot_project_id"]
         lname = payload["lancellmot_project_name"]
     except KeyError as exc:
-        raise HTTPException(status_code=400, detail=f"missing field: {exc}")
+        raise HTTPException(status_code=400, detail=f"missing field: {exc}") from exc
     with db.lock:
         db.upsert_lancellmot_alias(parsival, lid, lname)
     return {"ok": True}
