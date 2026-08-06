@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import config
 import mcp_tools
+import pytest
 
 TOKEN = "test-token-abc123"
 
@@ -144,7 +145,7 @@ def test_tools_call_unknown_tool_returns_jsonrpc_error(client):
     with patch.object(config, "MCP_TOKEN", TOKEN):
         r = _rpc(client, "tools/call", params={"name": "no-such-tool", "arguments": {}})
     assert r.status_code == 200
-    assert r.json()["error"]["code"] == -32601
+    assert r.json()["error"]["code"] == -32602
 
 
 import inspect
@@ -223,3 +224,25 @@ def test_schema_describe_rejects_injection_attempt(client):
     with patch.object(config, "MCP_TOKEN", TOKEN):
         result, _ = _call(client, "schema.describe", {"table": "items) --"})
     assert result["isError"] is True
+
+
+def test_mcp_sql_guards_non_serialized_builds():
+    """Verify that a non-serialized SQLite build is rejected at import.
+
+    The check happens at module import time, so we test the function directly
+    rather than trying to reload the module in a test.
+    """
+    import mcp_sql
+
+    # Should raise RuntimeError for any value != 3
+    with pytest.raises(RuntimeError, match="threadsafety=2"):
+        mcp_sql._check_sqlite_threadsafety(2)
+
+    with pytest.raises(RuntimeError, match="threadsafety=1"):
+        mcp_sql._check_sqlite_threadsafety(1)
+
+    with pytest.raises(RuntimeError, match="threadsafety=0"):
+        mcp_sql._check_sqlite_threadsafety(0)
+
+    # Should succeed for 3
+    mcp_sql._check_sqlite_threadsafety(3)  # No exception

@@ -108,7 +108,9 @@ def mcp_endpoint(
     if method == "tools/call":
         name = params.get("name", "")
         if name not in mcp_tools.TOOL_REGISTRY:
-            return _error(id_, -32601, f"unknown tool: {name}")
+            # MCP spec: -32602 (Invalid params) for unknown tool name;
+            # -32601 (Method not found) is reserved for unknown JSON-RPC method.
+            return _error(id_, -32602, f"unknown tool: {name}")
         try:
             out = mcp_tools.dispatch(name, params.get("arguments") or {})
         except Exception as exc:  # noqa: BLE001 - tool errors travel on the wire
