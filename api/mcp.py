@@ -46,7 +46,13 @@ def _authorised(supplied: str | None) -> bool:
     expected = config.MCP_TOKEN or ""
     if not expected:
         return False
-    return hmac.compare_digest(supplied or "", expected)
+    # Compare bytes, not str: Starlette decodes raw header bytes as latin-1, so a
+    # header containing a byte >= 0x80 produces a non-ASCII str that
+    # hmac.compare_digest rejects with a TypeError instead of returning False.
+    # encode() with surrogateescape can never raise here (unlike the strict
+    # default), so a hostile header degrades to a normal mismatch, not a 500.
+    supplied_bytes = (supplied or "").encode("utf-8", "surrogateescape")
+    return hmac.compare_digest(supplied_bytes, expected.encode())
 
 
 def _result(id_: Any, result: dict) -> dict:

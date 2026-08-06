@@ -1,8 +1,10 @@
 """Tests for the parsival MCP server transport and auth (IFC-PV-001)."""
 
+import json
 from unittest.mock import patch
 
 import config
+import mcp_tools
 
 TOKEN = "test-token-abc123"
 
@@ -64,3 +66,82 @@ def test_error_body_never_contains_the_token(client):
     with patch.object(config, "MCP_TOKEN", TOKEN):
         r = _rpc(client, "initialize", token="wrong")
     assert TOKEN not in r.text
+
+
+def test_non_ascii_token_header_is_rejected_not_500(client):
+    """A header byte >= 0x80 must fail auth cleanly, not crash compare_digest.
+
+    Starlette decodes raw header bytes as latin-1, so a header containing a
+    byte >= 0x80 reaches ``_authorised`` as a non-ASCII str. httpx's own
+    header validation only accepts ASCII str values, so the raw byte tuple
+    form is used here to bypass it and exercise what the real ASGI server
+    would deliver.
+    """
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        r = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+            headers=[(b"X-Parsival-MCP-Token", b"\xff\xfe")],
+        )
+    assert r.status_code == 401
+
+
+def test_tools_list_returns_registered_tool_specs(client):
+    def _noop():
+        return None
+
+    with (
+        patch.dict(mcp_tools.TOOL_REGISTRY, {"noop": _noop}),
+        patch.dict(mcp_tools.TOOL_SCHEMAS, {"noop": {"type": "object", "properties": {}}}),
+        patch.dict(mcp_tools.TOOL_DESCRIPTIONS, {"noop": "Does nothing."}),
+        patch.object(config, "MCP_TOKEN", TOKEN),
+    ):
+        r = _rpc(client, "tools/list")
+    assert r.status_code == 200
+    tools = r.json()["result"]["tools"]
+    assert {
+        "name": "noop",
+        "description": "Does nothing.",
+        "inputSchema": {"type": "object", "properties": {}},
+    } in tools
+
+
+def test_tools_call_success_returns_serialized_result(client):
+    def _echo(value):
+        return {"echo": value}
+
+    with (
+        patch.dict(mcp_tools.TOOL_REGISTRY, {"echo": _echo}),
+        patch.object(config, "MCP_TOKEN", TOKEN),
+    ):
+        r = _rpc(client, "tools/call", params={"name": "echo", "arguments": {"value": "hi"}})
+    assert r.status_code == 200
+    result = r.json()["result"]
+    assert result["isError"] is False
+    assert json.loads(result["content"][0]["text"]) == {"echo": "hi"}
+
+
+def test_tools_call_failure_returns_is_error_not_protocol_error(client):
+    """PV-REQ-F-003: a tool exception surfaces as isError, not a JSON-RPC error."""
+
+    def _boom():
+        raise ValueError("kaboom")
+
+    with (
+        patch.dict(mcp_tools.TOOL_REGISTRY, {"boom": _boom}),
+        patch.object(config, "MCP_TOKEN", TOKEN),
+    ):
+        r = _rpc(client, "tools/call", params={"name": "boom", "arguments": {}})
+    assert r.status_code == 200
+    body = r.json()
+    assert "error" not in body
+    result = body["result"]
+    assert result["isError"] is True
+    assert "kaboom" in result["content"][0]["text"]
+
+
+def test_tools_call_unknown_tool_returns_jsonrpc_error(client):
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        r = _rpc(client, "tools/call", params={"name": "no-such-tool", "arguments": {}})
+    assert r.status_code == 200
+    assert r.json()["error"]["code"] == -32601
