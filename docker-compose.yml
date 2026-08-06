@@ -38,6 +38,9 @@ services:
       # or set DB_PATH explicitly: DB_PATH: "/app/data/squire.db"
       DB_PATH:          "/app/data/parsival.db"
       LOOKBACK_HOURS:   "48"
+      # Read from a gitignored .env beside this file (CON-PV-006).  Never inline
+      # a real token here — this file is committed.
+      MCP_TOKEN:        "${MCP_TOKEN:-}"
     volumes:
       - ./data:/app/data
       - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro

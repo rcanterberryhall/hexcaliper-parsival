@@ -171,6 +171,12 @@ PRIORITY_OVERRIDES: list[dict] = []
 
 PAGE_API_PORT = int(_get("PAGE_API_PORT", "8001"))
 DB_PATH = _get("DB_PATH", "/app/data/parsival.db")
+# MCP endpoint shared secret (PV-REQ-N-006).  Deliberately env-only and NOT
+# listed in apply_overrides' settings map: it is the bootstrap credential for
+# an endpoint that can read the settings record, so it must not be settable
+# through the API it guards.  Empty means the endpoint rejects everything
+# (PV-REQ-N-008) — failing open here would expose the whole database.
+MCP_TOKEN = _get("MCP_TOKEN", "")
 LOOKBACK_HOURS = int(_get("LOOKBACK_HOURS", "48"))
 
 

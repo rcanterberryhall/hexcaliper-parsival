@@ -59,6 +59,7 @@ import correlator as _correlator
 import crypto
 import db
 import lancellmot_client
+import mcp as _mcp
 import orchestrator
 import requests as http_requests
 import seeder
@@ -72,6 +73,7 @@ from models import Analysis, RawItem
 from pydantic import BaseModel
 
 app = FastAPI(title="Parsival API", version="1.0.0")
+app.include_router(_mcp.router)
 
 app.add_middleware(
     CORSMiddleware,
