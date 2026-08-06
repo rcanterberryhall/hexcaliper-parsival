@@ -1,9 +1,12 @@
 """Tests for the parsival MCP server transport and auth (IFC-PV-001)."""
 
 import json
+import sqlite3
 from unittest.mock import patch
 
 import config
+import db
+import mcp_sql
 import mcp_tools
 import pytest
 
@@ -246,3 +249,101 @@ def test_mcp_sql_guards_non_serialized_builds():
 
     # Should succeed for 3
     mcp_sql._check_sqlite_threadsafety(3)  # No exception
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "INSERT INTO todos (description) VALUES ('x')",
+        "UPDATE todos SET done = 1",
+        "DELETE FROM todos",
+        "DROP TABLE todos",
+        "CREATE TABLE x (a int)",
+        "ALTER TABLE todos ADD COLUMN z TEXT",
+        "PRAGMA table_info(todos)",
+        "ATTACH DATABASE '/tmp/x.db' AS x",
+        "VACUUM",
+        "SELECT 1; DROP TABLE todos",
+        "  ; SELECT 1",
+        "",
+        "   ",
+    ],
+)
+def test_validate_select_rejects(stmt):
+    with pytest.raises(ValueError):
+        mcp_sql.validate_select(stmt)
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "SELECT 1",
+        "select id from todos",
+        "  SELECT id FROM todos;  ",
+        "WITH x AS (SELECT 1 AS n) SELECT n FROM x",
+        "SELECT 1 -- trailing comment",
+        "/* leading */ SELECT 1",
+    ],
+)
+def test_validate_select_accepts(stmt):
+    assert mcp_sql.validate_select(stmt)
+
+
+def test_comment_cannot_smuggle_a_second_statement():
+    """A semicolon hidden behind a comment must not slip through."""
+    with pytest.raises(ValueError):
+        mcp_sql.validate_select("SELECT 1 /* x */ ; DELETE FROM todos")
+
+
+def test_readonly_connection_refuses_writes_at_the_driver():
+    """The connection mode is the guarantee; the parser is defence in depth."""
+    c = mcp_sql.ro_conn()
+    with pytest.raises(sqlite3.OperationalError):
+        c.execute("CREATE TABLE should_not_exist (a int)")
+
+
+def test_sql_query_returns_columns_and_rows(client):
+    db.conn().execute("DELETE FROM lookahead_cards")
+    client.post("/lookahead/cards", json=_card_payload_for_sql())
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "sql.query", {"sql": "SELECT id, title FROM lookahead_cards"})
+    assert payload["columns"] == ["id", "title"]
+    assert payload["row_count"] == 1
+    assert payload["truncated"] is False
+
+
+def test_sql_query_caps_rows_and_reports_truncation(client):
+    db.conn().execute("DELETE FROM lookahead_cards")
+    for i in range(5):
+        client.post("/lookahead/cards", json=_card_payload_for_sql(title=f"card {i}"))
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(
+            client, "sql.query", {"sql": "SELECT id FROM lookahead_cards", "limit": 2}
+        )
+    assert payload["row_count"] == 2
+    assert payload["truncated"] is True
+
+
+def test_sql_query_write_is_rejected_as_tool_error(client):
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        result, _ = _call(client, "sql.query", {"sql": "DELETE FROM todos"})
+    assert result["isError"] is True
+
+
+def test_sql_query_limit_is_clamped_to_maximum(client):
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "sql.query", {"sql": "SELECT 1", "limit": 99999})
+    assert payload["row_count"] == 1
+
+
+def _card_payload_for_sql(**overrides):
+    body = {
+        "title": "MCP fixture card",
+        "project": "P905",
+        "assignee": "",
+        "start_date": "2026-04-15",
+        "end_date": "2026-04-16",
+        "status": "planned",
+    }
+    body.update(overrides)
+    return body

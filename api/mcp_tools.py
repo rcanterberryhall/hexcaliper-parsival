@@ -121,3 +121,34 @@ def schema_describe(table: str | None = None) -> dict:
     ]
     indexes = [r["name"] for r in c.execute(f"PRAGMA index_list({table})").fetchall()]
     return {"table": table, "columns": columns, "indexes": indexes}
+
+
+# ── sql.query ─────────────────────────────────────────────────────────────────
+
+
+@tool(
+    "sql.query",
+    "Run a read-only SELECT against the parsival database. Writes are refused.",
+    {
+        "type": "object",
+        "properties": {
+            "sql": {"type": "string", "description": "A single SELECT or WITH statement."},
+            "limit": {
+                "type": "integer",
+                "description": f"Max rows (default {mcp_sql.DEFAULT_LIMIT}, max {mcp_sql.MAX_LIMIT}).",
+            },
+        },
+        "required": ["sql"],
+    },
+)
+def sql_query(sql: str, limit: int = mcp_sql.DEFAULT_LIMIT) -> dict:
+    """Execute a read-only query.
+
+    Args:
+        sql: A single SELECT or WITH statement.
+        limit: Maximum rows to return.
+
+    Returns:
+        ``{"columns", "rows", "row_count", "truncated"}``.
+    """
+    return mcp_sql.run_query(sql, limit)
