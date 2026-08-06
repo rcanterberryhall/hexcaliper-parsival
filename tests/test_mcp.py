@@ -145,3 +145,81 @@ def test_tools_call_unknown_tool_returns_jsonrpc_error(client):
         r = _rpc(client, "tools/call", params={"name": "no-such-tool", "arguments": {}})
     assert r.status_code == 200
     assert r.json()["error"]["code"] == -32601
+
+
+import inspect
+
+
+def _call(client, name, arguments=None, token=TOKEN):
+    """Invoke one tool and return the parsed tool result."""
+    import json as _json
+
+    r = _rpc(client, "tools/call", {"name": name, "arguments": arguments or {}}, token=token)
+    assert r.status_code == 200, r.text
+    result = r.json()["result"]
+    payload = _json.loads(result["content"][0]["text"]) if not result["isError"] else None
+    return result, payload
+
+
+def test_schema_matches_signature():
+    """Schema property names ARE the wire contract (CON-PV-008).
+
+    Green unit tests cannot see a mismatch here because they call the Python
+    function directly; only dispatch-by-keyword-expansion exercises it. This
+    test pins it structurally.
+    """
+    for name, fn in mcp_tools.TOOL_REGISTRY.items():
+        sig = inspect.signature(fn)
+        params = set(sig.parameters)
+        schema = mcp_tools.TOOL_SCHEMAS[name]
+        props = set(schema.get("properties", {}))
+        required = set(schema.get("required", []))
+
+        assert props <= params, f"{name}: schema declares unknown args {props - params}"
+        assert required <= props, f"{name}: required not declared in properties"
+
+        no_default = {p for p, v in sig.parameters.items() if v.default is inspect.Parameter.empty}
+        assert no_default <= required, (
+            f"{name}: params {no_default - required} have no default and are not required"
+        )
+
+
+def test_every_tool_has_a_description():
+    for name in mcp_tools.TOOL_REGISTRY:
+        assert mcp_tools.TOOL_DESCRIPTIONS.get(name, "").strip(), f"{name} has no description"
+
+
+def test_tools_list_includes_schema_describe(client):
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        r = _rpc(client, "tools/list")
+    names = {t["name"] for t in r.json()["result"]["tools"]}
+    assert "schema.describe" in names
+    for t in r.json()["result"]["tools"]:
+        assert t["inputSchema"]["type"] == "object"
+
+
+def test_schema_describe_lists_tables(client):
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "schema.describe")
+    assert "lookahead_cards" in payload["tables"]
+    assert "situations" in payload["tables"]
+    assert not any(t.startswith("sqlite_") for t in payload["tables"])
+
+
+def test_schema_describe_one_table(client):
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "schema.describe", {"table": "lookahead_cards"})
+    cols = {c["name"] for c in payload["columns"]}
+    assert {"id", "title", "project", "start_date", "end_date", "status"} <= cols
+
+
+def test_schema_describe_rejects_unknown_table(client):
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        result, _ = _call(client, "schema.describe", {"table": "no_such_table"})
+    assert result["isError"] is True
+
+
+def test_schema_describe_rejects_injection_attempt(client):
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        result, _ = _call(client, "schema.describe", {"table": "items) --"})
+    assert result["isError"] is True
