@@ -1,7 +1,10 @@
 """Tests for the parsival MCP server transport and auth (IFC-PV-001)."""
 
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 from unittest.mock import patch
 
 import config
@@ -296,10 +299,29 @@ def test_comment_cannot_smuggle_a_second_statement():
 
 
 def test_readonly_connection_refuses_writes_at_the_driver():
-    """The connection mode is the guarantee; the parser is defence in depth."""
+    """Writes are refused on this connection, whichever layer catches them.
+
+    Two independent guards stand behind this: the authorizer refuses the
+    statement at prepare time, and ``mode=ro`` refuses the write at the driver.
+    ``DatabaseError`` is the common parent of both refusals, so the assertion
+    holds if either guard is removed and only fails if both are.
+    """
     c = mcp_sql.ro_conn()
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(sqlite3.DatabaseError):
         c.execute("CREATE TABLE should_not_exist (a int)")
+
+
+def test_readonly_connection_refuses_unlisted_pragmas():
+    """Only the pragmas schema.describe needs are reachable.
+
+    ``table_info`` and ``index_list`` are allowed by name, so a pragma outside
+    that pair must still be refused rather than riding in on a blanket
+    SQLITE_PRAGMA exemption.
+    """
+    c = mcp_sql.ro_conn()
+    assert c.execute("PRAGMA table_info(todos)").fetchall() != []
+    with pytest.raises(sqlite3.DatabaseError):
+        c.execute("PRAGMA journal_mode")
 
 
 def test_sql_query_returns_columns_and_rows(client):
@@ -331,9 +353,107 @@ def test_sql_query_write_is_rejected_as_tool_error(client):
 
 
 def test_sql_query_limit_is_clamped_to_maximum(client):
+    """A limit above MAX_LIMIT yields MAX_LIMIT rows and reports truncation.
+
+    The query must generate more than MAX_LIMIT rows for the clamp to be
+    observable at all; asserting against a single-row query would hold
+    identically whether or not the clamp were applied.
+    """
+    sql = (
+        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 600) "
+        "SELECT x FROM c"
+    )
     with patch.object(config, "MCP_TOKEN", TOKEN):
-        _, payload = _call(client, "sql.query", {"sql": "SELECT 1", "limit": 99999})
-    assert payload["row_count"] == 1
+        _, payload = _call(client, "sql.query", {"sql": sql, "limit": 99999})
+    assert payload["row_count"] == mcp_sql.MAX_LIMIT
+    assert payload["truncated"] is True
+
+
+def test_sql_query_rejects_dml_hidden_behind_a_cte(client):
+    """A CTE prefix must not smuggle DML past the read-only fence.
+
+    SQLite accepts ``WITH ... DELETE``, so such a statement opens with a token
+    ``validate_select`` allows.  The rejection has to come from the fence
+    itself; the connection's ``mode=ro`` would otherwise mask the hole behind
+    a driver-level error that says nothing about the statement being illegal.
+    """
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        result, _ = _call(client, "sql.query", {"sql": "WITH x AS (SELECT 1) DELETE FROM todos"})
+    assert result["isError"] is True
+    message = result["content"][0]["text"]
+    assert "readonly database" not in message
+    assert "only SELECT" in message
+
+
+def test_sql_query_aborts_when_it_exceeds_the_deadline():
+    """A query running past QUERY_TIMEOUT_SECONDS is interrupted (PV-REQ-N-004).
+
+    The bound is carried in thread-local state and read by a progress handler
+    shared with every other thread on the connection, so this also pins that
+    the handler consults the calling thread's deadline rather than nothing.
+    """
+    slow = (
+        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000000) "
+        "SELECT count(*) FROM c"
+    )
+    with (
+        patch.object(mcp_sql, "QUERY_TIMEOUT_SECONDS", 0.2),
+        pytest.raises(sqlite3.OperationalError, match="interrupted"),
+    ):
+        mcp_sql.run_query(slow)
+
+
+_CONCURRENCY_SCRIPT = """
+import os, sqlite3, sys, tempfile, threading
+
+sys.path.insert(0, sys.argv[1])
+_db = os.path.join(tempfile.mkdtemp(), "concurrency.db")
+sqlite3.connect(_db).close()
+os.environ["DB_PATH"] = _db
+
+import config
+config.DB_PATH = _db
+import mcp_sql
+
+SLOW = ("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 200000) "
+        "SELECT count(*) FROM c")
+
+def work():
+    for _ in range(8):
+        mcp_sql.run_query(SLOW, limit=1)
+
+threads = [threading.Thread(target=work) for _ in range(3)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+print("COMPLETED")
+"""
+
+
+def test_concurrent_sql_queries_do_not_deadlock():
+    """Overlapping sql.query calls must not wedge the interpreter (PV-REQ-N-004).
+
+    Mutating connection state per request inverts the lock order between the
+    GIL and the SQLite connection mutex: the thread inside ``sqlite3_step``
+    holds the connection and wants the GIL to run its callback, while the
+    thread installing a hook holds the GIL and wants the connection.
+
+    This runs in a subprocess because the deadlock starves the main thread as
+    well -- an in-process timeout could never fire to report the failure.
+    """
+    api_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "api")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _CONCURRENCY_SCRIPT, api_dir],
+            capture_output=True,
+            text=True,
+            timeout=40,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("concurrent sql.query calls deadlocked the interpreter")
+    assert proc.returncode == 0, proc.stderr
+    assert "COMPLETED" in proc.stdout
 
 
 def _card_payload_for_sql(**overrides):
