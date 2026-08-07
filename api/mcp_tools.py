@@ -18,6 +18,8 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+import config
+import db
 import mcp_sql
 
 TOOL_REGISTRY: dict[str, Callable[..., Any]] = {}
@@ -152,3 +154,93 @@ def sql_query(sql: str, limit: int = mcp_sql.DEFAULT_LIMIT) -> dict:
         ``{"columns", "rows", "row_count", "truncated"}``.
     """
     return mcp_sql.run_query(sql, limit)
+
+
+# ── projects.list / cards.list ────────────────────────────────────────────────
+
+
+@tool(
+    "projects.list",
+    "List every configured project with keywords, parent, shifts and card count.",
+    {"type": "object", "properties": {}, "required": []},
+)
+def projects_list() -> dict:
+    """Return the configured projects enriched with live board data.
+
+    Returns:
+        ``{"projects": [...]}``; each entry adds ``shifts`` and ``card_count``
+        to the stored configuration.
+    """
+    with db.lock:
+        shifts = db.list_project_shifts()
+        counts = {
+            r["project"]: r["n"]
+            for r in db.conn()
+            .execute("SELECT project, COUNT(*) AS n FROM lookahead_cards GROUP BY project")
+            .fetchall()
+        }
+
+    by_project: dict[str, list] = {}
+    for s in shifts:
+        by_project.setdefault(s["project_tag"], []).append(s)
+
+    out = []
+    for p in config.PROJECTS:
+        name = p.get("name", "")
+        out.append(
+            {
+                "name": name,
+                "parent": p.get("parent", ""),
+                "description": p.get("description", ""),
+                "keywords": p.get("keywords", []),
+                "learned_keywords": p.get("learned_keywords", []),
+                "channels": p.get("channels", []),
+                "shifts": by_project.get(name, []),
+                "card_count": counts.get(name, 0),
+            }
+        )
+    return {"projects": out}
+
+
+@tool(
+    "cards.list",
+    "List look-ahead cards over an arbitrary date range, with optional filters.",
+    {
+        "type": "object",
+        "properties": {
+            "project": {"type": "string", "description": "Project tag to filter by."},
+            "start": {"type": "string", "description": "Range start, YYYY-MM-DD."},
+            "end": {"type": "string", "description": "Range end, YYYY-MM-DD."},
+            "status": {
+                "type": "string",
+                "description": "One of planned, in_progress, done, blocked.",
+            },
+        },
+        "required": [],
+    },
+)
+def cards_list(
+    project: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    status: str | None = None,
+) -> dict:
+    """Return cards overlapping a date range.
+
+    Unlike the board, which renders a fixed 14-day window, this accepts any
+    range — the reason a multi-year contract schedule is usable at all.
+
+    Args:
+        project: Project tag to filter by.
+        start: Range start, YYYY-MM-DD.
+        end: Range end, YYYY-MM-DD.
+        status: Card status to filter by.
+
+    Returns:
+        ``{"cards": [...], "count": int}``.
+    """
+    with db.lock:
+        cards = db.list_lookahead_cards(project=project, start_date=start, end_date=end)
+    if status:
+        cards = [c for c in cards if c.get("status") == status]
+    return {"cards": cards, "count": len(cards)}

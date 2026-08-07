@@ -467,3 +467,51 @@ def _card_payload_for_sql(**overrides):
     }
     body.update(overrides)
     return body
+
+
+def test_projects_list_includes_config_and_card_counts(client):
+    db.conn().execute("DELETE FROM lookahead_cards")
+    client.post("/lookahead/cards", json=_card_payload_for_sql())
+    with (
+        patch.object(config, "MCP_TOKEN", TOKEN),
+        patch.object(config, "PROJECTS", [{"name": "P905", "parent": "", "keywords": ["ride"]}]),
+    ):
+        _, payload = _call(client, "projects.list")
+    entry = payload["projects"][0]
+    assert entry["name"] == "P905"
+    assert entry["keywords"] == ["ride"]
+    assert entry["card_count"] == 1
+    assert entry["shifts"] == []
+
+
+def test_cards_list_spans_an_arbitrary_range(client):
+    """No 14-day limit — the board's constraint does not apply here."""
+    db.conn().execute("DELETE FROM lookahead_cards")
+    client.post(
+        "/lookahead/cards",
+        json=_card_payload_for_sql(start_date="2029-04-02", end_date="2029-04-02", title="far"),
+    )
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "cards.list", {"start": "2026-01-01", "end": "2030-12-31"})
+    assert payload["count"] == 1
+    assert payload["cards"][0]["title"] == "far"
+
+
+def test_cards_list_filters_by_status(client):
+    db.conn().execute("DELETE FROM lookahead_cards")
+    client.post("/lookahead/cards", json=_card_payload_for_sql(title="planned one"))
+    client.post("/lookahead/cards", json=_card_payload_for_sql(title="done one", status="done"))
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "cards.list", {"status": "done"})
+    assert payload["count"] == 1
+    assert payload["cards"][0]["title"] == "done one"
+
+
+def test_cards_list_filters_by_project(client):
+    db.conn().execute("DELETE FROM lookahead_cards")
+    client.post("/lookahead/cards", json=_card_payload_for_sql(project="P905"))
+    client.post("/lookahead/cards", json=_card_payload_for_sql(project="P1309", title="other"))
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "cards.list", {"project": "P1309"})
+    assert payload["count"] == 1
+    assert payload["cards"][0]["project"] == "P1309"
