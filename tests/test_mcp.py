@@ -596,3 +596,54 @@ def test_situations_get_unknown_id_is_a_tool_error(client):
     with patch.object(config, "MCP_TOKEN", TOKEN):
         result, _ = _call(client, "situations.get", {"situation_id": "nope"})
     assert result["isError"] is True
+
+
+# Settings keys that must never appear in a tuning payload. Extend this list
+# whenever a credential field is added to the settings record.
+_SECRET_KEYS = [
+    "escalation_api_key",
+    "cf_client_id",
+    "cf_client_secret",
+    "slack_client_secret",
+    "github_pat",
+    "jira_token",
+]
+
+
+def test_tuning_get_returns_knobs_and_evidence(client):
+    with (
+        patch.object(config, "MCP_TOKEN", TOKEN),
+        patch.object(config, "NOISE_KEYWORDS", ["unsubscribe"]),
+        patch.object(config, "ASSIGNMENT_CORRECTIONS", [{"from": "Bob", "to": "Alice"}]),
+        patch.object(
+            config, "PROJECTS", [{"name": "P905", "keywords": ["ride"], "learned_keywords": ["rv"]}]
+        ),
+    ):
+        _, payload = _call(client, "tuning.get")
+    assert payload["global_keywords"]["noise"] == ["unsubscribe"]
+    assert payload["assignment_corrections"] == [{"from": "Bob", "to": "Alice"}]
+    assert payload["project_keywords"]["P905"]["keywords"] == ["ride"]
+    assert payload["project_keywords"]["P905"]["learned_keywords"] == ["rv"]
+    assert "recent_actions" in payload
+
+
+def test_tuning_get_leaks_no_credentials(client):
+    """The settings record co-locates tuning knobs with API tokens."""
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        result, payload = _call(client, "tuning.get")
+    blob = result["content"][0]["text"].lower()
+    for key in _SECRET_KEYS:
+        assert key not in blob
+    assert "sk-ant" not in blob
+    assert "ghp_" not in blob
+
+
+def test_tuning_get_caps_recent_actions(client):
+    for i in range(5):
+        db.conn().execute(
+            "INSERT INTO user_actions (item_id, action_type, timestamp) VALUES (?,?,?)",
+            (f"item-{i}", "tag", f"2026-08-0{i + 1}T00:00:00+00:00"),
+        )
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "tuning.get", {"action_limit": 2})
+    assert len(payload["recent_actions"]) == 2

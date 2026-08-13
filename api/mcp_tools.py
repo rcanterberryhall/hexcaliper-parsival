@@ -280,9 +280,7 @@ def situations_list(include_dismissed: bool = False, limit: int = 50) -> dict:
     "Fetch one situation with its contributing items and open actions.",
     {
         "type": "object",
-        "properties": {
-            "situation_id": {"type": "string", "description": "The situation's id."}
-        },
+        "properties": {"situation_id": {"type": "string", "description": "The situation's id."}},
         "required": ["situation_id"],
     },
 )
@@ -312,3 +310,62 @@ def situations_get(situation_id: str) -> dict:
     out["items"] = resolved
     out["item_count"] = len(resolved)
     return out
+
+
+@tool(
+    "tuning.get",
+    "Read the classification keyword knobs plus the evidence needed to tune them.",
+    {
+        "type": "object",
+        "properties": {
+            "action_limit": {
+                "type": "integer",
+                "description": "How many recent user actions to include (default 100).",
+            }
+        },
+        "required": [],
+    },
+)
+def tuning_get(action_limit: int = 100) -> dict:
+    """Return the classification knobs and the evidence for changing them.
+
+    Reads only from ``config``'s tuning attributes — never from the settings
+    record as a whole, which co-locates these knobs with API credentials
+    (PV-REQ-F-012).  Adding a credential to settings therefore cannot leak
+    through this tool by accident.
+
+    Args:
+        action_limit: How many recent user actions to include.
+
+    Returns:
+        Knobs, per-project keywords, corrections, overrides, recent actions.
+    """
+    capped = max(1, int(action_limit))
+    rows = (
+        mcp_sql.ro_conn()
+        .execute(
+            "SELECT item_id, action_type, timestamp FROM user_actions "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (capped,),
+        )
+        .fetchall()
+    )
+
+    return {
+        "global_keywords": {
+            "noise": list(config.NOISE_KEYWORDS),
+            "task": list(config.TASK_KEYWORDS),
+            "approval": list(config.APPROVAL_KEYWORDS),
+            "fyi": list(config.FYI_KEYWORDS),
+        },
+        "project_keywords": {
+            p.get("name", ""): {
+                "keywords": p.get("keywords", []),
+                "learned_keywords": p.get("learned_keywords", []),
+            }
+            for p in config.PROJECTS
+        },
+        "assignment_corrections": list(config.ASSIGNMENT_CORRECTIONS),
+        "priority_overrides": list(config.PRIORITY_OVERRIDES),
+        "recent_actions": [dict(r) for r in rows],
+    }
