@@ -12,6 +12,16 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-08 — MCP server (read side)
+
+### Added
+- **MCP server (IFC-PV-001)** — `POST /mcp` exposing seven read tools over
+  JSON-RPC 2.0: `schema.describe`, `sql.query`, `projects.list`, `cards.list`,
+  `situations.list`, `situations.get`, `tuning.get`. Shared-secret auth via
+  `X-Parsival-MCP-Token`, constant-time compared, failing closed when unset.
+  `sql.query` uses a separate read-only connection with a SELECT-only fence,
+  row cap and query deadline. Write tools follow in Plan 2.
+
 ## [v0.1-standards] - 2026-08-01
 
 Day-0 engineering standards adoption (`chore/gatehouse-standards`). No

@@ -775,6 +775,37 @@ See [Look-ahead board](#look-ahead-board) for an overview of the feature. All en
 | `POST`   | `/lookahead/suggestions/{id}/accept`              | Accept a suggestion — graduates it into a concrete `lookahead_card_links` row                     |
 | `POST`   | `/lookahead/suggestions/{id}/reject`              | Reject a suggestion — it stops showing up in the pending list but is remembered so the annotator won't re-propose it |
 
+## MCP server (IFC-PV-001)
+
+Parsival exposes a Model Context Protocol server at `POST /page/api/mcp`
+(JSON-RPC 2.0, protocol `2025-03-26`) so an attended agent can query and
+maintain projects, schedules and situations.
+
+**Authentication.** Every request must carry `X-Parsival-MCP-Token` matching
+`MCP_TOKEN`. The token lives in a gitignored `.env` beside `docker-compose.yml`
+and is referenced as `${MCP_TOKEN}` — never inline it in a committed file. An
+unset token rejects every request rather than disabling the check: the endpoint
+reaches the whole database, so it fails closed.
+
+**Registering with Claude Code:**
+
+```bash
+claude mcp add --transport http parsival \
+  http://localhost:8082/page/api/mcp \
+  --header "X-Parsival-MCP-Token: $MCP_TOKEN"
+```
+
+**Read tools:** `schema.describe`, `sql.query`, `projects.list`, `cards.list`,
+`situations.list`, `situations.get`, `tuning.get`.
+
+`sql.query` runs against a separate connection opened `mode=ro`, accepts only
+a single `SELECT`/`WITH` statement, caps results at 500 rows and reports
+truncation. It cannot write: the connection mode, not the parser, is the
+guarantee.
+
+Write tools land in Plan 2. Design spec and requirements live in
+`~/GitHub/parsival-plans/`.
+
 ## Request logging
 
 All HTTP requests are logged via middleware: timestamp, method, path, status code, duration (ms), and user email (from `CF-Access-Authenticated-User-Email` header, or `anonymous`). Log levels: INFO for 2xx/3xx, WARNING for 4xx, ERROR for 5xx.
