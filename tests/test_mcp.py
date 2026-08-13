@@ -647,3 +647,19 @@ def test_tuning_get_caps_recent_actions(client):
     with patch.object(config, "MCP_TOKEN", TOKEN):
         _, payload = _call(client, "tuning.get", {"action_limit": 2})
     assert len(payload["recent_actions"]) == 2
+
+
+def test_situations_list_returns_score_priority_and_member_count(client):
+    """PV-REQ-F-009: the list payload is the triage entry point.
+
+    A caller ranking situations needs the member count without a follow-up
+    ``situations.get`` per row.
+    """
+    db.conn().execute("DELETE FROM situations")
+    _seed_situation("sit-shape", item_ids=["a", "b", "c"])
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "situations.list")
+    entry = payload["situations"][0]
+    assert entry["score"] == 0.8
+    assert entry["priority"] == "high"
+    assert entry["item_count"] == 3

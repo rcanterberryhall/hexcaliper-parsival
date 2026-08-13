@@ -266,12 +266,16 @@ def situations_list(include_dismissed: bool = False, limit: int = 50) -> dict:
         limit: Maximum number to return.
 
     Returns:
-        ``{"situations": [...], "count": int}``.
+        ``{"situations": [...], "count": int}``.  Each entry carries
+        ``item_count`` so a caller ranking situations does not need a
+        follow-up ``situations.get`` per row (PV-REQ-F-009).
     """
     with db.lock:
         sits = db.get_all_situations(include_dismissed=include_dismissed)
     sits.sort(key=lambda s: s.get("score") or 0, reverse=True)
     capped = sits[: max(1, int(limit))]
+    for s in capped:
+        s["item_count"] = len(s.get("item_ids") or [])
     return {"situations": capped, "count": len(capped)}
 
 
