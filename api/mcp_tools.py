@@ -244,3 +244,71 @@ def cards_list(
     if status:
         cards = [c for c in cards if c.get("status") == status]
     return {"cards": cards, "count": len(cards)}
+
+
+@tool(
+    "situations.list",
+    "List situations with score and priority; dismissed ones are excluded by default.",
+    {
+        "type": "object",
+        "properties": {
+            "include_dismissed": {"type": "boolean", "description": "Include dismissed."},
+            "limit": {"type": "integer", "description": "Max situations (default 50)."},
+        },
+        "required": [],
+    },
+)
+def situations_list(include_dismissed: bool = False, limit: int = 50) -> dict:
+    """Return situations ordered by score, highest first.
+
+    Args:
+        include_dismissed: Whether to include dismissed situations.
+        limit: Maximum number to return.
+
+    Returns:
+        ``{"situations": [...], "count": int}``.
+    """
+    with db.lock:
+        sits = db.get_all_situations(include_dismissed=include_dismissed)
+    sits.sort(key=lambda s: s.get("score") or 0, reverse=True)
+    capped = sits[: max(1, int(limit))]
+    return {"situations": capped, "count": len(capped)}
+
+
+@tool(
+    "situations.get",
+    "Fetch one situation with its contributing items and open actions.",
+    {
+        "type": "object",
+        "properties": {
+            "situation_id": {"type": "string", "description": "The situation's id."}
+        },
+        "required": ["situation_id"],
+    },
+)
+def situations_get(situation_id: str) -> dict:
+    """Return one situation together with the items that formed it.
+
+    The contributing items are the evidence: a situation without them cannot
+    be re-analysed by a caller that did not form it.
+
+    Args:
+        situation_id: The situation's id.
+
+    Returns:
+        The situation dict plus ``items`` and ``item_count``.
+
+    Raises:
+        ValueError: If no such situation exists.
+    """
+    with db.lock:
+        sit = db.get_situation(situation_id)
+        if not sit:
+            raise ValueError(f"situation not found: {situation_id}")
+        items = [db.get_item(i) for i in sit.get("item_ids", [])]
+
+    resolved = [i for i in items if i]
+    out = dict(sit)
+    out["items"] = resolved
+    out["item_count"] = len(resolved)
+    return out

@@ -515,3 +515,84 @@ def test_cards_list_filters_by_project(client):
         _, payload = _call(client, "cards.list", {"project": "P1309"})
     assert payload["count"] == 1
     assert payload["cards"][0]["project"] == "P1309"
+
+
+def _seed_situation(sit_id="sit-mcp-1", dismissed=0, item_ids=None):
+    """Insert one situation row directly; returns its id."""
+    import json as _json
+
+    db.conn().execute(
+        "INSERT OR REPLACE INTO situations "
+        "(situation_id, title, summary, status, item_ids, sources, project_tag, "
+        " score, priority, open_actions, dismissed) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            sit_id,
+            "Panel delivery slipped",
+            "Vendor moved the date.",
+            "open",
+            _json.dumps(item_ids or []),
+            _json.dumps(["email"]),
+            "P905",
+            0.8,
+            "high",
+            _json.dumps([{"description": "Call vendor"}]),
+            dismissed,
+        ),
+    )
+    return sit_id
+
+
+def test_situations_list_excludes_dismissed_by_default(client):
+    db.conn().execute("DELETE FROM situations")
+    _seed_situation("sit-open", dismissed=0)
+    _seed_situation("sit-gone", dismissed=1)
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "situations.list")
+    ids = {s["situation_id"] for s in payload["situations"]}
+    assert ids == {"sit-open"}
+
+
+def test_situations_list_can_include_dismissed(client):
+    db.conn().execute("DELETE FROM situations")
+    _seed_situation("sit-open", dismissed=0)
+    _seed_situation("sit-gone", dismissed=1)
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "situations.list", {"include_dismissed": True})
+    assert payload["count"] == 2
+
+
+def test_situations_list_respects_limit(client):
+    db.conn().execute("DELETE FROM situations")
+    for i in range(4):
+        _seed_situation(f"sit-{i}")
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "situations.list", {"limit": 2})
+    assert payload["count"] == 2
+
+
+def test_situations_get_resolves_contributing_items(client):
+    db.conn().execute("DELETE FROM situations")
+    # NB: the helper is upsert_item, and the primary key column is item_id,
+    # not id. db.get_item() queries `WHERE item_id = ?`.
+    db.upsert_item(
+        {
+            "item_id": "item-mcp-1",
+            "source": "email",
+            "title": "Panel ship date moved",
+            "summary": "Now week 40.",
+            "url": "https://example.invalid/1",
+        }
+    )
+    _seed_situation("sit-items", item_ids=["item-mcp-1"])
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        _, payload = _call(client, "situations.get", {"situation_id": "sit-items"})
+    assert payload["item_count"] == 1
+    assert payload["items"][0]["title"] == "Panel ship date moved"
+    assert payload["open_actions"][0]["description"] == "Call vendor"
+
+
+def test_situations_get_unknown_id_is_a_tool_error(client):
+    with patch.object(config, "MCP_TOKEN", TOKEN):
+        result, _ = _call(client, "situations.get", {"situation_id": "nope"})
+    assert result["isError"] is True
