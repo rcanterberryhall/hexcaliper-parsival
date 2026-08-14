@@ -93,3 +93,16 @@ def test_force_ignore_wins_when_both_categories_are_present():
     assert (
         cf.category_override(_item(categories=["Parsival Include", "Parsival Ignore"])) == "ignore"
     )
+
+
+def test_unrelated_categories_with_digits_or_punctuation_do_not_trigger_override():
+    """Protect against silent false positives from similar category names.
+
+    Categories like "Parsival Include 2" or "Parsival Include!!!" should not
+    accidentally trigger the force-include override. Only the exact override
+    categories (after normalising separators) should match.
+    """
+    assert cf.category_override(_item(categories=["Parsival Include 2"])) is None
+    assert cf.category_override(_item(categories=["2 Parsival Include"])) is None
+    assert cf.category_override(_item(categories=["Parsival Include!!!"])) is None
+    assert cf.category_override(_item(categories=["Parsival Ignore-v2"])) is None

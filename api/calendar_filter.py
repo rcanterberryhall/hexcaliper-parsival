@@ -43,8 +43,14 @@ SOLO_HOLD_MAX_MINUTES = 120  # an attendee-less block this short is a focus hold
 
 
 def _normalise_category(value: str) -> str:
-    """Reduce a category label to lowercase words for tolerant comparison."""
-    return re.sub(r"[^a-z]+", " ", (value or "").lower()).strip()
+    """Normalise a category label to lowercase for tolerant comparison.
+
+    Reduces consecutive separator runs (spaces, colons, semicolons, commas,
+    hyphens, underscores, slashes) to single spaces, then strips.
+    Non-separator punctuation is preserved to avoid false positives from
+    unrelated category names.
+    """
+    return re.sub(r"[\s:;,\-_/]+", " ", (value or "").lower()).strip()
 
 
 def category_override(item: RawItem) -> str | None:
