@@ -136,6 +136,52 @@ def _link_candidates(item: RawItem) -> tuple[list[dict], list[dict]]:
     )
 
 
+def _clamp_project(name: str, hint: str) -> str:
+    """Keep *name* only when it matches a configured project; otherwise fall back.
+
+    The model answers in free text, so ``"P905 Panel"`` instead of ``"P905"``
+    is a realistic answer — matched case-insensitively against ``name`` values
+    in ``config.PROJECTS``, the same convention ``POST /items/{id}/project``
+    uses (``api/app.py`` — 404 "Project not found").  A plausible-but-wrong
+    project name is unreachable in the board's project selector and would
+    surface as a phantom row in ``GET /lookahead/overview``; falling back to
+    *hint* (validated by :func:`guess_project`, itself only ever a configured
+    name or ``""``) is the safe failure — ``PVC-REQ-F-017`` makes the project
+    editable at acceptance, so blank is recoverable.
+
+    The check is skipped entirely when ``config.PROJECTS`` is empty.  Do not
+    "simplify" that branch away: the phantom-project failure this guards
+    against requires a configured list for the model's answer to deviate
+    from.  With nothing configured, ``GET /projects`` is empty, the board's
+    project selector is empty, and no string the model returns can be
+    inconsistent with an empty list — there is nothing to protect.
+    Clamping unconditionally would instead force every project to ``""``
+    on a deployment with no projects configured yet (``project_hint`` is
+    also ``""`` there, since :func:`guess_project` has nothing to match
+    against either), and ``_calendar_land_card`` refuses to accept a card
+    with no project — silently making every card proposal unacceptable
+    without a manual override.
+
+    Args:
+        name: The model's raw ``project`` answer.
+        hint: The keyword-matched project hint, or ``""``.
+
+    Returns:
+        The matching configured project name, *name* unclamped when no
+        projects are configured, *hint*, or ``""``.
+    """
+    name = (name or "").strip()
+    if not name:
+        return hint or ""
+    projects = config.PROJECTS or []
+    if not projects:
+        return name
+    for p in projects:
+        if (p.get("name") or "").lower() == name.lower():
+            return p.get("name") or ""
+    return hint or ""
+
+
 def _parse_json_object(text: str) -> dict | None:
     """Parse the first JSON object in *text*, or return ``None``."""
     if not text:
@@ -226,7 +272,7 @@ def classify(item: RawItem) -> dict | None:
 
     verdict = {
         "kind": kind,
-        "project": str(parsed.get("project") or project_hint or "").strip(),
+        "project": _clamp_project(str(parsed.get("project") or ""), project_hint),
         "title": str(parsed.get("title") or item.title or "").strip()[:200],
         "reason": str(parsed.get("reason") or "").strip()[:300],
         "start_date": start_date,
@@ -291,10 +337,12 @@ def _record_drop(item: RawItem, reason: str) -> None:
 def _record_proposal(item: RawItem, verdict: dict) -> None:
     """Store the source event and its proposal.
 
-    The event row is written first so the review queue can show the appointment
-    beside the proposed outcome (``PVC-REQ-F-019``, Plan 2's surface) and so the
-    next pull deduplicates.  The proposal row is the only thing the user acts
-    on; nothing reaches the board without acceptance (``PVC-REQ-F-018``).
+    The review queue shows the appointment beside the proposed outcome
+    (``PVC-REQ-F-019``, Plan 2's surface), and the items row is what makes the
+    next pull deduplicate.  The proposal row is the only thing the user acts
+    on; nothing reaches the board without acceptance (``PVC-REQ-F-018``).  The
+    proposal is written first and the items row second — see the comment on
+    the two writes below for why the order matters.
 
     Args:
         item: The calendar ``RawItem``.
@@ -314,6 +362,7 @@ def _record_proposal(item: RawItem, verdict: dict) -> None:
         "source_location": md.get("location", ""),
         "source_organizer": md.get("organizer", ""),
         "source_attendees": md.get("attendees") or [],
+        "source_all_day": bool(md.get("all_day")),
     }
     if kind == "card":
         payload.update(
@@ -333,6 +382,21 @@ def _record_proposal(item: RawItem, verdict: dict) -> None:
         )
 
     with db.lock:
+        # Proposal first, items row second — deliberately reversed from the
+        # "obvious" order.  The connection is autocommit (api/db.py:122) with
+        # no transactions anywhere in db.py, so these are two independent
+        # commits; if the second one failed, whichever write landed first
+        # would be the one left standing.  An items row with no proposal is
+        # invisible in the review queue and permanently unrecoverable —
+        # orchestrator.claim_ingest_items skips any id where db.get_item(iid)
+        # is truthy, so no future pull would ever re-send the occurrence.  A
+        # proposal with no items row is self-healing instead:
+        # _proposal_with_source already falls back to the payload's
+        # source_* fields, the next pull re-sends the occurrence because
+        # dedup keys on the absent items row, and add_calendar_proposal's
+        # INSERT OR IGNORE makes the retry idempotent.  Do not "tidy" this
+        # back to upsert_item-then-add_calendar_proposal.
+        db.add_calendar_proposal(item.item_id, kind, payload)
         db.upsert_item(
             {
                 "item_id": item.item_id,
@@ -353,7 +417,6 @@ def _record_proposal(item: RawItem, verdict: dict) -> None:
                 "processed_at": _now_iso(),
             }
         )
-        db.add_calendar_proposal(item.item_id, kind, payload)
 
 
 def handle_item(item: RawItem) -> None:

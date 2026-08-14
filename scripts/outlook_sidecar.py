@@ -923,7 +923,7 @@ def _ingest_with_retry(items: list[dict], headers: dict, dropped: list[dict]) ->
 
 def post(items: list[dict], client_id: str, client_secret: str) -> None:
     """
-    POST fetched email items to the Parsival ``/ingest`` endpoint in batches.
+    POST fetched items to the Parsival ``/ingest`` endpoint in batches.
 
     Large seed runs (500 emails) would exceed nginx's default body-size limit
     in a single request.  Items are chunked into batches of ``_POST_BATCH``

@@ -4405,6 +4405,7 @@ def _proposal_with_source(row: dict) -> dict:
         "location": payload.get("source_location", ""),
         "organizer": payload.get("source_organizer", "") or (item or {}).get("author", ""),
         "attendees": payload.get("source_attendees") or [],
+        "all_day": bool(payload.get("source_all_day", False)),
     }
     return out
 
@@ -4493,6 +4494,10 @@ def calendar_accept_proposal(proposal_id: int, body: dict | None = None):
 def _calendar_land_card(proposal: dict, payload: dict) -> dict:
     """Create the look-ahead card an accepted proposal describes.
 
+    An all-day appointment (``source_all_day``) is placed on shift 1 rather
+    than a shift derived from its ``"00:00"`` start, and its exclusive-end
+    boundary is corrected back to the last actual day.
+
     Called with ``db.lock`` already held by :func:`calendar_accept_proposal`.
     """
     project = (payload.get("project") or "").strip()
@@ -4501,10 +4506,36 @@ def _calendar_land_card(proposal: dict, payload: dict) -> dict:
         # invent one, and leave the proposal pending so it can be corrected.
         raise HTTPException(status_code=400, detail="project is required to accept a card")
 
-    start_time = (payload.get("source_start") or "")[11:16]
-    payload["start_shift_num"] = _calendar_ingest.resolve_shift_num(project, start_time)
+    all_day = bool(payload.get("source_all_day"))
+    if all_day:
+        # An all-day appointment has no time of day, so it is not on a shift;
+        # 1 is the lookahead_cards column default (CON-PVC-008).  Deriving a
+        # shift from an all-day event's "00:00" start would otherwise resolve
+        # to whichever shift's window happens to start at midnight (e.g. a
+        # 22:00-06:00 night shift), landing every all-day card on nights.
+        payload["start_shift_num"] = 1
+    else:
+        start_time = (payload.get("source_start") or "")[11:16]
+        payload["start_shift_num"] = _calendar_ingest.resolve_shift_num(project, start_time)
     payload["end_shift_num"] = payload["start_shift_num"]
     payload["project"] = project
+
+    if all_day:
+        # Outlook represents an all-day appointment's End as midnight of the
+        # day AFTER the last day (documented COM semantics; pending
+        # confirmation against a real all-day appointment on the Windows
+        # host).  end_date was derived from that exclusive boundary, so a
+        # 20th-22nd all-day event would otherwise be proposed as ending on
+        # the 23rd.  Guarded on all three conditions so a same-day all-day
+        # event cannot be pushed backwards.
+        end_time = (payload.get("source_end") or "")[11:16]
+        start_date = payload.get("start_date", "")
+        end_date = payload.get("end_date", "")
+        if end_time == "00:00" and end_date and start_date and end_date > start_date:
+            from datetime import timedelta as _timedelta
+
+            corrected = datetime.strptime(end_date, "%Y-%m-%d") - _timedelta(days=1)
+            payload["end_date"] = corrected.strftime("%Y-%m-%d")
 
     card = lookahead_create_card(
         {
@@ -4622,8 +4653,8 @@ def calendar_pull_complete(body: dict):
     range it covered (``PVC-REQ-F-026``, design §3.7).  This endpoint stores
     those bounds; the reconciliation that consumes them is Plan 2.
     """
-    window_start = (body.get("window_start") or "").strip()
-    window_end = (body.get("window_end") or "").strip()
+    window_start = str(body.get("window_start") or "").strip()
+    window_end = str(body.get("window_end") or "").strip()
     if not window_start or not window_end:
         raise HTTPException(status_code=400, detail="window_start and window_end are required")
     item_ids = [str(i) for i in (body.get("item_ids") or [])]

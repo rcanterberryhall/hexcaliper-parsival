@@ -211,6 +211,67 @@ def test_an_unrecognised_kind_is_treated_as_ignore():
         assert ci.classify(_item())["kind"] == "ignore"
 
 
+def test_a_model_verdict_naming_a_configured_project_keeps_it():
+    """Fix 2 — a project name the model got right is trusted as-is."""
+    config.PROJECTS = [
+        {"name": "P905", "keywords": ["nothing-matches"], "learned_keywords": [], "senders": []}
+    ]
+    raw = '{"kind": "card", "project": "P905", "title": "FAT", "reason": "x"}'
+    with patch.object(ci, "_generate", return_value=raw):
+        verdict = ci.classify(_item())
+    assert verdict["project"] == "P905"
+
+
+def test_a_model_verdict_naming_an_unconfigured_project_falls_back_to_the_hint():
+    """Fix 2 — the model's arbitrary string must not win over the validated hint.
+
+    "P905 Panel" is a realistic near-miss: close to a real project name, but
+    absent from config.PROJECTS, so it would be unreachable in the board's
+    project selector and a phantom row in GET /lookahead/overview.
+    """
+    config.PROJECTS = [
+        {"name": "P905", "keywords": ["P905"], "learned_keywords": [], "senders": []}
+    ]
+    raw = '{"kind": "card", "project": "P905 Panel", "title": "FAT", "reason": "x"}'
+    with patch.object(ci, "_generate", return_value=raw):
+        verdict = ci.classify(_item())  # title "Design review — P905" matches the P905 keyword
+    assert verdict["project"] == "P905"
+
+
+def test_a_model_verdict_naming_an_unconfigured_project_with_no_hint_falls_back_to_blank():
+    """Fix 2 — blank is the safe failure when projects are configured but
+    neither the model's answer nor the keyword hint names one of them."""
+    config.PROJECTS = [
+        {"name": "P910", "keywords": ["nothing-matches"], "learned_keywords": [], "senders": []}
+    ]
+    raw = '{"kind": "card", "project": "P905 Panel", "title": "FAT", "reason": "x"}'
+    with patch.object(ci, "_generate", return_value=raw):
+        verdict = ci.classify(_item())  # "nothing-matches" keyword -> hint is ""
+    assert verdict["project"] == ""
+
+
+def test_no_projects_configured_lets_the_models_project_string_through():
+    """Fix 2 ruling — the membership check is skipped entirely when
+    config.PROJECTS is empty.
+
+    With nothing configured to validate against, there is no phantom-project
+    failure to guard against: GET /projects is empty, so there is no board
+    selector for the model's string to be unreachable in.  Clamping
+    unconditionally would instead force every project to "" on a deployment
+    with no projects configured yet (project_hint is also "" there, since
+    guess_project has nothing to match against), and _calendar_land_card
+    refuses to accept a card with no project — making every card proposal
+    unacceptable without a manual override.  This is the exact setup the
+    pre-existing test_classifier_parses_a_card_verdict relies on; this test
+    pins the same intent under a name that says so.
+    """
+    config.PROJECTS = []
+    raw = '{"kind": "card", "project": "P905 Panel", "title": "FAT", "reason": "x"}'
+    with patch.object(ci, "_generate", return_value=raw):
+        verdict = ci.classify(_item())
+    assert verdict["project"] == "P905 Panel"
+
+
 def test_link_candidates_tolerates_a_present_but_null_start():
     """metadata comes from an arbitrary POST /ingest body, so a key that is
     present but null must fall back rather than raise.  ``dict.get(key,
@@ -310,6 +371,49 @@ def test_a_card_verdict_becomes_a_pending_proposal():
     assert rows[0]["payload"]["start_date"] == "2026-08-20"
     assert rows[0]["payload"]["end_date"] == "2026-08-22"
     assert db.get_item("G1:2026-08-20T09:00:00")["source"] == "outlook_calendar"
+
+
+def test_all_day_is_copied_into_the_proposal_payload():
+    """Fix 1 — all_day is read off COM correctly but was silently dropped
+    before it reached the payload; nothing downstream could see it."""
+    _wipe_items()
+    verdict = {
+        "kind": "card",
+        "project": "P905",
+        "title": "FAT — P905 panel",
+        "reason": "All-day deadline",
+        "start_date": "2026-08-20",
+        "end_date": "2026-08-23",
+        "date": "2026-08-20",
+        "target_type": "",
+        "target_id": "",
+    }
+    with patch.object(ci, "classify", return_value=verdict):
+        ci.handle_item(_item(all_day=True))
+    rows = db.list_calendar_proposals("pending")
+    assert rows[0]["payload"]["source_all_day"] is True
+
+
+def test_a_redelivered_occurrence_with_an_existing_proposal_is_not_duplicated():
+    """Fix 3 — the write-order reorder in _record_proposal relies on
+    add_calendar_proposal's INSERT OR IGNORE idempotency: a retried call for
+    the same occurrence must not create a second proposal row."""
+    _wipe_items()
+    verdict = {
+        "kind": "card",
+        "project": "P905",
+        "title": "FAT — P905 panel",
+        "reason": "Multi-day test",
+        "start_date": "2026-08-20",
+        "end_date": "2026-08-22",
+        "date": "2026-08-20",
+        "target_type": "",
+        "target_id": "",
+    }
+    item = _item()
+    ci._record_proposal(item, verdict)
+    ci._record_proposal(item, verdict)
+    assert len(db.list_calendar_proposals("all")) == 1
 
 
 def test_the_orchestrator_routes_calendar_items_away_from_the_email_path():

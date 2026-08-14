@@ -237,6 +237,108 @@ def test_the_start_shift_comes_from_the_appointment_time(client):
     assert card["start_shift_num"] == 2
 
 
+def test_an_all_day_proposal_lands_on_shift_1_not_a_derived_shift(client):
+    """Fix 1 — resolve_shift_num("P905", "00:00") resolves to 3 against the
+    standard shift fixture below (22:00-06:00 wraps through midnight); an
+    all-day event has no time of day and must not be placed on a shift at all.
+    """
+    _wipe()
+    _shifts()
+    _store_source_item()
+    payload = _payload(
+        source_start="2026-08-20T00:00:00",
+        source_end="2026-08-21T00:00:00",
+        source_all_day=True,
+    )
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", payload)
+    card = client.post(f"/calendar/proposals/{row['id']}/accept").json()["card"]
+    assert card["start_shift_num"] == 1
+    assert card["end_shift_num"] == 1
+
+
+def test_an_all_day_events_end_date_is_corrected_for_the_exclusive_boundary(client):
+    """Fix 1 — Outlook's End for an all-day appointment is midnight of the day
+    AFTER the last day.  A 20th-22nd all-day FAT must land ending on the 22nd,
+    not the 23rd.
+    """
+    _wipe()
+    _shifts()
+    _store_source_item()
+    payload = _payload(
+        start_date="2026-08-20",
+        end_date="2026-08-23",  # exclusive boundary: last actual day (22nd) + 1
+        source_start="2026-08-20T00:00:00",
+        source_end="2026-08-23T00:00:00",
+        source_all_day=True,
+    )
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", payload)
+    card = client.post(f"/calendar/proposals/{row['id']}/accept").json()["card"]
+    assert card["end_date"] == "2026-08-22"
+
+
+def test_a_same_day_all_day_event_does_not_go_backwards(client):
+    """Fix 1's guard — end_date must only move earlier when it is later than
+    start_date, so a same-day all-day event is not pushed into the past."""
+    _wipe()
+    _shifts()
+    _store_source_item()
+    payload = _payload(
+        start_date="2026-08-20",
+        end_date="2026-08-20",
+        source_start="2026-08-20T00:00:00",
+        source_end="2026-08-20T00:00:00",
+        source_all_day=True,
+    )
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", payload)
+    card = client.post(f"/calendar/proposals/{row['id']}/accept").json()["card"]
+    assert card["end_date"] == "2026-08-20"
+
+
+def test_a_timed_event_is_unaffected_by_the_all_day_correction(client):
+    """Fix 1 must not change a timed event's shift or end date at all."""
+    _wipe()
+    _shifts()
+    _store_source_item()
+    payload = _payload(
+        end_date="2026-08-22",
+        source_start="2026-08-20T15:00:00",
+        source_end="2026-08-22T17:00:00",
+    )
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", payload)
+    card = client.post(f"/calendar/proposals/{row['id']}/accept").json()["card"]
+    assert card["start_shift_num"] == 2
+    assert card["end_shift_num"] == 2
+    assert card["end_date"] == "2026-08-22"
+
+
+def test_the_queue_shows_all_day_as_part_of_the_source_block(client):
+    """Fix 1 — all_day is one of the signals a reviewer uses to judge whether
+    an appointment is real scheduled work."""
+    _wipe()
+    _store_source_item()
+    db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", _payload(source_all_day=True))
+    rows = client.get("/calendar/proposals").json()
+    assert rows[0]["source"]["all_day"] is True
+
+
+def test_the_queues_source_block_defaults_all_day_to_false_for_old_proposals(client):
+    """Proposals stored before Fix 1 carry no source_all_day key at all, and
+    must still render rather than KeyError."""
+    _wipe()
+    _store_source_item()
+    db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", _payload())
+    rows = client.get("/calendar/proposals").json()
+    assert rows[0]["source"]["all_day"] is False
+
+
+def test_pull_complete_coerces_a_non_string_window_start_instead_of_500(client):
+    """Fix 4 — a non-string bound must not raise AttributeError before the
+    intended 400 is reached."""
+    _wipe()
+    resp = client.post("/calendar/pull-complete", json={"window_start": 12345})
+    assert resp.status_code == 400
+
+
 def test_the_project_can_be_corrected_at_acceptance(client):
     """PVC-REQ-F-017 — attribution must be editable before acceptance."""
     _wipe()
