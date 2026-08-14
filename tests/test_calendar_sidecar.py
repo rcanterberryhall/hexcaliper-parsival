@@ -249,3 +249,106 @@ def test_fetch_is_capped():
         _make_ns(appts, calls), datetime(2026, 8, 13), datetime(2026, 11, 11), max_items=4
     )
     assert len(out) == 4
+
+
+from unittest.mock import patch
+
+
+def test_calendar_mark_is_a_separate_file_from_the_email_mark(tmp_path):
+    """PVC-REQ-F-005 — a calendar failure must never re-fetch email, or vice versa."""
+    assert sc._CALENDAR_STATE_FILE != sc._STATE_FILE
+    with patch.object(sc, "_CALENDAR_STATE_FILE", tmp_path / "calendar_state.json"):
+        assert sc._load_calendar_mark() is None
+        sc._save_calendar_mark(datetime(2026, 8, 14, 6, 0))
+        assert sc._load_calendar_mark() == datetime(2026, 8, 14, 6, 0)
+    # The email mark file was never touched.
+    assert not (tmp_path / "sidecar_state.json").exists()
+
+
+def test_a_corrupt_calendar_mark_reads_as_unset(tmp_path):
+    """A bad state file must degrade to a first run, not crash the pull."""
+    state = tmp_path / "calendar_state.json"
+    state.write_text("{ not json", encoding="utf-8")
+    with patch.object(sc, "_CALENDAR_STATE_FILE", state):
+        assert sc._load_calendar_mark() is None
+
+
+def test_run_advances_the_mark_and_signals_end_of_pull(tmp_path):
+    """N-002 (mark advances only on success) and design §3.7 (explicit end-of-pull)."""
+    state = tmp_path / "calendar_state.json"
+    items = [{"item_id": "G1:2026-08-20T09:00:00", "timestamp": "2026-08-20T09:00:00"}]
+    with (
+        patch.object(sc, "_CALENDAR_STATE_FILE", state),
+        patch.object(sc, "_load_credentials", return_value=("cid", "csec")),
+        patch.object(sc, "fetch_calendar", return_value=items),
+        patch.object(sc, "post") as mock_post,
+        patch.object(sc, "post_pull_complete") as mock_complete,
+    ):
+        sc._run_calendar()
+        # Read while the mark file is still patched to `state` — outside the
+        # `with` block, _CALENDAR_STATE_FILE reverts to the real production
+        # path, which nothing in this test ever writes to.
+        assert sc._load_calendar_mark() is not None
+    mock_post.assert_called_once()
+    assert mock_complete.call_args.kwargs["item_ids"] == ["G1:2026-08-20T09:00:00"]
+
+
+def test_an_empty_pull_still_signals_end_of_pull(tmp_path):
+    """Absence is the cancellation signal (Plan 2), so an empty pull is meaningful."""
+    with (
+        patch.object(sc, "_CALENDAR_STATE_FILE", tmp_path / "calendar_state.json"),
+        patch.object(sc, "_load_credentials", return_value=("cid", "csec")),
+        patch.object(sc, "fetch_calendar", return_value=[]),
+        patch.object(sc, "post"),
+        patch.object(sc, "post_pull_complete") as mock_complete,
+    ):
+        sc._run_calendar()
+    mock_complete.assert_called_once()
+    assert mock_complete.call_args.kwargs["item_ids"] == []
+
+
+def test_a_failed_post_leaves_the_mark_unadvanced(tmp_path):
+    """PVC-REQ-N-002 — systemic failure must not advance the mark."""
+    import pytest
+
+    state = tmp_path / "calendar_state.json"
+    with (
+        patch.object(sc, "_CALENDAR_STATE_FILE", state),
+        patch.object(sc, "_load_credentials", return_value=("cid", "csec")),
+        patch.object(sc, "fetch_calendar", return_value=[{"item_id": "G1", "timestamp": "x"}]),
+        patch.object(sc, "post", side_effect=SystemExit("boom")),
+        patch.object(sc, "post_pull_complete") as mock_complete,
+        pytest.raises(SystemExit),
+    ):
+        sc._run_calendar()
+    assert not state.exists()
+    mock_complete.assert_not_called()
+
+
+def test_pull_complete_posts_the_window_bounds_with_service_token_headers():
+    """PVC-REQ-F-006 — same Cloudflare Access credential path as email."""
+    with patch.object(sc.requests, "post") as mock_post:
+        mock_post.return_value.json.return_value = {"ok": True}
+        sc.post_pull_complete(
+            window_start=datetime(2026, 8, 7),
+            window_end=datetime(2026, 11, 12),
+            item_ids=["G1:2026-08-20T09:00:00"],
+            client_id="cid",
+            client_secret="csec",
+        )
+    url, kwargs = mock_post.call_args[0][0], mock_post.call_args[1]
+    assert url.endswith("/calendar/pull-complete")
+    assert kwargs["headers"]["CF-Access-Client-Id"] == "cid"
+    assert kwargs["json"]["window_start"] == "2026-08-07T00:00:00"
+    assert kwargs["json"]["window_end"] == "2026-11-12T00:00:00"
+    assert kwargs["json"]["item_ids"] == ["G1:2026-08-20T09:00:00"]
+
+
+def test_email_fetch_is_untouched_by_the_calendar_path():
+    """PVC-REQ-F-004 — the email path is in daily production use."""
+    import inspect
+
+    src = inspect.getsource(sc._fetch_folder)
+    assert "IncludeRecurrences" not in src
+    assert "GetDefaultFolder(folder_id)" in src
+    assert inspect.signature(sc.fetch).parameters.keys() == {"lookback_hours", "max_emails"}

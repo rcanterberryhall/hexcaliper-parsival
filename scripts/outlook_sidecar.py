@@ -48,6 +48,7 @@ Usage::
     python outlook_sidecar.py --seed           # seed 30 days of history
     python outlook_sidecar.py --seed-and-infer # seed + auto-start project inference
     python outlook_sidecar.py                  # normal / scheduled run
+    python outlook_sidecar.py --calendar       # calendar pull (own 4-hourly task)
 
 Schedule with Windows Task Scheduler to run every 30–60 minutes.
 """
@@ -122,6 +123,50 @@ def _save_high_water_mark(ts: "datetime") -> None:
         )
     except Exception as e:
         print(f"WARNING: could not persist high-water mark: {e}", flush=True)
+
+
+# Calendar keeps its own mark in its own file.  Structural separation, not
+# discipline: a calendar run that dies can then never cause email to be
+# re-fetched, and vice versa (PVC-REQ-F-005).  Unlike the email mark this one
+# does not drive the lookback — the calendar window is fixed at
+# CALENDAR_BACK_DAYS/CALENDAR_FORWARD_DAYS — it records the last successful
+# pull and is only advanced on success (PVC-REQ-N-002).
+_CALENDAR_STATE_FILE = _STATE_DIR / "calendar_state.json"
+
+
+def _load_calendar_mark() -> "datetime | None":
+    """Return the last successful calendar pull time, or ``None`` if unset.
+
+    A missing or corrupt state file reads as "no mark" so the caller treats the
+    run as a first run rather than crashing.
+
+    Returns:
+        The datetime of the last successful pull, or ``None``.
+    """
+    try:
+        data = json.loads(_CALENDAR_STATE_FILE.read_text(encoding="utf-8-sig"))
+        return datetime.fromisoformat(data["last_pull_completed"])
+    except Exception:
+        return None
+
+
+def _save_calendar_mark(ts: "datetime") -> None:
+    """Persist the calendar pull mark.
+
+    Best-effort: a write failure only costs a redundant warning next run, so it
+    is logged rather than raised.
+
+    Args:
+        ts: The datetime of the pull just completed.
+    """
+    try:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _CALENDAR_STATE_FILE.write_text(
+            json.dumps({"last_pull_completed": ts.isoformat()}, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"WARNING: could not persist calendar mark: {e}", flush=True)
 
 
 def _load_credentials() -> tuple[str, str]:
@@ -437,6 +482,156 @@ def _fetch_calendar_folder(
             out.append(normalise_appointment(_read_appointment(appt)))
         appt = items.GetNext()
     return out
+
+
+def fetch_calendar(
+    window_start: "datetime",
+    window_end: "datetime",
+    max_items: int = _CALENDAR_MAX_ITEMS,
+) -> list[dict]:
+    """Connect to the local Outlook client and fetch appointments in a window.
+
+    Mirrors :func:`fetch` for the calendar folder.  ``_fetch_folder`` is
+    deliberately not reused: appointments need Start/End/AllDayEvent/Organizer/
+    Recipients/ResponseStatus/Sensitivity where mail needs ReceivedTime/
+    ConversationID and recipient headers, and one function serving both becomes
+    two-headed.  Keeping them separate is also how ``PVC-REQ-F-004`` is met
+    structurally rather than by diligence.
+
+    Args:
+        window_start: Earliest appointment start to fetch.
+        window_end: Latest appointment start to fetch.
+        max_items: Hard cap on appointments returned.
+
+    Returns:
+        Normalised appointment dicts ready for ``POST /ingest``.
+
+    Raises:
+        SystemExit: If ``pywin32`` is missing or Outlook is unreachable.
+    """
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError:
+        sys.exit("ERROR: pywin32 not installed.  Run: pip install pywin32")
+
+    pythoncom.CoInitialize()
+    try:
+        try:
+            print("Connecting to Outlook...", flush=True)
+            ns = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+        except Exception as e:
+            sys.exit(f"ERROR: Could not connect to Outlook — is it running? ({e})")
+
+        print(
+            f"Fetching Calendar {window_start.date()} → {window_end.date()}...",
+            flush=True,
+        )
+        items = _fetch_calendar_folder(ns, window_start, window_end, max_items=max_items)
+        print(f"  Calendar: {len(items)} occurrences", flush=True)
+        return items
+    finally:
+        pythoncom.CoUninitialize()
+
+
+def post_pull_complete(
+    *,
+    window_start: "datetime",
+    window_end: "datetime",
+    item_ids: list[str],
+    client_id: str,
+    client_secret: str,
+) -> None:
+    """Tell the server this pull finished, and over which window.
+
+    A pull spans several batched ``/ingest`` POSTs, so absence of an occurrence
+    is only meaningful once the server knows the pull is complete and what range
+    it covered — without this signal the server cannot distinguish "not sent
+    yet" from "gone" (design §3.7).  Failure here is non-fatal: the items are
+    already ingested, and a missing signal simply means no reconciliation this
+    cycle, which fails closed (design §8).
+
+    Args:
+        window_start: Lower bound of the window just pulled.
+        window_end: Upper bound of the window just pulled.
+        item_ids: Every ``item_id`` seen in this pull.
+        client_id: CF Access service token Client ID.
+        client_secret: CF Access service token Client Secret.
+    """
+    try:
+        r = requests.post(
+            f"{PAGE_API_URL}/calendar/pull-complete",
+            json={
+                "window_start": window_start.isoformat(),
+                "window_end": window_end.isoformat(),
+                "item_ids": item_ids,
+            },
+            headers={
+                "CF-Access-Client-Id": client_id,
+                "CF-Access-Client-Secret": client_secret,
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        print("Pull marked complete.", flush=True)
+    except Exception as e:
+        print(
+            f"WARNING: could not signal end-of-pull ({e}); no reconciliation this cycle.",
+            flush=True,
+        )
+
+
+def _run_calendar() -> None:
+    """Run one calendar pull: fetch a fixed window, post it, signal completion.
+
+    The window is fixed at ``now - CALENDAR_BACK_DAYS`` to
+    ``now + CALENDAR_FORWARD_DAYS`` (OQ-PVC-009).  The mark is therefore not a
+    lookback driver as it is for email — it records the last successful pull, is
+    advanced only after a successful post (``PVC-REQ-N-002``), and drives a
+    warning when the host has been off longer than the backward reach.
+
+    ``post`` exits the process on systemic failure, so reaching the lines after
+    it means the pull succeeded.
+    """
+    cf_id, cf_secret = _load_credentials()
+
+    run_start = datetime.now()
+    window_start = run_start - timedelta(days=CALENDAR_BACK_DAYS)
+    window_end = run_start + timedelta(days=CALENDAR_FORWARD_DAYS)
+
+    last = _load_calendar_mark()
+    if last is None:
+        print("No prior calendar pull — first run.", flush=True)
+    else:
+        gap_days = (run_start - last).days
+        print(f"Last calendar pull {last.isoformat()} ({gap_days}d ago).", flush=True)
+        if gap_days > CALENDAR_BACK_DAYS:
+            print(
+                f"WARNING: gap of {gap_days}d exceeds the {CALENDAR_BACK_DAYS}d backward "
+                "reach — meetings that occurred and were then cancelled inside the gap "
+                "will not be seen.",
+                flush=True,
+            )
+
+    items = fetch_calendar(window_start, window_end)
+    if len(items) >= _CALENDAR_MAX_ITEMS:
+        print(
+            f"WARNING: hit the {_CALENDAR_MAX_ITEMS}-occurrence cap — the far end of "
+            "the window may be incomplete.",
+            flush=True,
+        )
+
+    post(items, cf_id, cf_secret)  # sys.exits on systemic failure
+
+    post_pull_complete(
+        window_start=window_start,
+        window_end=window_end,
+        item_ids=[i["item_id"] for i in items],
+        client_id=cf_id,
+        client_secret=cf_secret,
+    )
+    _save_calendar_mark(run_start)
+    print(f"Calendar mark advanced to {run_start.isoformat()}", flush=True)
 
 
 def _fetch_folder(
@@ -966,5 +1161,7 @@ if __name__ == "__main__":
         # the first scheduled run continues seamlessly from here.
         _save_high_water_mark(seed_start)
         print(f"High-water mark set to {seed_start.isoformat()}", flush=True)
+    elif len(sys.argv) > 1 and sys.argv[1] == "--calendar":
+        _run_calendar()
     else:
         _run_scheduled()
