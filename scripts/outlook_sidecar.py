@@ -40,6 +40,16 @@ Each run backfills everything since that mark instead of a fixed window, so the
 schedule is gap-proof across arbitrarily long absences (host off / logged out)
 rather than losing anything older than the lookback window.
 
+Run with ``--calendar`` to pull appointments from the default Outlook calendar
+folder instead of email. Each pull covers a fixed window (7 days back, 90 days
+forward) rather than backfilling from a high-water mark, and keeps its own
+mark file (``%LOCALAPPDATA%\\hexcaliper-parsival\\calendar_state.json``) so a
+calendar failure can never delay or duplicate email ingest, or vice versa.
+Classified events land as pending proposals reviewed via ``GET
+/calendar/proposals``; nothing reaches the look-ahead board without acceptance.
+Schedule separately from the email task, every 4 hours (``OQ-PVC-012``,
+``scripts/run_calendar_sidecar.cmd``).
+
 Usage::
 
     pip install requests pywin32 keyring

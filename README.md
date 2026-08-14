@@ -456,6 +456,42 @@ Use `--seed-and-infer` to ingest history **and** automatically start LLM project
 python scripts/outlook_sidecar.py --seed-and-infer
 ```
 
+### Windows — Outlook calendar
+
+```bash
+python scripts/outlook_sidecar.py --calendar   # calendar pull, own schedule
+```
+
+Reads the default Outlook calendar folder over a fixed window — 7 days back,
+90 days forward — with `IncludeRecurrences` set so each occurrence of a
+recurring series arrives as its own event; Parsival never stores a recurrence
+rule. Each event is classified as scheduled work, a deadline, context for an
+open situation or card, or ignorable, via a deterministic pre-filter (declined
+events, free holds, private/confidential events, short recurring blocks,
+attendee-less holds) ahead of a model call — only survivors of the pre-filter
+cost a model call. Classified events land as pending **proposals**, never
+directly on the board; nothing is created until you accept one.
+
+Two Outlook categories override the classifier in both directions:
+
+- **`Parsival Include`** forces an event past the pre-filter and the model
+  straight to a proposal — the escape hatch for a recurring block the rules
+  would otherwise drop.
+- **`Parsival Ignore`** drops an event outright, before the pre-filter and
+  before any model call — the escape hatch for the opposite mistake.
+
+Review pending proposals with `GET /calendar/proposals` (`decision=pending`,
+`accepted`, `rejected`, or `all`) until Plan 2 ships the in-app review panel;
+each row carries the source appointment alongside the proposed outcome. Accept
+one with `POST /calendar/proposals/{id}/accept`, optionally overriding
+`project`, `title`, `start_date`, `end_date`, `assignee`, or `notes` in the
+body, or reject it with `POST /calendar/proposals/{id}/reject`.
+
+Runs on its own Windows Task Scheduler entry every 4 hours
+(`scripts/run_calendar_sidecar.cmd`), separate from the email schedule so a
+calendar failure can never delay email ingest, or vice versa. It keeps its own
+high-water mark file, independent of the email sidecar's.
+
 ### Ubuntu — Thunderbird
 
 ```bash

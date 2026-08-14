@@ -12,6 +12,27 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-08 — Outlook calendar ingest (acquisition and proposal)
+
+### Added
+- **Calendar acquisition (PVC-REQ-F-001–F-009)** — `outlook_sidecar.py --calendar`
+  reads the default calendar folder over a −7d/+90d window with
+  `IncludeRecurrences`, sorting before restricting so Outlook expands each
+  series into concrete occurrences. Parsival stores no recurrence rule
+  (CON-PVC-013). `item_id` is `GlobalAppointmentID:occurrence_start`, stable
+  across folder moves and unique per occurrence. Own high-water mark file, own
+  4-hourly schedule; the email path is unchanged.
+- **Calendar classification (PVC-REQ-F-012, F-027, F-028)** — events branch out
+  of the email orchestrator on `source="outlook_calendar"` into an Outlook
+  category override, then a deterministic pre-filter, then the model. Only
+  survivors of the first two stages cost a model call.
+- **Proposals (PVC-REQ-F-013–F-021)** — `calendar_proposals` holds one proposal
+  per occurrence. `GET /calendar/proposals`, `POST
+  /calendar/proposals/{id}/accept`, `.../reject`, `POST
+  /calendar/pull-complete`. Acceptance creates cards through the look-ahead API
+  layer so the card↔todo mirror holds; nothing reaches the board without a
+  click. Reconciliation and the review UI are Plan 2.
+
 ## 2026-08 — MCP server (read side)
 
 ### Added
