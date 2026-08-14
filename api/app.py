@@ -4460,25 +4460,34 @@ def calendar_accept_proposal(proposal_id: int, body: dict | None = None):
     :return: ``{"proposal": ..., "card": ...}`` for card proposals.
     """
     overrides = body or {}
+    # Held across the full read -> check -> create -> write span (not taken twice)
+    # so two concurrent accepts of the same proposal_id (double-click, retried
+    # client) serialise rather than both passing the decision pre-check and both
+    # creating a card.  db.lock is an RLock (api/db.py:103), so the nested
+    # acquisitions inside lookahead_create_card and _calendar_land_card re-enter
+    # safely.
     with db.lock:
         proposal = db.get_calendar_proposal(proposal_id)
-    if not proposal:
-        raise HTTPException(status_code=404, detail="proposal not found")
-    if proposal.get("decision"):
-        raise HTTPException(status_code=400, detail=f"proposal already {proposal['decision']}")
+        if not proposal:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        if proposal.get("decision"):
+            raise HTTPException(status_code=400, detail=f"proposal already {proposal['decision']}")
 
-    payload = dict(proposal["payload"])
-    for key in ("project", "title", "start_date", "end_date", "assignee", "notes"):
-        if key in overrides:
-            payload[key] = overrides[key]
+        payload = dict(proposal["payload"])
+        for key in ("project", "title", "start_date", "end_date", "assignee", "notes"):
+            if key in overrides:
+                payload[key] = overrides[key]
 
-    if proposal["kind"] == "card":
-        return _calendar_land_card(proposal, payload)
-    raise HTTPException(status_code=400, detail=f"unsupported kind: {proposal['kind']}")
+        if proposal["kind"] == "card":
+            return _calendar_land_card(proposal, payload)
+        raise HTTPException(status_code=400, detail=f"unsupported kind: {proposal['kind']}")
 
 
 def _calendar_land_card(proposal: dict, payload: dict) -> dict:
-    """Create the look-ahead card an accepted proposal describes."""
+    """Create the look-ahead card an accepted proposal describes.
+
+    Called with ``db.lock`` already held by :func:`calendar_accept_proposal`.
+    """
     project = (payload.get("project") or "").strip()
     if not project:
         # A card has no board to sit on without a project; refuse rather than
@@ -4503,10 +4512,15 @@ def _calendar_land_card(proposal: dict, payload: dict) -> dict:
             "status": "planned",
         }
     )
-    with db.lock:
+    try:
         updated = db.decide_calendar_proposal(
             proposal["id"], "accepted", card_id=card["id"], payload=payload
         )
+    except ValueError as exc:
+        # The pre-check in calendar_accept_proposal covers the common case; this
+        # is the guarantee for a loser under the lock (or if the span is ever
+        # narrowed again) — matches Task 8's reject route convention.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"proposal": updated, "card": card}
 
 

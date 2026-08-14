@@ -265,3 +265,16 @@ def test_no_card_exists_before_acceptance(client):
     _store_source_item()
     db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", _payload())
     assert db.list_lookahead_cards() == []
+
+
+def test_accepting_the_same_proposal_twice_is_refused_not_a_server_error(client):
+    """A double-click or retried accept must 400, not orphan a second card."""
+    _wipe()
+    _shifts()
+    _store_source_item()
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", _payload())
+    first = client.post(f"/calendar/proposals/{row['id']}/accept")
+    assert first.status_code == 200
+    second = client.post(f"/calendar/proposals/{row['id']}/accept")
+    assert second.status_code == 400
+    assert len(db.list_lookahead_cards()) == 1
