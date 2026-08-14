@@ -213,6 +213,100 @@ def _normalise_subject(subject: str) -> str:
     return re.sub(r"^(Re|Fwd?|AW|WG):\s*", "", subject or "", flags=re.IGNORECASE).strip()
 
 
+# ── Calendar acquisition (parsival calendar ingest, Plan 1) ───────────────────
+#
+# Appointments travel the same /ingest contract as email but under their own
+# source value, so the server can branch without inspecting payload shape
+# (PVC-REQ-F-011, OQ-PVC-010).  COM access is confined to _read_appointment;
+# normalise_appointment below is pure, which is what makes the field mapping
+# testable on Linux CI where win32com does not exist (design §3.5).
+
+CALENDAR_SOURCE = "outlook_calendar"
+_CALENDAR_FOLDER_ID = 9  # olFolderCalendar
+CALENDAR_BACK_DAYS = 7  # OQ-PVC-009 — past events serve context only
+CALENDAR_FORWARD_DAYS = 90  # OQ-PVC-009 — catches quarterly milestones and long-lead FATs
+_CALENDAR_MAX_ITEMS = 2000  # bound on one pull; a 90-day window is normally far under this
+_MAPI_TIME_FMT = "%m/%d/%Y %I:%M %p"
+
+# MAPI enum → name.  Downstream rules read names, never the raw ints.
+_RESPONSE_STATUS = {
+    0: "none",
+    1: "organizer",
+    2: "tentative",
+    3: "accepted",
+    4: "declined",
+    5: "not_responded",
+}
+_BUSY_STATUS = {0: "free", 1: "tentative", 2: "busy", 3: "out_of_office", 4: "working_elsewhere"}
+_SENSITIVITY = {0: "normal", 1: "personal", 2: "private", 3: "confidential"}
+
+
+def normalise_appointment(raw: dict) -> dict:
+    """Convert an already-read appointment dict into an ``/ingest`` payload.
+
+    Pure by construction — ``raw`` holds plain Python values read from COM by
+    :func:`_read_appointment`, never COM objects.  That separation is what makes
+    ``PVC-REQ-F-007``/``F-008``/``F-009`` testable on a machine without Outlook.
+
+    The ``item_id`` is composite: every occurrence of a recurring series shares
+    one ``GlobalAppointmentID``, so the id alone would collapse thirteen weekly
+    reviews into one item.  Pairing it with the occurrence start keeps the id
+    stable across folder and mailbox moves while staying unique per occurrence
+    (``PVC-REQ-F-007``, ``PVC-REQ-F-008``).
+
+    Args:
+        raw: Already-read appointment values.  Requires ``start`` (datetime)
+            and ``global_id`` (non-empty str).
+
+    Returns:
+        A dict matching the ``RawItem`` ingest contract.
+
+    Raises:
+        ValueError: If ``start`` or ``global_id`` is missing.  Such an item
+            cannot be deduplicated, so it must not be ingested.
+    """
+    start = raw.get("start")
+    global_id = str(raw.get("global_id") or "")
+    if start is None:
+        raise ValueError("appointment has no Start")
+    if not global_id:
+        raise ValueError("appointment has no GlobalAppointmentID")
+
+    end = raw.get("end") or start
+    body = re.sub(r"\n{3,}", "\n\n", (raw.get("body") or "")).strip()
+    attendees = [a for a in (raw.get("attendees") or []) if a]
+    categories = [c.strip() for c in (raw.get("categories") or "").split(";") if c.strip()]
+
+    return {
+        "source": CALENDAR_SOURCE,
+        "item_id": f"{global_id}:{start.isoformat()}",
+        "title": raw.get("subject") or "(no subject)",
+        "body": body[:3000],
+        "url": "",
+        "author": raw.get("organizer") or "",
+        "timestamp": start.isoformat(),
+        "metadata": {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "all_day": bool(raw.get("all_day")),
+            "duration_minutes": int((end - start).total_seconds() // 60),
+            "location": raw.get("location") or "",
+            "organizer": raw.get("organizer") or "",
+            "attendees": attendees,
+            # Same shape as the email path's recipient string so contact
+            # enrichment consumes it identically (PVC-REQ-N-004).
+            "to": "; ".join(attendees),
+            "is_recurring": bool(raw.get("is_recurring")),
+            "response_status": _RESPONSE_STATUS.get(
+                int(raw.get("response_status") or 0), "unknown"
+            ),
+            "busy_status": _BUSY_STATUS.get(int(raw.get("busy_status") or 0), "unknown"),
+            "sensitivity": _SENSITIVITY.get(int(raw.get("sensitivity") or 0), "unknown"),
+            "categories": categories,
+        },
+    }
+
+
 def _fetch_folder(
     ns,
     folder_id: int,
