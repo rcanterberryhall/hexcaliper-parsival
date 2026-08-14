@@ -114,12 +114,25 @@ def test_the_queue_shows_the_proposal_beside_its_source_appointment(client):
     """PVC-REQ-F-019 — the user cannot ratify what they cannot see next to its evidence."""
     _wipe()
     _store_source_item()
-    db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", _payload())
+    db.add_calendar_proposal(
+        "G1:2026-08-20T09:00:00",
+        "card",
+        _payload(
+            source_end="2026-08-22T17:00:00",
+            source_location="Bay 3",
+            source_organizer="Alice Smith <alice@example.com>",
+            source_attendees=["Bob <bob@example.com>"],
+        ),
+    )
     rows = client.get("/calendar/proposals").json()
     assert len(rows) == 1
     assert rows[0]["payload"]["title"] == "FAT — P905 panel"
     assert rows[0]["source"]["title"] == "FAT — P905 panel"
     assert rows[0]["source"]["start"] == "2026-08-20T09:00:00"
+    assert rows[0]["source"]["end"] == "2026-08-22T17:00:00"
+    assert rows[0]["source"]["location"] == "Bay 3"
+    assert rows[0]["source"]["organizer"] == "Alice Smith <alice@example.com>"
+    assert rows[0]["source"]["attendees"] == ["Bob <bob@example.com>"]
 
 
 def test_rejecting_records_the_decision(client):

@@ -313,6 +313,7 @@ def _record_proposal(item: RawItem, verdict: dict) -> None:
         "source_end": md.get("end", ""),
         "source_location": md.get("location", ""),
         "source_organizer": md.get("organizer", ""),
+        "source_attendees": md.get("attendees") or [],
     }
     if kind == "card":
         payload.update(

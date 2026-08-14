@@ -4403,6 +4403,7 @@ def _proposal_with_source(row: dict) -> dict:
         "end": payload.get("source_end", ""),
         "location": payload.get("source_location", ""),
         "organizer": payload.get("source_organizer", "") or (item or {}).get("author", ""),
+        "attendees": payload.get("source_attendees") or [],
     }
     return out
 
