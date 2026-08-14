@@ -52,6 +52,7 @@ Usage::
 Schedule with Windows Task Scheduler to run every 30–60 minutes.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -305,6 +306,137 @@ def normalise_appointment(raw: dict) -> dict:
             "categories": categories,
         },
     }
+
+
+def _com_datetime(value) -> "datetime | None":
+    """Convert a COM date value to a naive ``datetime``, or ``None``.
+
+    Args:
+        value: A COM date object exposing ``year``..``second``, or ``None``.
+
+    Returns:
+        The equivalent ``datetime``, or ``None`` when *value* is falsy or
+        unreadable.
+    """
+    if value is None:
+        return None
+    try:
+        return datetime(value.year, value.month, value.day, value.hour, value.minute, value.second)
+    except Exception:
+        return None
+
+
+def _read_attendees(appt) -> list[str]:
+    """Extract attendee strings from an appointment's Recipients collection.
+
+    Falls back to the plain ``RequiredAttendees``/``OptionalAttendees`` string
+    properties when the COM collection is inaccessible, matching how
+    :func:`_read_recipients` degrades on the email path.
+
+    Args:
+        appt: An Outlook ``AppointmentItem`` COM object.
+
+    Returns:
+        Attendees as ``"Name <addr>"`` strings.
+    """
+    out: list[str] = []
+    try:
+        for r in appt.Recipients:
+            addr = getattr(r, "Address", "") or ""
+            name = getattr(r, "Name", "") or ""
+            entry = f"{name} <{addr}>" if name and addr else (name or addr)
+            if entry:
+                out.append(entry)
+    except Exception:
+        out = []
+    if not out:
+        joined = "; ".join(
+            s
+            for s in (
+                getattr(appt, "RequiredAttendees", "") or "",
+                getattr(appt, "OptionalAttendees", "") or "",
+            )
+            if isinstance(s, str) and s
+        )
+        out = [s.strip() for s in joined.split(";") if s.strip()]
+    return out
+
+
+def _read_appointment(appt) -> dict:
+    """Read every COM property this feature needs into a plain dict.
+
+    This function is the entire COM boundary for calendar acquisition; nothing
+    downstream of it touches a COM object.  Keeping the boundary this narrow is
+    what lets the field mapping be unit-tested on Linux (design §3.5).
+
+    Args:
+        appt: An Outlook ``AppointmentItem`` COM object.
+
+    Returns:
+        Plain Python values keyed for :func:`normalise_appointment`.
+    """
+    return {
+        "subject": getattr(appt, "Subject", "") or "",
+        "start": _com_datetime(getattr(appt, "Start", None)),
+        "end": _com_datetime(getattr(appt, "End", None)),
+        "all_day": bool(getattr(appt, "AllDayEvent", False)),
+        "location": getattr(appt, "Location", "") or "",
+        "body": getattr(appt, "Body", "") or "",
+        "organizer": getattr(appt, "Organizer", "") or "",
+        "attendees": _read_attendees(appt),
+        "global_id": str(getattr(appt, "GlobalAppointmentID", "") or ""),
+        "is_recurring": bool(getattr(appt, "IsRecurring", False)),
+        "response_status": int(getattr(appt, "ResponseStatus", 0) or 0),
+        "busy_status": int(getattr(appt, "BusyStatus", 0) or 0),
+        "sensitivity": int(getattr(appt, "Sensitivity", 0) or 0),
+        "categories": getattr(appt, "Categories", "") or "",
+    }
+
+
+def _fetch_calendar_folder(
+    ns,
+    window_start: "datetime",
+    window_end: "datetime",
+    max_items: int = _CALENDAR_MAX_ITEMS,
+) -> list[dict]:
+    """Fetch appointments from the default calendar folder over a date window.
+
+    The order of the three MAPI calls is load-bearing and is asserted by test:
+    ``IncludeRecurrences`` must be set, then the collection sorted, and only
+    then restricted.  Any other order returns recurrence *masters* instead of
+    occurrences, and parsival has no way to expand a master — Outlook is the
+    sole source of truth for recurrence (``CON-PVC-013``, ``PVC-REQ-F-003``).
+
+    Iteration uses ``GetFirst``/``GetNext`` rather than ``Count``/``Item(i)``:
+    on a recurrence-expanded collection the index-based accessors are not
+    reliable.
+
+    Args:
+        ns: MAPI namespace COM object.
+        window_start: Earliest appointment start to fetch.
+        window_end: Latest appointment start to fetch.
+        max_items: Hard cap on the number of appointments returned.
+
+    Returns:
+        Normalised appointment dicts ready for ``POST /ingest``.
+    """
+    folder = ns.GetDefaultFolder(_CALENDAR_FOLDER_ID)
+    items = folder.Items
+    items.IncludeRecurrences = True
+    items.Sort("[Start]")
+    lo = window_start.strftime(_MAPI_TIME_FMT)
+    hi = window_end.strftime(_MAPI_TIME_FMT)
+    items = items.Restrict(f"[Start] >= '{lo}' AND [Start] <= '{hi}'")
+
+    out: list[dict] = []
+    appt = items.GetFirst()
+    while appt is not None and len(out) < max_items:
+        # A single unreadable or un-dedupable appointment is skipped, the
+        # same discipline the email loop applies (design §8).
+        with contextlib.suppress(Exception):
+            out.append(normalise_appointment(_read_appointment(appt)))
+        appt = items.GetNext()
+    return out
 
 
 def _fetch_folder(
