@@ -4381,6 +4381,90 @@ def lookahead_reject_suggestion(suggestion_id: int):
     return row
 
 
+# ── Calendar proposals (calendar ingest Plan 1) ───────────────────────────────
+#
+# Routes are bare — nginx rewrites ^/page/api/(.*) to /$1, so a route registered
+# as /api/calendar/... would be reached at /page/api/api/calendar/... (CON-PVC-004).
+
+
+def _proposal_with_source(row: dict) -> dict:
+    """Attach the originating appointment to a proposal row.
+
+    The review queue has to show the source appointment beside the proposed
+    outcome — the user cannot ratify what they cannot see next to its evidence
+    (``PVC-REQ-F-019``).
+    """
+    out = dict(row)
+    item = db.get_item(row["item_id"])
+    payload = row.get("payload") or {}
+    out["source"] = {
+        "title": (item or {}).get("title", "") or payload.get("source_title", ""),
+        "start": payload.get("source_start", "") or (item or {}).get("timestamp", ""),
+        "end": payload.get("source_end", ""),
+        "location": payload.get("source_location", ""),
+        "organizer": payload.get("source_organizer", "") or (item or {}).get("author", ""),
+    }
+    return out
+
+
+@app.get("/calendar/proposals")
+def calendar_list_proposals(decision: str = "pending"):
+    """List calendar proposals, pending by default.
+
+    :param decision: ``pending``, ``accepted``, ``rejected``, or ``all``.
+    :return: Proposal rows, each enriched with its source appointment.
+    """
+    if decision not in ("pending", "accepted", "rejected", "all"):
+        raise HTTPException(status_code=400, detail=f"invalid decision filter: {decision}")
+    with db.lock:
+        rows = db.list_calendar_proposals(decision)
+        return [_proposal_with_source(r) for r in rows]
+
+
+@app.post("/calendar/proposals/{proposal_id}/reject")
+def calendar_reject_proposal(proposal_id: int):
+    """Reject a proposal, leaving the board untouched.
+
+    The rejection is recorded rather than deleted so the same event is never
+    re-proposed (``PVC-REQ-F-020``).  Re-deciding is a 400; an unknown id a 404.
+    """
+    with db.lock:
+        try:
+            row = db.decide_calendar_proposal(proposal_id, "rejected")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="proposal not found")
+    return row
+
+
+@app.post("/calendar/pull-complete")
+def calendar_pull_complete(body: dict):
+    """Record that a calendar pull finished, and over which window.
+
+    A pull spans several batched ``/ingest`` POSTs, so an occurrence's absence
+    only becomes meaningful once the server knows the pull is complete and what
+    range it covered (``PVC-REQ-F-026``, design §3.7).  This endpoint stores
+    those bounds; the reconciliation that consumes them is Plan 2.
+    """
+    window_start = (body.get("window_start") or "").strip()
+    window_end = (body.get("window_end") or "").strip()
+    if not window_start or not window_end:
+        raise HTTPException(status_code=400, detail="window_start and window_end are required")
+    item_ids = [str(i) for i in (body.get("item_ids") or [])]
+    with db.lock:
+        db.set_model_state(
+            "calendar_last_pull",
+            {
+                "window_start": window_start,
+                "window_end": window_end,
+                "item_ids": item_ids,
+                "completed_at": now_iso(),
+            },
+        )
+    return {"ok": True, "seen": len(item_ids)}
+
+
 # ── lancellmot document linking (parsival#43) ────────────────────────────────────
 
 

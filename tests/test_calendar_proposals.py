@@ -93,3 +93,69 @@ def test_accepting_can_refresh_the_payload_snapshot():
     )
     assert updated["card_id"] == "card-1"
     assert updated["payload"]["project"] == "P910"
+
+
+def _store_source_item(item_id="G1:2026-08-20T09:00:00"):
+    db.upsert_item(
+        {
+            "item_id": item_id,
+            "source": "outlook_calendar",
+            "title": "FAT — P905 panel",
+            "author": "Alice Smith",
+            "timestamp": "2026-08-20T09:00:00",
+            "url": "",
+            "category": "fyi",
+            "summary": "Multi-day supplier acceptance test",
+        }
+    )
+
+
+def test_the_queue_shows_the_proposal_beside_its_source_appointment(client):
+    """PVC-REQ-F-019 — the user cannot ratify what they cannot see next to its evidence."""
+    _wipe()
+    _store_source_item()
+    db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", _payload())
+    rows = client.get("/calendar/proposals").json()
+    assert len(rows) == 1
+    assert rows[0]["payload"]["title"] == "FAT — P905 panel"
+    assert rows[0]["source"]["title"] == "FAT — P905 panel"
+    assert rows[0]["source"]["start"] == "2026-08-20T09:00:00"
+
+
+def test_rejecting_records_the_decision(client):
+    """PVC-REQ-F-020."""
+    _wipe()
+    row = db.add_calendar_proposal("G1:a", "card", _payload())
+    assert client.post(f"/calendar/proposals/{row['id']}/reject").status_code == 200
+    assert db.get_calendar_proposal(row["id"])["decision"] == "rejected"
+    assert client.get("/calendar/proposals").json() == []
+
+
+def test_re_deciding_is_a_400_and_an_unknown_id_is_a_404(client):
+    _wipe()
+    row = db.add_calendar_proposal("G1:a", "card", _payload())
+    client.post(f"/calendar/proposals/{row['id']}/reject")
+    assert client.post(f"/calendar/proposals/{row['id']}/reject").status_code == 400
+    assert client.post("/calendar/proposals/99999/reject").status_code == 404
+
+
+def test_pull_complete_records_the_window_bounds(client):
+    """Design §3.7 — Plan 2's absence detection consumes this."""
+    _wipe()
+    body = {
+        "window_start": "2026-08-07T06:00:00",
+        "window_end": "2026-11-12T06:00:00",
+        "item_ids": ["G1:2026-08-20T09:00:00"],
+    }
+    assert client.post("/calendar/pull-complete", json=body).json()["seen"] == 1
+    state = db.get_model_state("calendar_last_pull")
+    assert state["window_start"] == "2026-08-07T06:00:00"
+    assert state["window_end"] == "2026-11-12T06:00:00"
+    assert state["item_ids"] == ["G1:2026-08-20T09:00:00"]
+    assert state["completed_at"]
+
+
+def test_pull_complete_requires_both_bounds(client):
+    """A pull with no window cannot scope absence, so it is refused."""
+    _wipe()
+    assert client.post("/calendar/pull-complete", json={"item_ids": []}).status_code == 400
