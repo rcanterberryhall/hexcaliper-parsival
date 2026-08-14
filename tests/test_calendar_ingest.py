@@ -224,3 +224,124 @@ def test_link_candidates_tolerates_a_present_but_null_start():
     situations, cards = ci._link_candidates(item)
     assert situations == []
     assert cards == []
+
+
+import db
+import orchestrator
+
+
+def _wipe_items():
+    c = db.conn()
+    c.execute("DELETE FROM calendar_proposals")
+    c.execute("DELETE FROM items")
+
+
+def test_a_dropped_event_is_recorded_and_never_proposed():
+    """PVC-REQ-F-016 — ignorable events must not surface in any review queue."""
+    _wipe_items()
+    with patch.object(ci, "classify") as mock_classify:
+        ci.handle_item(_item(response_status="declined"))
+    mock_classify.assert_not_called()
+    assert db.list_calendar_proposals("all") == []
+    stored = db.get_item("G1:2026-08-20T09:00:00")
+    assert stored["category"] == "filtered"
+    assert "declined" in stored["summary"]
+
+
+def test_a_force_include_category_beats_the_prefilter():
+    """PVC-REQ-F-028 — acceptance criterion 10, the force-include half."""
+    _wipe_items()
+    verdict = {
+        "kind": "card",
+        "project": "P905",
+        "title": "Rework review",
+        "reason": "r",
+        "start_date": "2026-08-20",
+        "end_date": "2026-08-20",
+        "date": "2026-08-20",
+        "target_type": "",
+        "target_id": "",
+    }
+    # Without the category this is a 15-minute recurring block — a certain drop.
+    with patch.object(ci, "classify", return_value=verdict):
+        ci.handle_item(
+            _item(is_recurring=True, duration_minutes=15, categories=["Parsival Include"])
+        )
+    assert len(db.list_calendar_proposals("pending")) == 1
+
+
+def test_a_force_ignore_category_beats_the_classifier():
+    """PVC-REQ-F-028 — acceptance criterion 10, the force-ignore half."""
+    _wipe_items()
+    with patch.object(ci, "classify") as mock_classify:
+        ci.handle_item(_item(categories=["Parsival Ignore"]))
+    mock_classify.assert_not_called()
+    assert db.list_calendar_proposals("all") == []
+
+
+def test_a_model_failure_leaves_the_event_for_the_next_pull():
+    """Design §8 — no junk proposal, and no items row that would block a retry."""
+    _wipe_items()
+    with patch.object(ci, "classify", return_value=None):
+        ci.handle_item(_item())
+    assert db.list_calendar_proposals("all") == []
+    assert db.get_item("G1:2026-08-20T09:00:00") is None
+
+
+def test_a_card_verdict_becomes_a_pending_proposal():
+    """PVC-REQ-F-012 / F-013 — and the payload carries the card fields."""
+    _wipe_items()
+    verdict = {
+        "kind": "card",
+        "project": "P905",
+        "title": "FAT — P905 panel",
+        "reason": "Multi-day test",
+        "start_date": "2026-08-20",
+        "end_date": "2026-08-22",
+        "date": "2026-08-20",
+        "target_type": "",
+        "target_id": "",
+    }
+    with patch.object(ci, "classify", return_value=verdict):
+        ci.handle_item(_item())
+    rows = db.list_calendar_proposals("pending")
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "card"
+    assert rows[0]["payload"]["start_date"] == "2026-08-20"
+    assert rows[0]["payload"]["end_date"] == "2026-08-22"
+    assert db.get_item("G1:2026-08-20T09:00:00")["source"] == "outlook_calendar"
+
+
+def test_the_orchestrator_routes_calendar_items_away_from_the_email_path():
+    """PVC-REQ-F-011 / F-004 — the branch keys on source, nothing else."""
+    with (
+        patch.object(orchestrator, "analyze") as mock_analyze,
+        patch.object(orchestrator._calendar_ingest, "handle_item") as mock_calendar,
+    ):
+        orchestrator.process_ingest_items([_item()])
+    mock_calendar.assert_called_once()
+    mock_analyze.assert_not_called()
+
+
+def test_the_orchestrator_still_sends_email_items_to_the_analyser():
+    """PVC-REQ-F-004 — the email path is in daily production use."""
+    email = RawItem(
+        source="outlook",
+        item_id="EMAIL1",
+        title="Re: panel",
+        body="hello",
+        url="",
+        author="bob@example.com",
+        timestamp="2026-08-20T09:00:00",
+        metadata={},
+    )
+    with (
+        patch.object(orchestrator, "analyze") as mock_analyze,
+        patch.object(orchestrator, "_save_analysis"),
+        patch.object(orchestrator, "graph"),
+        patch.object(orchestrator, "_spawn_situation_task"),
+        patch.object(orchestrator._calendar_ingest, "handle_item") as mock_calendar,
+    ):
+        orchestrator.process_ingest_items([email])
+    mock_analyze.assert_called_once()
+    mock_calendar.assert_not_called()

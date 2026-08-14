@@ -250,3 +250,138 @@ def classify(item: RawItem) -> dict | None:
             verdict["reason"] = "link target not in candidate set"
 
     return verdict
+
+
+def _record_drop(item: RawItem, reason: str) -> None:
+    """Store a dropped event so it is auditable and never re-classified.
+
+    ``/ingest`` deduplicates against the items table, so writing this row is
+    what stops the event coming back through the model on every four-hourly
+    pull (``PVC-REQ-F-016``, ``PVC-REQ-F-010``).  ``category='filtered'`` is the
+    existing convention for "stored but invisible in the normal UI", shared with
+    the e-mail noise filter.
+
+    Args:
+        item: The calendar ``RawItem`` being dropped.
+        reason: The rule slug that fired, recorded for later tuning.
+    """
+    with db.lock:
+        if db.get_item(item.item_id):
+            return
+        db.upsert_item(
+            {
+                "item_id": item.item_id,
+                "source": item.source,
+                "title": item.title,
+                "author": item.author,
+                "timestamp": item.timestamp,
+                "url": item.url,
+                "has_action": 0,
+                "priority": "low",
+                "category": "filtered",
+                "summary": f"[calendar drop: {reason}]",
+                "urgency": None,
+                "action_items": "[]",
+                "to_field": (item.metadata or {}).get("to", ""),
+                "processed_at": _now_iso(),
+            }
+        )
+
+
+def _record_proposal(item: RawItem, verdict: dict) -> None:
+    """Store the source event and its proposal.
+
+    The event row is written first so the review queue can show the appointment
+    beside the proposed outcome (``PVC-REQ-F-019``, Plan 2's surface) and so the
+    next pull deduplicates.  The proposal row is the only thing the user acts
+    on; nothing reaches the board without acceptance (``PVC-REQ-F-018``).
+
+    Args:
+        item: The calendar ``RawItem``.
+        verdict: A verdict dict from :func:`classify` with a non-ignore kind.
+    """
+    kind = verdict["kind"]
+    md = item.metadata or {}
+    payload = {
+        "kind": kind,
+        "title": verdict.get("title") or item.title,
+        "project": verdict.get("project", ""),
+        "reason": verdict.get("reason", ""),
+        "source_item_id": item.item_id,
+        "source_title": item.title,
+        "source_start": md.get("start", ""),
+        "source_end": md.get("end", ""),
+        "source_location": md.get("location", ""),
+        "source_organizer": md.get("organizer", ""),
+    }
+    if kind == "card":
+        payload.update(
+            {
+                "start_date": verdict.get("start_date", ""),
+                "end_date": verdict.get("end_date", ""),
+            }
+        )
+    elif kind == "key_date":
+        payload["date"] = verdict.get("date", "")
+    elif kind == "link":
+        payload.update(
+            {
+                "target_type": verdict.get("target_type", ""),
+                "target_id": verdict.get("target_id", ""),
+            }
+        )
+
+    with db.lock:
+        db.upsert_item(
+            {
+                "item_id": item.item_id,
+                "source": item.source,
+                "title": item.title,
+                "author": item.author,
+                "timestamp": item.timestamp,
+                "url": item.url,
+                "has_action": 0,
+                "priority": "low",
+                "category": "fyi",
+                "summary": verdict.get("reason", "") or f"[calendar {kind} proposal]",
+                "urgency": None,
+                "action_items": "[]",
+                "project_tag": verdict.get("project") or None,
+                "body_preview": (item.body or "")[:2000],
+                "to_field": md.get("to", ""),
+                "processed_at": _now_iso(),
+            }
+        )
+        db.add_calendar_proposal(item.item_id, kind, payload)
+
+
+def handle_item(item: RawItem) -> None:
+    """Run one calendar event through override, pre-filter, model, and storage.
+
+    Stage order is load-bearing (design §4.2): the override runs first so a
+    force-include category survives the pre-filter, and force-ignore
+    short-circuits both later stages.
+
+    A model failure returns without writing anything, so the event is picked up
+    again on the next pull rather than being silently discarded (design §8).
+
+    Args:
+        item: A ``RawItem`` whose source is ``outlook_calendar``.
+    """
+    override = calendar_filter.category_override(item)
+    if override == "ignore":
+        _record_drop(item, "category_ignore")
+        return
+    if override != "include":
+        reason = calendar_filter.prefilter_reason(item)
+        if reason:
+            _record_drop(item, reason)
+            return
+
+    verdict = classify(item)
+    if verdict is None:
+        return  # model failure — retry next pull, no row written
+    if verdict["kind"] == "ignore":
+        _record_drop(item, "classified_ignore")
+        return
+    _record_proposal(item, verdict)

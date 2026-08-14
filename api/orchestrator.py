@@ -41,6 +41,7 @@ import requests as http_requests
 
 log = logging.getLogger(__name__)
 
+import calendar_ingest as _calendar_ingest
 import config
 import connector_github
 import connector_jira
@@ -744,6 +745,17 @@ def process_ingest_items(raw: list[RawItem]) -> None:
         # out instead of hitting merLLM after the user asked to stop.
         if _scan_state["cancelled"]:
             _mark_done(item)
+            return
+        # Calendar events take their own path: filter, classify, propose.  The
+        # branch keys on source alone, so nothing about the email path changes
+        # (PVC-REQ-F-011, PVC-REQ-F-004).
+        if item.source == _calendar_ingest.CALENDAR_SOURCE:
+            try:
+                _calendar_ingest.handle_item(item)
+            except Exception as e:
+                log.error("calendar ingest %s: %s", item.item_id, e)
+            finally:
+                _mark_done(item)
             return
         matched, rule_type = _nf.should_filter(item, noise_rules)
         if matched:
