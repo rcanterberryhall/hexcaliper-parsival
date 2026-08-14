@@ -53,6 +53,7 @@ _psutil.cpu_percent()  # prime interval counter so first real call is accurate
 from datetime import UTC, datetime
 
 import attention as _attn
+import calendar_ingest as _calendar_ingest
 import config
 import contacts as _contacts
 import correlator as _correlator
@@ -4437,6 +4438,76 @@ def calendar_reject_proposal(proposal_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="proposal not found")
     return row
+
+
+@app.post("/calendar/proposals/{proposal_id}/accept")
+def calendar_accept_proposal(proposal_id: int, body: dict | None = None):
+    """Accept a proposal, materialising the outcome it describes.
+
+    Nothing reaches the look-ahead board without this call (``PVC-REQ-F-018``).
+    Field overrides in the body are applied before the outcome is created, which
+    is what makes project attribution editable before acceptance
+    (``PVC-REQ-F-017``); accepted values replace the stored payload so it
+    reflects what was actually written.
+
+    Cards are created through :func:`lookahead_create_card` rather than by SQL,
+    because the card↔todo mirror invariant lives only in the API layer
+    (``PVC-REQ-F-021``, ``CON-PVC-005``).
+
+    :param proposal_id: The proposal to accept.
+    :param body: Optional overrides — ``project``, ``title``, ``start_date``,
+                 ``end_date``, ``assignee``, ``notes``.
+    :return: ``{"proposal": ..., "card": ...}`` for card proposals.
+    """
+    overrides = body or {}
+    with db.lock:
+        proposal = db.get_calendar_proposal(proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="proposal not found")
+    if proposal.get("decision"):
+        raise HTTPException(status_code=400, detail=f"proposal already {proposal['decision']}")
+
+    payload = dict(proposal["payload"])
+    for key in ("project", "title", "start_date", "end_date", "assignee", "notes"):
+        if key in overrides:
+            payload[key] = overrides[key]
+
+    if proposal["kind"] == "card":
+        return _calendar_land_card(proposal, payload)
+    raise HTTPException(status_code=400, detail=f"unsupported kind: {proposal['kind']}")
+
+
+def _calendar_land_card(proposal: dict, payload: dict) -> dict:
+    """Create the look-ahead card an accepted proposal describes."""
+    project = (payload.get("project") or "").strip()
+    if not project:
+        # A card has no board to sit on without a project; refuse rather than
+        # invent one, and leave the proposal pending so it can be corrected.
+        raise HTTPException(status_code=400, detail="project is required to accept a card")
+
+    start_time = (payload.get("source_start") or "")[11:16]
+    payload["start_shift_num"] = _calendar_ingest.resolve_shift_num(project, start_time)
+    payload["end_shift_num"] = payload["start_shift_num"]
+    payload["project"] = project
+
+    card = lookahead_create_card(
+        {
+            "title": payload.get("title") or "(untitled appointment)",
+            "project": project,
+            "assignee": payload.get("assignee", ""),
+            "start_date": payload.get("start_date", ""),
+            "end_date": payload.get("end_date", ""),
+            "start_shift_num": payload["start_shift_num"],
+            "end_shift_num": payload["end_shift_num"],
+            "notes": payload.get("notes", "") or payload.get("reason", ""),
+            "status": "planned",
+        }
+    )
+    with db.lock:
+        updated = db.decide_calendar_proposal(
+            proposal["id"], "accepted", card_id=card["id"], payload=payload
+        )
+    return {"proposal": updated, "card": card}
 
 
 @app.post("/calendar/pull-complete")

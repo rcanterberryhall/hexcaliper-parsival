@@ -172,3 +172,96 @@ def test_pull_complete_requires_both_bounds(client):
     """A pull with no window cannot scope absence, so it is refused."""
     _wipe()
     assert client.post("/calendar/pull-complete", json={"item_ids": []}).status_code == 400
+
+
+import calendar_ingest as ci
+
+
+def _shifts(project="P905"):
+    db.upsert_project_shift(
+        project, 1, {"label": "Days", "start_time": "06:00", "end_time": "14:00"}
+    )
+    db.upsert_project_shift(
+        project, 2, {"label": "Back", "start_time": "14:00", "end_time": "22:00"}
+    )
+    db.upsert_project_shift(
+        project, 3, {"label": "Nights", "start_time": "22:00", "end_time": "06:00"}
+    )
+
+
+def test_shift_is_resolved_from_the_appointment_start_time():
+    """OQ-PVC-004 — no schema change; project_shifts already holds HH:MM windows."""
+    _wipe()
+    _shifts()
+    assert ci.resolve_shift_num("P905", "09:00") == 1
+    assert ci.resolve_shift_num("P905", "15:30") == 2
+
+
+def test_an_overnight_shift_window_wraps():
+    _wipe()
+    _shifts()
+    assert ci.resolve_shift_num("P905", "23:30") == 3
+    assert ci.resolve_shift_num("P905", "02:00") == 3
+
+
+def test_shift_falls_back_to_one_when_unconfigured_or_unmatched():
+    """CON-PVC-008 — the card schema's own column default."""
+    _wipe()
+    assert ci.resolve_shift_num("P999", "09:00") == 1
+    assert ci.resolve_shift_num("P905", "not-a-time") == 1
+
+
+def test_accepting_a_card_proposal_creates_a_card_and_its_todo(client):
+    """PVC-REQ-F-013 / F-018 / F-021 — through the API layer, so the mirror holds."""
+    _wipe()
+    _shifts()
+    _store_source_item()
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", _payload())
+    resp = client.post(f"/calendar/proposals/{row['id']}/accept")
+    assert resp.status_code == 200
+    card = resp.json()["card"]
+    assert (card["title"], card["project"]) == ("FAT — P905 panel", "P905")
+    assert (card["start_date"], card["end_date"]) == ("2026-08-20", "2026-08-22")
+    # parsival#85: every card mirrors into a todo, and only the API layer does that.
+    assert db.get_card_todo_id(card["id"]) is not None
+
+
+def test_the_start_shift_comes_from_the_appointment_time(client):
+    _wipe()
+    _shifts()
+    _store_source_item()
+    payload = _payload()
+    payload["source_start"] = "2026-08-20T15:00:00"
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", payload)
+    card = client.post(f"/calendar/proposals/{row['id']}/accept").json()["card"]
+    assert card["start_shift_num"] == 2
+
+
+def test_the_project_can_be_corrected_at_acceptance(client):
+    """PVC-REQ-F-017 — attribution must be editable before acceptance."""
+    _wipe()
+    _store_source_item()
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", _payload(project=""))
+    card = client.post(f"/calendar/proposals/{row['id']}/accept", json={"project": "P910"}).json()[
+        "card"
+    ]
+    assert card["project"] == "P910"
+    assert db.get_calendar_proposal(row["id"])["payload"]["project"] == "P910"
+
+
+def test_accepting_a_card_with_no_project_is_refused(client):
+    """A card cannot be placed on a per-project board without a project."""
+    _wipe()
+    _store_source_item()
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", _payload(project=""))
+    resp = client.post(f"/calendar/proposals/{row['id']}/accept")
+    assert resp.status_code == 400
+    assert db.get_calendar_proposal(row["id"])["decision"] is None
+
+
+def test_no_card_exists_before_acceptance(client):
+    """PVC-REQ-F-018 — manual-first is a founding principle, not a preference."""
+    _wipe()
+    _store_source_item()
+    db.add_calendar_proposal("G1:2026-08-20T09:00:00", "card", _payload())
+    assert db.list_lookahead_cards() == []

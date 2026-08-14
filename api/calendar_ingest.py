@@ -386,3 +386,43 @@ def handle_item(item: RawItem) -> None:
         _record_drop(item, "classified_ignore")
         return
     _record_proposal(item, verdict)
+
+
+def resolve_shift_num(project: str, start_time: str) -> int:
+    """Map an appointment start time onto the project's shift schedule.
+
+    ``lookahead_cards`` carries shift numbers and no time-of-day field
+    (``CON-PVC-008``), so a timed appointment has to be placed on a shift.  The
+    data to do it already exists — ``project_shifts`` stores ``HH:MM`` windows
+    per project — so this needs no schema change (OQ-PVC-004).
+
+    Windows that wrap past midnight (a 22:00–06:00 night shift) are handled.
+    Overlapping windows are resolved by start time.
+
+    Args:
+        project: The project tag whose schedule to consult.
+        start_time: Appointment start as ``"HH:MM"``.
+
+    Returns:
+        The matching ``shift_num``, or ``1`` when the project has no shifts
+        configured, the time matches no window, or the time is unparseable —
+        ``1`` being the column default on ``lookahead_cards``.
+    """
+    if not project or not re.fullmatch(r"\d{2}:\d{2}", start_time or ""):
+        return 1
+    with db.lock:
+        shifts = db.list_project_shifts(project)
+    if not shifts:
+        return 1
+
+    for shift in sorted(shifts, key=lambda s: s.get("start_time") or ""):
+        lo = shift.get("start_time") or ""
+        hi = shift.get("end_time") or ""
+        if not lo or not hi:
+            continue
+        if lo <= hi:
+            if lo <= start_time < hi:
+                return int(shift["shift_num"])
+        elif start_time >= lo or start_time < hi:  # window wraps past midnight
+            return int(shift["shift_num"])
+    return 1
