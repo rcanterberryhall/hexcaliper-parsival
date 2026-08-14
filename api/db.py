@@ -259,6 +259,35 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_la_link_sugg_decision ON lookahead_card_link_suggestions(decision)"
     )
 
+    # Calendar proposals (calendar ingest Plan 1).  A proposed *new* card has no
+    # card to hang off, so lookahead_card_link_suggestions cannot hold it — its
+    # card_id is NOT NULL with ON DELETE CASCADE and its whole API is keyed on an
+    # existing card (OQ-PVC-002).  After acceptance this row stops being a
+    # proposal and becomes the event↔outcome ledger; that dual role is recorded
+    # here rather than hidden behind a second table.
+    #
+    # The unique index on item_id gives one proposal per occurrence for the life
+    # of that occurrence: a re-pull finds a decided row and does not re-propose
+    # (PVC-REQ-F-010, PVC-REQ-F-020).  Reclassification is deliberately not
+    # supported — see design §5.1.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS calendar_proposals (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id      TEXT    NOT NULL,
+            kind         TEXT    NOT NULL,
+            payload      TEXT    NOT NULL DEFAULT '{}',
+            decision     TEXT    DEFAULT NULL,
+            decided_at   TEXT,
+            card_id      TEXT,
+            drift        TEXT,
+            drift_detail TEXT,
+            created_at   TEXT    NOT NULL DEFAULT ''
+        )
+    """)
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cal_prop_item ON calendar_proposals(item_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cal_prop_decision ON calendar_proposals(decision)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cal_prop_drift ON calendar_proposals(drift)")
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS situation_events (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3144,6 +3173,135 @@ def decide_card_suggestion(suggestion_id: int, decision: str) -> dict | None:
             (int(suggestion_id),),
         ).fetchone()
     )
+
+
+# ── Calendar proposals (calendar ingest Plan 1) ───────────────────────────────
+
+_CALENDAR_PROPOSAL_KINDS = ("card", "key_date", "link")
+
+
+def _parse_calendar_proposal(row: dict | None) -> dict | None:
+    """Deserialise a proposal row's JSON payload column."""
+    if not row:
+        return None
+    out = dict(row)
+    try:
+        out["payload"] = json.loads(out.get("payload") or "{}")
+    except Exception:
+        out["payload"] = {}
+    return out
+
+
+def add_calendar_proposal(item_id: str, kind: str, payload: dict) -> dict | None:
+    """Record a proposal for one calendar occurrence.
+
+    Args:
+        item_id: The composite occurrence id from the sidecar.
+        kind: One of ``card``, ``key_date``, ``link``.
+        payload: The proposed fields, stored as JSON.
+
+    Returns:
+        The stored row, or ``None`` when a proposal already exists for
+        *item_id* — one proposal per occurrence, for the life of that
+        occurrence (``PVC-REQ-F-010``).
+
+    Raises:
+        ValueError: If *kind* is not a recognised proposal kind.
+    """
+    if kind not in _CALENDAR_PROPOSAL_KINDS:
+        raise ValueError(f"unknown proposal kind: {kind}")
+    c = conn()
+    cur = c.execute(
+        "INSERT OR IGNORE INTO calendar_proposals (item_id, kind, payload, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (item_id, kind, json.dumps(payload), _now_iso()),
+    )
+    if cur.rowcount == 0:
+        return None
+    return get_calendar_proposal_by_item(item_id)
+
+
+def get_calendar_proposal(proposal_id: int) -> dict | None:
+    """Return one proposal row by id, payload deserialised."""
+    row = conn().execute("SELECT * FROM calendar_proposals WHERE id = ?", (proposal_id,)).fetchone()
+    return _parse_calendar_proposal(_row_to_dict(row) if row else None)
+
+
+def get_calendar_proposal_by_item(item_id: str) -> dict | None:
+    """Return the proposal for one occurrence, decided or not."""
+    row = (
+        conn().execute("SELECT * FROM calendar_proposals WHERE item_id = ?", (item_id,)).fetchone()
+    )
+    return _parse_calendar_proposal(_row_to_dict(row) if row else None)
+
+
+def list_calendar_proposals(decision: str = "pending") -> list[dict]:
+    """List proposals filtered by decision state.
+
+    Args:
+        decision: ``pending`` (default), ``accepted``, ``rejected``, or ``all``.
+
+    Returns:
+        Proposal rows, newest first, payload deserialised.
+    """
+    sql = "SELECT * FROM calendar_proposals"
+    args: list = []
+    if decision == "pending":
+        sql += " WHERE decision IS NULL"
+    elif decision != "all":
+        sql += " WHERE decision = ?"
+        args.append(decision)
+    sql += " ORDER BY id DESC"
+    rows = conn().execute(sql, args).fetchall()
+    return [_parse_calendar_proposal(r) for r in _rows_to_list(rows)]
+
+
+def decide_calendar_proposal(
+    proposal_id: int,
+    decision: str,
+    *,
+    card_id: str | None = None,
+    payload: dict | None = None,
+) -> dict | None:
+    """Accept or reject a proposal.
+
+    On acceptance the caller passes the field set actually written, which
+    replaces the stored payload.  That snapshot is what Plan 2 compares a card
+    against to decide whether the user has edited it since (design §6.2), so it
+    must reflect what was created — not what was originally proposed.
+
+    Args:
+        proposal_id: The row to decide.
+        decision: ``accepted`` or ``rejected``.
+        card_id: The card created, when a ``card`` proposal was accepted.
+        payload: Replacement payload snapshot, when acceptance changed fields.
+
+    Returns:
+        The updated row, or ``None`` if *proposal_id* does not exist.
+
+    Raises:
+        ValueError: If *decision* is invalid, or the row is already decided —
+            reopening a decided row is what ``PVC-REQ-F-020`` forbids.
+    """
+    if decision not in ("accepted", "rejected"):
+        raise ValueError(f"invalid decision: {decision}")
+    existing = get_calendar_proposal(proposal_id)
+    if not existing:
+        return None
+    if existing.get("decision"):
+        raise ValueError(f"proposal {proposal_id} already {existing['decision']}")
+
+    updates = {"decision": decision, "decided_at": _now_iso()}
+    if card_id is not None:
+        updates["card_id"] = card_id
+    if payload is not None:
+        updates["payload"] = json.dumps(payload)
+    set_clause = ", ".join(f'"{k}" = ?' for k in updates)
+    conn().execute(
+        f"UPDATE calendar_proposals SET {set_clause} WHERE id = ?",
+        [*updates.values(), proposal_id],
+    )
+    return get_calendar_proposal(proposal_id)
 
 
 # ── Slack scan dedup (parsival#69) ────────────────────────────────────────────
