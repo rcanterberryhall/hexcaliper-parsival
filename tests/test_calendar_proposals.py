@@ -278,3 +278,108 @@ def test_accepting_the_same_proposal_twice_is_refused_not_a_server_error(client)
     second = client.post(f"/calendar/proposals/{row['id']}/accept")
     assert second.status_code == 400
     assert len(db.list_lookahead_cards()) == 1
+
+
+def test_accepting_a_key_date_writes_it_to_the_analysis_row(client):
+    """PVC-REQ-F-014 / CON-PVC-006 — the key-date path, not a parallel store."""
+    _wipe()
+    _store_source_item()
+    payload = {
+        "kind": "key_date",
+        "title": "Drawing submission due",
+        "project": "P905",
+        "date": "2026-09-01",
+        "reason": "Contractual submission milestone",
+        "source_item_id": "G1:2026-08-20T09:00:00",
+    }
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "key_date", payload)
+    assert client.post(f"/calendar/proposals/{row['id']}/accept").status_code == 200
+
+    import json
+
+    stored = json.loads(db.get_item("G1:2026-08-20T09:00:00")["key_dates"])
+    assert stored[0]["date"] == "2026-09-01"
+    assert stored[0]["description"] == "Drawing submission due"
+    assert db.get_calendar_proposal(row["id"])["decision"] == "accepted"
+
+
+def test_accepting_a_link_to_a_card_records_it_on_that_card(client):
+    """PVC-REQ-F-015 — closes the hole where the decision was made."""
+    _wipe()
+    _store_source_item()
+    card = client.post(
+        "/lookahead/cards",
+        json={
+            "title": "Panel rework",
+            "project": "P905",
+            "start_date": "2026-08-19",
+            "end_date": "2026-08-21",
+        },
+    ).json()
+    payload = {
+        "kind": "link",
+        "title": "Rework decision meeting",
+        "target_type": "card",
+        "target_id": card["id"],
+        "reason": "The rework scope was agreed here",
+        "source_item_id": "G1:2026-08-20T09:00:00",
+    }
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "link", payload)
+    assert client.post(f"/calendar/proposals/{row['id']}/accept").status_code == 200
+    links = db.get_lookahead_card(card["id"])["links"]
+    assert {"type": "item", "id": "G1:2026-08-20T09:00:00"} in [
+        {"type": lnk["type"], "id": str(lnk["id"])} for lnk in links
+    ]
+
+
+def test_accepting_a_link_to_a_situation_joins_the_event_to_it(client):
+    """PVC-REQ-F-015 — situations are joined the way every other item joins one."""
+    _wipe()
+    _store_source_item()
+    db.insert_situation(
+        {
+            "situation_id": "sit-1",
+            "title": "Panel rework",
+            "summary": "",
+            "status": "in_progress",
+            "item_ids": [],
+            "sources": [],
+            "project_tag": "P905",
+            "score": 0.0,
+            "priority": "medium",
+            "open_actions": [],
+            "references": [],
+            "key_context": None,
+            "last_updated": "2026-08-20T09:00:00",
+            "created_at": "2026-08-20T09:00:00",
+            "score_updated_at": "2026-08-20T09:00:00",
+        }
+    )
+    payload = {
+        "kind": "link",
+        "title": "Rework decision meeting",
+        "target_type": "situation",
+        "target_id": "sit-1",
+        "reason": "The rework scope was agreed here",
+        "source_item_id": "G1:2026-08-20T09:00:00",
+    }
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "link", payload)
+    assert client.post(f"/calendar/proposals/{row['id']}/accept").status_code == 200
+    assert db.get_item("G1:2026-08-20T09:00:00")["situation_id"] == "sit-1"
+    assert "G1:2026-08-20T09:00:00" in db.get_situation("sit-1")["item_ids"]
+
+
+def test_accepting_a_link_whose_target_has_vanished_is_a_400(client):
+    """A target deleted between proposal and acceptance must not 500."""
+    _wipe()
+    _store_source_item()
+    payload = {
+        "kind": "link",
+        "target_type": "situation",
+        "target_id": "gone",
+        "reason": "x",
+        "source_item_id": "G1:2026-08-20T09:00:00",
+    }
+    row = db.add_calendar_proposal("G1:2026-08-20T09:00:00", "link", payload)
+    assert client.post(f"/calendar/proposals/{row['id']}/accept").status_code == 400
+    assert db.get_calendar_proposal(row["id"])["decision"] is None

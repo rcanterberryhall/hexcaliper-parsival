@@ -4457,15 +4457,18 @@ def calendar_accept_proposal(proposal_id: int, body: dict | None = None):
     :param proposal_id: The proposal to accept.
     :param body: Optional overrides — ``project``, ``title``, ``start_date``,
                  ``end_date``, ``assignee``, ``notes``.
-    :return: ``{"proposal": ..., "card": ...}`` for card proposals.
+    :return: ``{"proposal": ..., "card": ...}`` for card proposals,
+             ``{"proposal": ..., "key_date": ...}`` for key-date proposals,
+             ``{"proposal": ..., "linked": ...}`` for link proposals.
     """
     overrides = body or {}
-    # Held across the full read -> check -> create -> write span (not taken twice)
+    # Held across the full read -> check -> land -> write span (not taken twice)
     # so two concurrent accepts of the same proposal_id (double-click, retried
     # client) serialise rather than both passing the decision pre-check and both
-    # creating a card.  db.lock is an RLock (api/db.py:103), so the nested
-    # acquisitions inside lookahead_create_card and _calendar_land_card re-enter
-    # safely.
+    # performing the side effect.  db.lock is an RLock (api/db.py:103), so the
+    # nested acquisitions inside lookahead_create_card (via _calendar_land_card)
+    # re-enter safely; the key_date and link helpers take no lock of their own
+    # and rely entirely on this one.
     with db.lock:
         proposal = db.get_calendar_proposal(proposal_id)
         if not proposal:
@@ -4480,6 +4483,10 @@ def calendar_accept_proposal(proposal_id: int, body: dict | None = None):
 
         if proposal["kind"] == "card":
             return _calendar_land_card(proposal, payload)
+        if proposal["kind"] == "key_date":
+            return _calendar_land_key_date(proposal, payload)
+        if proposal["kind"] == "link":
+            return _calendar_land_link(proposal, payload)
         raise HTTPException(status_code=400, detail=f"unsupported kind: {proposal['kind']}")
 
 
@@ -4522,6 +4529,88 @@ def _calendar_land_card(proposal: dict, payload: dict) -> dict:
         # narrowed again) — matches Task 8's reject route convention.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"proposal": updated, "card": card}
+
+
+def _calendar_land_key_date(proposal: dict, payload: dict) -> dict:
+    """Append an accepted deadline to the event's own analysis row.
+
+    Key dates are a JSON column on an items row, not a standalone table
+    (``CON-PVC-006``), so there is nothing to insert into — the date is
+    appended to the row the calendar event already owns.  That keeps
+    deadlines on the existing key-date path rather than forking date storage
+    (``PVC-REQ-F-014``).
+
+    Called with ``db.lock`` already held by :func:`calendar_accept_proposal`.
+
+    :param proposal: The decided proposal row.
+    :param payload: The (possibly overridden) proposal payload; must carry
+                     ``source_item_id`` and ``date``.
+    :return: ``{"proposal": ..., "key_date": ...}``.
+    """
+    item_id = payload.get("source_item_id") or proposal["item_id"]
+    item = db.get_item(item_id)
+    if not item:
+        raise HTTPException(status_code=400, detail="source appointment no longer stored")
+
+    existing = json.loads(item.get("key_dates") or "[]")
+    entry = {
+        "date": payload.get("date", ""),
+        "description": payload.get("title", "") or payload.get("reason", ""),
+        "source": "calendar",
+    }
+    if entry not in existing:
+        existing.append(entry)
+    db.update_item(item_id, {"key_dates": json.dumps(existing)})
+
+    try:
+        updated = db.decide_calendar_proposal(proposal["id"], "accepted", payload=payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"proposal": updated, "key_date": entry}
+
+
+def _calendar_land_link(proposal: dict, payload: dict) -> dict:
+    """Attach the calendar event to the situation or card it gives context for.
+
+    A card target becomes a ``lookahead_card_links`` row of the existing
+    ``item`` link type pointing at the appointment; a situation target joins
+    the event to that situation the same way every other item joins one
+    (``PVC-REQ-F-015``).  Neither branch introduces a new link type or table.
+
+    Called with ``db.lock`` already held by :func:`calendar_accept_proposal`.
+
+    :param proposal: The decided proposal row.
+    :param payload: The (possibly overridden) proposal payload; must carry
+                     ``source_item_id``, ``target_type`` and ``target_id``.
+    :return: ``{"proposal": ..., "linked": ...}``.
+    """
+    item_id = payload.get("source_item_id") or proposal["item_id"]
+    target_type = payload.get("target_type", "")
+    target_id = str(payload.get("target_id") or "")
+
+    if target_type == "card":
+        card = db.get_lookahead_card(target_id)
+        if not card:
+            raise HTTPException(status_code=400, detail="link target card no longer exists")
+        links = [{"type": lnk["type"], "id": str(lnk["id"])} for lnk in card.get("links", [])]
+        if {"type": "item", "id": item_id} not in links:
+            links.append({"type": "item", "id": item_id})
+        db.set_card_links(target_id, links)
+    elif target_type == "situation":
+        situation = db.get_situation(target_id)
+        if not situation:
+            raise HTTPException(status_code=400, detail="link target situation no longer exists")
+        item_ids = list(dict.fromkeys(list(situation.get("item_ids", [])) + [item_id]))
+        db.update_situation(target_id, {"item_ids": item_ids})
+        db.update_item(item_id, {"situation_id": target_id})
+    else:
+        raise HTTPException(status_code=400, detail=f"invalid link target: {target_type}")
+
+    try:
+        updated = db.decide_calendar_proposal(proposal["id"], "accepted", payload=payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"proposal": updated, "linked": {"type": target_type, "id": target_id}}
 
 
 @app.post("/calendar/pull-complete")
