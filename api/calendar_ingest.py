@@ -18,11 +18,15 @@ import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 import calendar_filter
 import config
 import db
 import llm
+
+if TYPE_CHECKING:
+    from models import RawItem
 
 log = logging.getLogger("parsival.calendar")
 
@@ -52,7 +56,7 @@ def _generate(prompt: str) -> str:
     )
 
 
-def guess_project(item) -> str:
+def guess_project(item: RawItem) -> str:
     """Derive a project tag for an appointment, or return ``""``.
 
     Subject and location are matched against each project's configured and
@@ -92,7 +96,7 @@ def guess_project(item) -> str:
     return ranked[0][0]
 
 
-def _link_candidates(item) -> tuple[list[dict], list[dict]]:
+def _link_candidates(item: RawItem) -> tuple[list[dict], list[dict]]:
     """Return the situations and cards a context event could be linked to.
 
     Bounded on both sides — the prompt carries at most
@@ -105,7 +109,7 @@ def _link_candidates(item) -> tuple[list[dict], list[dict]]:
     Returns:
         ``(situations, cards)`` as trimmed ``{"id", "title"}`` dicts.
     """
-    day = (item.metadata or {}).get("start", item.timestamp or "")[:10]
+    day = ((item.metadata or {}).get("start") or item.timestamp or "")[:10]
     try:
         anchor = datetime.fromisoformat(day)
     except ValueError:
@@ -149,7 +153,7 @@ def _parse_json_object(text: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def classify(item) -> dict | None:
+def classify(item: RawItem) -> dict | None:
     """Classify one calendar event with the model.
 
     Only events that survived the override and pre-filter reach here.

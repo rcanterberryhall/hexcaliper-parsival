@@ -209,3 +209,18 @@ def test_an_unrecognised_kind_is_treated_as_ignore():
     config.PROJECTS = []
     with patch.object(ci, "_generate", return_value='{"kind": "banana"}'):
         assert ci.classify(_item())["kind"] == "ignore"
+
+
+def test_link_candidates_tolerates_a_present_but_null_start():
+    """metadata comes from an arbitrary POST /ingest body, so a key that is
+    present but null must fall back rather than raise.  ``dict.get(key,
+    default)`` only substitutes the default when the key is *absent* — a
+    present ``None`` slips through it and would crash on the next ``[:10]``
+    slice.  The sidecar itself never emits a null ``start``, but the HTTP
+    contract does not trust that.
+    """
+    item = _item()
+    item.metadata["start"] = None
+    situations, cards = ci._link_candidates(item)
+    assert situations == []
+    assert cards == []
