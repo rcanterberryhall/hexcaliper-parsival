@@ -22,6 +22,14 @@ needs the GIL to run its Python callback, while the thread installing the hook h
 GIL and needs the connection mutex.  Neither yields, and because the stuck thread keeps
 the GIL the whole process stops -- FastAPI included.  Per-request state belongs in
 ``_local`` instead.
+
+Installing the hooks once is necessary but not sufficient.  Serialized mode makes
+concurrent use of one connection *correct*, not *deadlock-free*: a thread entering
+``execute`` blocks on the connection mutex while still holding the GIL, which is the
+same inversion by a different door.  ``run_query`` therefore holds ``_QUERY_LOCK``
+across its execute and fetch.  The window is timing-dependent and widens sharply as
+cores get scarcer -- it was invisible on a 72-core developer machine and hung every
+run on a two-core CI runner, so the regression test pins its own CPU affinity.
 """
 
 from __future__ import annotations
@@ -57,6 +65,19 @@ _check_sqlite_threadsafety(sqlite3.threadsafety)
 
 
 _local = threading.local()
+
+# Serialises the execute/fetch span.  Installing the hooks once removed the
+# per-request half of the inversion, but not the half that ``execute`` itself
+# creates: a thread entering the driver holds the GIL while it waits on the
+# shared connection's mutex, and the thread already inside ``sqlite3_step``
+# cannot run its progress-handler callback without that GIL.  Neither yields.
+#
+# A Python lock is the fix rather than a workaround, because
+# ``Lock.acquire`` releases the GIL while it blocks -- a waiting thread holds
+# nothing the running one needs.  It costs no throughput: these queries already
+# serialise on the connection mutex, so the lock only makes the existing
+# serialisation explicit and safe.
+_QUERY_LOCK = threading.Lock()
 
 _PROGRESS_INTERVAL = 10_000
 
@@ -213,10 +234,13 @@ def run_query(sql: str, limit: int = DEFAULT_LIMIT) -> dict:
     # this connection and each needs its own bound.
     _local.deadline = time.monotonic() + QUERY_TIMEOUT_SECONDS
     try:
-        cur = c.execute(sql)
-        # Fetch one extra row so truncation is detected rather than guessed.
-        rows = cur.fetchmany(capped + 1)
-        columns = [d[0] for d in cur.description] if cur.description else []
+        # Held across the fetch as well as the execute: the statement is still
+        # stepping during fetchmany, so releasing early would reopen the window.
+        with _QUERY_LOCK:
+            cur = c.execute(sql)
+            # Fetch one extra row so truncation is detected rather than guessed.
+            rows = cur.fetchmany(capped + 1)
+            columns = [d[0] for d in cur.description] if cur.description else []
     except sqlite3.DatabaseError as exc:
         # Present an authorizer refusal as the fence rejecting the statement.
         # Left alone it surfaces as a bare "not authorized", which tells an MCP

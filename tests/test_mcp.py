@@ -406,6 +406,17 @@ def test_sql_query_aborts_when_it_exceeds_the_deadline():
 _CONCURRENCY_SCRIPT = """
 import os, sqlite3, sys, tempfile, threading
 
+# Pin to two CPUs.  The inversion this test guards has a wide window only when
+# the threads cannot spread across cores: on a many-core host the bad
+# interleaving is rare enough that the test passes for the wrong reason, which
+# is exactly what happened here -- it was green on a 72-core developer machine
+# and hung for the full timeout on the two-core CI runner.  Pinning makes the
+# reproduction a property of the test rather than of the host it runs on.
+if hasattr(os, "sched_setaffinity"):
+    _cpus = sorted(os.sched_getaffinity(0))[:2]
+    if len(_cpus) == 2:
+        os.sched_setaffinity(0, set(_cpus))
+
 sys.path.insert(0, sys.argv[1])
 _db = os.path.join(tempfile.mkdtemp(), "concurrency.db")
 sqlite3.connect(_db).close()
