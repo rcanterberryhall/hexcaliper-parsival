@@ -43,6 +43,18 @@ entries are written in the same change set as the change they describe.
   `sql.query` uses a separate read-only connection with a SELECT-only fence,
   row cap and query deadline. Write tools follow in Plan 2.
 
+## 2026-08 — lancellmot alias write path
+
+### Fixed
+- **Alias save and clear report their failures ([#96](https://github.com/rcanterberryhall/hexcaliper-parsival/issues/96))** —
+  both branches of the Settings → Projects dropdown go through `api()`, which
+  throws on any non-2xx, so the upsert and the delete share one error contract.
+  The delete previously used a raw `fetch()`, which resolves on a 500 and so
+  reported a write that never happened as a success. On failure the dropdown
+  returns to the last server-confirmed value and the reason appears in the
+  settings modal, so the control only shows a mapping the server stored; the
+  chips re-resolve once the write is confirmed.
+
 ## [v0.1-standards] - 2026-08-01
 
 Day-0 engineering standards adoption (`chore/gatehouse-standards`). No
@@ -139,8 +151,9 @@ documentation, and CI.
   `thunderbird_sidecar.py`. `api/` is enforced.
 - Eight `api/` modules remain on the mypy ratchet's exemption list. The list
   only ever shrinks.
-- The lancellmot alias save/delete path still swallows errors, so a failed
-  save is invisible ([#96](https://github.com/rcanterberryhall/hexcaliper-parsival/issues/96)).
+- The lancellmot alias save/delete path swallowed errors, so a failed save was
+  invisible ([#96](https://github.com/rcanterberryhall/hexcaliper-parsival/issues/96)).
+  Fixed later the same day — see the section above.
 
 ## 2026-07 — Sidecar resilience
 
