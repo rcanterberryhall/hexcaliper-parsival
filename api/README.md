@@ -1127,6 +1127,46 @@ non-package neighbours and external services rather than sibling packages:
   The rejection is recorded rather than deleted so the annotator does not keep
   re-proposing the same pairing.  Re-deciding is a 400; an unknown id a 404.
   </details>
+- `calendar_list_proposals(decision: str='pending')` — List calendar proposals, pending by default.
+  <details><summary>full docstring</summary>
+
+  :param decision: ``pending``, ``accepted``, ``rejected``, or ``all``.
+  :return: Proposal rows, each enriched with its source appointment.
+  </details>
+- `calendar_reject_proposal(proposal_id: int)` — Reject a proposal, leaving the board untouched.
+  <details><summary>full docstring</summary>
+
+  The rejection is recorded rather than deleted so the same event is never
+  re-proposed (``PVC-REQ-F-020``).  Re-deciding is a 400; an unknown id a 404.
+  </details>
+- `calendar_accept_proposal(proposal_id: int, body: dict | None=None)` — Accept a proposal, materialising the outcome it describes.
+  <details><summary>full docstring</summary>
+
+  Nothing reaches the look-ahead board without this call (``PVC-REQ-F-018``).
+  Field overrides in the body are applied before the outcome is created, which
+  is what makes project attribution editable before acceptance
+  (``PVC-REQ-F-017``); accepted values replace the stored payload so it
+  reflects what was actually written.
+
+  Cards are created through :func:`lookahead_create_card` rather than by SQL,
+  because the card↔todo mirror invariant lives only in the API layer
+  (``PVC-REQ-F-021``, ``CON-PVC-005``).
+
+  :param proposal_id: The proposal to accept.
+  :param body: Optional overrides — ``project``, ``title``, ``start_date``,
+               ``end_date``, ``assignee``, ``notes``.
+  :return: ``{"proposal": ..., "card": ...}`` for card proposals,
+           ``{"proposal": ..., "key_date": ...}`` for key-date proposals,
+           ``{"proposal": ..., "linked": ...}`` for link proposals.
+  </details>
+- `calendar_pull_complete(body: dict)` — Record that a calendar pull finished, and over which window.
+  <details><summary>full docstring</summary>
+
+  A pull spans several batched ``/ingest`` POSTs, so an occurrence's absence
+  only becomes meaningful once the server knows the pull is complete and what
+  range it covered (``PVC-REQ-F-026``, design §3.7).  This endpoint stores
+  those bounds; the reconciliation that consumes them is Plan 2.
+  </details>
 - `list_lancellmot_aliases_route()` — List all parsival-project → lancellmot-project aliases (Settings audit).
 - `put_lancellmot_alias(payload: dict)` — Upsert a single project-tag → lancellmot-project alias.
 - `delete_lancellmot_alias_route(parsival_project: str)` — Remove a project-tag alias.
@@ -1151,6 +1191,103 @@ non-package neighbours and external services rather than sibling packages:
   <details><summary>full docstring</summary>
 
   Includes high-attention item count, cold-start flag, and centroid freshness.
+  </details>
+
+### `api.calendar_filter`
+*calendar_filter.py — Deterministic rules for calendar events.*
+
+- `category_override(item: RawItem) -> str | None` — Return the user's explicit verdict for this event, if any.
+  <details><summary>full docstring</summary>
+
+  Args:
+      item: A calendar ``RawItem``.
+
+  Returns:
+      ``"include"`` to force the event past the pre-filter and the model,
+      ``"ignore"`` to drop it outright, or ``None`` when untagged.  Ignore
+      wins if both categories are present, so the outcome never depends on
+      category order.
+  </details>
+- `prefilter_reason(item: RawItem) -> str | None` — Return why this event cannot be work, a deadline, or context.
+  <details><summary>full docstring</summary>
+
+  Structural rules only — no model call, no DB read (``PVC-REQ-F-027``).
+
+  Args:
+      item: A calendar ``RawItem``.
+
+  Returns:
+      A short reason slug when the event should be dropped, else ``None``.
+      The slug is stored on the recorded item so a later tuning pass can see
+      which rule fired.
+  </details>
+
+### `api.calendar_ingest`
+*calendar_ingest.py — Server-side classification of Outlook calendar events.*
+
+- `guess_project(item: RawItem) -> str` — Derive a project tag for an appointment, or return ``""``.
+  <details><summary>full docstring</summary>
+
+  Subject and location are matched against each project's configured and
+  learned keywords; organiser and attendees against its configured and learned
+  senders (OQ-PVC-006).  The project with the most matches wins; a tie or no
+  match returns blank, because ``PVC-REQ-F-017`` makes the field editable
+  before acceptance and a wrong guess costs the user a dropdown while a blank
+  one costs them nothing.
+
+  Args:
+      item: A calendar ``RawItem``.
+
+  Returns:
+      A project name from ``config.PROJECTS``, or ``""``.
+  </details>
+- `classify(item: RawItem) -> dict | None` — Classify one calendar event with the model.
+  <details><summary>full docstring</summary>
+
+  Only events that survived the override and pre-filter reach here.
+
+  Args:
+      item: A calendar ``RawItem``.
+
+  Returns:
+      A verdict dict with keys ``kind``, ``project``, ``title``, ``reason``,
+      ``start_date``, ``end_date``, ``date``, ``target_type``, ``target_id``.
+      Returns ``None`` when the model call failed or its answer could not be
+      parsed — that means "retry on the next pull", not "ignore", so a merLLM
+      outage does not silently discard a week of meetings (design §8).
+  </details>
+- `handle_item(item: RawItem) -> None` — Run one calendar event through override, pre-filter, model, and storage.
+  <details><summary>full docstring</summary>
+
+  Stage order is load-bearing (design §4.2): the override runs first so a
+  force-include category survives the pre-filter, and force-ignore
+  short-circuits both later stages.
+
+  A model failure returns without writing anything, so the event is picked up
+  again on the next pull rather than being silently discarded (design §8).
+
+  Args:
+      item: A ``RawItem`` whose source is ``outlook_calendar``.
+  </details>
+- `resolve_shift_num(project: str, start_time: str) -> int` — Map an appointment start time onto the project's shift schedule.
+  <details><summary>full docstring</summary>
+
+  ``lookahead_cards`` carries shift numbers and no time-of-day field
+  (``CON-PVC-008``), so a timed appointment has to be placed on a shift.  The
+  data to do it already exists — ``project_shifts`` stores ``HH:MM`` windows
+  per project — so this needs no schema change (OQ-PVC-004).
+
+  Windows that wrap past midnight (a 22:00–06:00 night shift) are handled.
+  Overlapping windows are resolved by start time.
+
+  Args:
+      project: The project tag whose schedule to consult.
+      start_time: Appointment start as ``"HH:MM"``.
+
+  Returns:
+      The matching ``shift_num``, or ``1`` when the project has no shifts
+      configured, the time matches no window, or the time is unparseable —
+      ``1`` being the column default on ``lookahead_cards``.
   </details>
 
 ### `api.config`
@@ -1756,6 +1893,54 @@ non-package neighbours and external services rather than sibling packages:
 - `list_card_suggestions(card_id: str, include_decided: bool=False) -> list[dict]` — Return suggestions for a card.  Pending only by default.
 - `add_card_suggestion(card_id: str, link_type: str, target_id: str, reason: str='') -> dict | None` — Insert a new pending suggestion.  Deduped on (card, type, target).
 - `decide_card_suggestion(suggestion_id: int, decision: str) -> dict | None` — Accept or reject a suggestion.  Accepted ones also become card_links.
+- `add_calendar_proposal(item_id: str, kind: str, payload: dict) -> dict | None` — Record a proposal for one calendar occurrence.
+  <details><summary>full docstring</summary>
+
+  Args:
+      item_id: The composite occurrence id from the sidecar.
+      kind: One of ``card``, ``key_date``, ``link``.
+      payload: The proposed fields, stored as JSON.
+
+  Returns:
+      The stored row, or ``None`` when a proposal already exists for
+      *item_id* — one proposal per occurrence, for the life of that
+      occurrence (``PVC-REQ-F-010``).
+
+  Raises:
+      ValueError: If *kind* is not a recognised proposal kind.
+  </details>
+- `get_calendar_proposal(proposal_id: int) -> dict | None` — Return one proposal row by id, payload deserialised.
+- `get_calendar_proposal_by_item(item_id: str) -> dict | None` — Return the proposal for one occurrence, decided or not.
+- `list_calendar_proposals(decision: str='pending') -> list[dict]` — List proposals filtered by decision state.
+  <details><summary>full docstring</summary>
+
+  Args:
+      decision: ``pending`` (default), ``accepted``, ``rejected``, or ``all``.
+
+  Returns:
+      Proposal rows, newest first, payload deserialised.
+  </details>
+- `decide_calendar_proposal(proposal_id: int, decision: str, *, card_id: str | None=None, payload: dict | None=None) -> dict | None` — Accept or reject a proposal.
+  <details><summary>full docstring</summary>
+
+  On acceptance the caller passes the field set actually written, which
+  replaces the stored payload.  That snapshot is what Plan 2 compares a card
+  against to decide whether the user has edited it since (design §6.2), so it
+  must reflect what was created — not what was originally proposed.
+
+  Args:
+      proposal_id: The row to decide.
+      decision: ``accepted`` or ``rejected``.
+      card_id: The card created, when a ``card`` proposal was accepted.
+      payload: Replacement payload snapshot, when acceptance changed fields.
+
+  Returns:
+      The updated row, or ``None`` if *proposal_id* does not exist.
+
+  Raises:
+      ValueError: If *decision* is invalid, or the row is already decided —
+          reopening a decided row is what ``PVC-REQ-F-020`` forbids.
+  </details>
 - `slack_unseen_message_ts(team: str, channel_id: str, ts_list: list[str]) -> set[str]` — Return the timestamps in ``ts_list`` not yet recorded as seen.
   <details><summary>full docstring</summary>
 
@@ -1898,6 +2083,194 @@ non-package neighbours and external services rather than sibling packages:
       not pick it (merLLM#38).
   :return: Raw response text from the LLM.
   :raises requests.HTTPError: On non-2xx response.
+  </details>
+
+### `api.mcp`
+*MCP server transport for parsival (IFC-PV-001).*
+
+- `mcp_endpoint(body: dict, x_parsival_mcp_token: str | None=Header(default=None))` — Handle one JSON-RPC request against the tool registry.
+  <details><summary>full docstring</summary>
+
+  Args:
+      body: The JSON-RPC request object.
+      x_parsival_mcp_token: Shared-secret header.
+
+  Returns:
+      A JSON-RPC response dict, or a bare 202 Response for notifications.
+
+  Raises:
+      HTTPException: 401 when the token is absent, wrong, or unconfigured.
+  </details>
+
+### `api.mcp_sql`
+*Read-only SQLite access for the parsival MCP server (PV-REQ-N-001).*
+
+- `ro_conn() -> sqlite3.Connection` — Return the cached read-only connection for the configured database.
+  <details><summary>full docstring</summary>
+
+  Both hooks are installed here, once, and never touched again -- see the
+  module docstring for why mutating them per request deadlocks the process.
+  They are attached before the connection is published to ``_RO_CONNS``, so
+  no other thread can observe a partially configured connection and no lock
+  is needed.
+
+  Returns:
+      A ``sqlite3.Connection`` opened ``mode=ro`` with ``Row`` factory, a
+      read-only authorizer, and a deadline-aware progress handler.
+  </details>
+- `validate_select(sql: str) -> str` — Return ``sql`` if it is a single read-only statement, else raise.
+  <details><summary>full docstring</summary>
+
+  Comments are stripped before inspection so a semicolon cannot be smuggled
+  behind one.  The check is an allowlist — the statement must *begin* with
+  SELECT or WITH — which is strictly safer than blocking known-bad verbs,
+  because it also excludes PRAGMA, ATTACH and anything added to SQLite later.
+
+  This is the first of two gates and the one that produces a readable error.
+  It cannot see through a CTE, so ``WITH cte AS (...) DELETE`` passes here and
+  is stopped by the connection's authorizer instead.
+
+  Args:
+      sql: The caller-supplied statement.
+
+  Returns:
+      The original statement, unmodified, ready to execute.
+
+  Raises:
+      ValueError: If the statement is empty, multi-statement, or not a SELECT.
+  </details>
+- `run_query(sql: str, limit: int=DEFAULT_LIMIT) -> dict` — Execute a validated read-only query with a row cap and a time bound.
+  <details><summary>full docstring</summary>
+
+  Args:
+      sql: Statement to run; validated before execution.
+      limit: Maximum rows to return, clamped to ``MAX_LIMIT``.
+
+  Returns:
+      ``{"columns", "rows", "row_count", "truncated"}``.  ``truncated`` is
+      True when more rows were available than were returned (PV-REQ-N-003).
+
+  Raises:
+      ValueError: If the statement fails validation, either by inspection or
+          because the connection's authorizer refused it.
+      sqlite3.OperationalError: On a query that exceeds
+          ``QUERY_TIMEOUT_SECONDS``, reported by SQLite as ``interrupted``.
+  </details>
+
+### `api.mcp_tools`
+*Tool registry and dispatch for the parsival MCP server (IFC-PV-001).*
+
+- `TOOL_REGISTRY: dict[str, Callable[..., Any]] = {}` — (undocumented)
+- `TOOL_SCHEMAS: dict[str, dict] = {}` — (undocumented)
+- `TOOL_DESCRIPTIONS: dict[str, str] = {}` — (undocumented)
+- `tool(name: str, description: str, schema: dict) -> Callable` — Register a function as an MCP tool.
+  <details><summary>full docstring</summary>
+
+  Args:
+      name: Wire name, ``noun.verb`` by convention.
+      description: One line shown to the calling agent in ``tools/list``.
+      schema: JSON Schema for the arguments object.
+
+  Returns:
+      The undecorated function, so it stays directly callable in tests.
+  </details>
+- `tool_specs() -> list[dict]` — Return the MCP ``tools/list`` payload for every registered tool.
+- `dispatch(name: str, arguments: dict) -> Any` — Invoke a registered tool by keyword expansion.
+  <details><summary>full docstring</summary>
+
+  Args:
+      name: Registered tool name.
+      arguments: Keyword arguments from the MCP ``tools/call`` params.
+
+  Returns:
+      Whatever the tool returns; must be JSON-serialisable.
+  </details>
+- `schema_describe(table: str | None=None) -> dict` — Return table names, or one table's columns and indexes.
+  <details><summary>full docstring</summary>
+
+  Args:
+      table: Table to describe.  When None, returns the table list.
+
+  Returns:
+      ``{"tables": [...]}`` or ``{"table", "columns", "indexes"}``.
+
+  Raises:
+      ValueError: If ``table`` is not an existing table.  The name is checked
+          against ``sqlite_master`` before it is interpolated, because PRAGMA
+          does not accept bound parameters.
+  </details>
+- `sql_query(sql: str, limit: int=mcp_sql.DEFAULT_LIMIT) -> dict` — Execute a read-only query.
+  <details><summary>full docstring</summary>
+
+  Args:
+      sql: A single SELECT or WITH statement.
+      limit: Maximum rows to return.
+
+  Returns:
+      ``{"columns", "rows", "row_count", "truncated"}``.
+  </details>
+- `projects_list() -> dict` — Return the configured projects enriched with live board data.
+  <details><summary>full docstring</summary>
+
+  Returns:
+      ``{"projects": [...]}``; each entry adds ``shifts`` and ``card_count``
+      to the stored configuration.
+  </details>
+- `cards_list(project: str | None=None, start: str | None=None, end: str | None=None, status: str | None=None) -> dict` — Return cards overlapping a date range.
+  <details><summary>full docstring</summary>
+
+  Unlike the board, which renders a fixed 14-day window, this accepts any
+  range — the reason a multi-year contract schedule is usable at all.
+
+  Args:
+      project: Project tag to filter by.
+      start: Range start, YYYY-MM-DD.
+      end: Range end, YYYY-MM-DD.
+      status: Card status to filter by.
+
+  Returns:
+      ``{"cards": [...], "count": int}``.
+  </details>
+- `situations_list(include_dismissed: bool=False, limit: int=50) -> dict` — Return situations ordered by score, highest first.
+  <details><summary>full docstring</summary>
+
+  Args:
+      include_dismissed: Whether to include dismissed situations.
+      limit: Maximum number to return.
+
+  Returns:
+      ``{"situations": [...], "count": int}``.  Each entry carries
+      ``item_count`` so a caller ranking situations does not need a
+      follow-up ``situations.get`` per row (PV-REQ-F-009).
+  </details>
+- `situations_get(situation_id: str) -> dict` — Return one situation together with the items that formed it.
+  <details><summary>full docstring</summary>
+
+  The contributing items are the evidence: a situation without them cannot
+  be re-analysed by a caller that did not form it.
+
+  Args:
+      situation_id: The situation's id.
+
+  Returns:
+      The situation dict plus ``items`` and ``item_count``.
+
+  Raises:
+      ValueError: If no such situation exists.
+  </details>
+- `tuning_get(action_limit: int=100) -> dict` — Return the classification knobs and the evidence for changing them.
+  <details><summary>full docstring</summary>
+
+  Reads only from ``config``'s tuning attributes — never from the settings
+  record as a whole, which co-locates these knobs with API credentials
+  (PV-REQ-F-012).  Adding a credential to settings therefore cannot leak
+  through this tool by accident.
+
+  Args:
+      action_limit: How many recent user actions to include.
+
+  Returns:
+      Knobs, per-project keywords, corrections, overrides, recent actions.
   </details>
 
 ### `api.models`
