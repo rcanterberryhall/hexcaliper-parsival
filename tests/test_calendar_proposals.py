@@ -136,7 +136,7 @@ def test_the_queue_shows_the_proposal_beside_its_source_appointment(client):
 
 
 def test_rejecting_records_the_decision(client):
-    """PVC-REQ-F-020."""
+    """A rejected proposal is not re-proposed for the same event (PVC-REQ-F-020)."""
     _wipe()
     row = db.add_calendar_proposal("G1:a", "card", _payload())
     assert client.post(f"/calendar/proposals/{row['id']}/reject").status_code == 200
