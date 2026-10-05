@@ -12,6 +12,20 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-10 — Deep analysis save failures
+
+### Fixed
+- **A completed deep analysis whose save failed was presented as still queued
+  (#102)** — the poll cleared its interval on `completed` and then ran the save
+  inside the same `try`, whose handler discarded everything as a network hiccup.
+  Every failure the save route distinguishes — situation or job not found (404),
+  job not yet served (409), merLLM unreachable (502) — was swallowed, so the
+  button sat disabled on `⏳`, the status bar still read "will run when a GPU
+  slot is available", and the finished result was never stored. The save now has
+  its own handler: a 409 is the status/results race and keeps polling, anything
+  else reports the reason and re-enables the button. `api()` carries the HTTP
+  status on the error it throws so callers can tell those cases apart.
+
 ## 2026-08 — Outlook calendar ingest (acquisition and proposal)
 
 ### Added
