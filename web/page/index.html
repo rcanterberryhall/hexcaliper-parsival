@@ -2235,7 +2235,14 @@ async function api(path, method = 'GET', body = null) {
   const opts = { method, headers: {'Content-Type': 'application/json'} };
   if (body !== null) opts.body = JSON.stringify(body);
   const r = await fetch(API + path, opts);
-  if (!r.ok) throw new Error(`${method} ${path} → ${r.status}`);
+  if (!r.ok) {
+    // The status rides on the error so a caller can tell a retryable refusal
+    // apart from a terminal one. The message is unchanged, so the many call
+    // sites that only report `e.message` keep reading the same text.
+    const err = new Error(`${method} ${path} → ${r.status}`);
+    err.status = r.status;
+    throw err;
+  }
   return r.json();
 }
 
@@ -3612,9 +3619,24 @@ function _pollSituationDeepAnalysis(jobId, sitId, btn) {
     try {
       const s = await api(`/batch/status/${encodeURIComponent(jobId)}`);
       if (s.status === 'completed') {
+        // The save is the step that actually stores the result, and it has its
+        // own failures (404 situation/job, 409 not-yet-served, 502 merLLM gone).
+        // It gets its own handler so a refusal cannot reach the tick's catch and
+        // be read as a hiccup, and the poll is only torn down once it is settled.
+        try {
+          await api(`/situations/${encodeURIComponent(sitId)}/deep-analysis/save`, 'POST',
+                    { job_id: jobId });
+        } catch (saveErr) {
+          // merLLM reports a job completed before its results endpoint will
+          // serve it, so a 409 means wait, not fail: stay on the poll and ask
+          // again next tick, bounded by the same MAX as every other wait.
+          if (saveErr.status === 409) return;
+          clearInterval(iv);
+          if (btn) { btn.disabled = false; btn.textContent = '⚗'; btn.title = 'Finished but not saved — click to run it again'; }
+          $('statusMsg').textContent = 'Deep analysis finished but could not be saved: ' + saveErr.message;
+          return;
+        }
         clearInterval(iv);
-        await api(`/situations/${encodeURIComponent(sitId)}/deep-analysis/save`, 'POST',
-                  { job_id: jobId });
         if (btn) { btn.textContent = '✓'; btn.title = 'Deep analysis stored in intel'; }
         $('statusMsg').textContent = 'Deep analysis complete — result added to intel.';
         await loadIntel();
