@@ -798,6 +798,13 @@ tr.attn-low  { opacity:0.65; }
 }
 .detail-save:hover { background: var(--accent); color: var(--bg); }
 .detail-save-msg { font-size: 10px; color: var(--accent); }
+/* A detail-panel field whose save the server rejected. Keeps the mark until
+   that field saves, so a value that is only on screen is distinguishable from
+   one the record holds. Declared after the editors above so it wins their
+   :focus border. */
+.save-unsaved, .save-unsaved:focus {
+  border-color: var(--red); background: rgba(255, 64, 64, .06);
+}
 .detail-foot {
   padding: 10px 18px; border-top: 1px solid var(--border2);
   display: flex; align-items: center; gap: 8px; flex-shrink: 0;
@@ -4393,7 +4400,7 @@ function openDetail(item) {
         ${goalsList.map((g, i) => `
           <li class="detail-goal-row" data-idx="${i}">
             <input type="text" class="detail-goal-input" value="${esc(g)}"
-                   onblur="saveGoalEdit('${esc(item.item_id)}', ${i}, this.value)">
+                   onblur="saveGoalEdit('${esc(item.item_id)}', ${i}, this)">
             <button class="ia" onclick="removeGoal('${esc(item.item_id)}', ${i})" title="Remove">✕</button>
           </li>
         `).join('')}
@@ -4409,9 +4416,9 @@ function openDetail(item) {
         ${kdList.map((d, i) => `
           <li class="detail-date-row" data-idx="${i}">
             <input type="date" class="detail-date-input" value="${esc(d.date || '')}"
-                   onblur="saveKeyDateEdit('${esc(item.item_id)}', ${i}, 'date', this.value)">
+                   onblur="saveKeyDateEdit('${esc(item.item_id)}', ${i}, 'date', this)">
             <input type="text" class="detail-date-desc" value="${esc(d.description || '')}" placeholder="what's happening"
-                   onblur="saveKeyDateEdit('${esc(item.item_id)}', ${i}, 'description', this.value)">
+                   onblur="saveKeyDateEdit('${esc(item.item_id)}', ${i}, 'description', this)">
             <button class="ia" onclick="removeKeyDate('${esc(item.item_id)}', ${i})" title="Remove">✕</button>
           </li>
         `).join('')}
@@ -4539,6 +4546,7 @@ async function detailToggleDone(docId, done, itemId) {
     console.warn('detailToggleDone:', e);
     _replaceTodoRow(original);
     if (item) openDetail(item);
+    reportDetailWriteFailure('Task status', e);
   }
 }
 
@@ -4629,85 +4637,114 @@ async function saveDetailEdits(itemId) {
   }
 }
 
+// Reports a rejected detail-panel write in the statusbar. It cannot go in
+// #detailSaveMsg: that span is emitted inside $('detailEdit').innerHTML, which
+// openDetail() reassigns, so a handler that re-renders would erase its own
+// message. #statusMsg is static markup, and is already where tagToProject and
+// startScan report a failed write.
+function reportDetailWriteFailure(what, err) {
+  setStatus('error');
+  $('statusMsg').textContent = `${what} not saved — ${err.message}`;
+}
+
+// Marks a field the server refused, so a value that is only on screen is
+// distinguishable from one the record holds. The typed text is left alone:
+// restoring the stored value would destroy the edit.
+function markFieldUnsaved(el, failed) {
+  if (!el || !el.classList) return;
+  el.classList.toggle('save-unsaved', failed);
+  if (failed) el.title = 'Not saved — the server rejected this change.';
+  else el.removeAttribute('title');
+}
+
 async function saveDetailField(el, fieldName) {
   const itemId = el.dataset.itemId || el.closest('[data-item-id]')?.dataset.itemId;
   if (!itemId) return;
   const value = el.value;
+  const LABELS = { title: 'Title', summary: 'Summary', urgency: 'Why this priority',
+                   body_preview: 'Notes' };
   try {
     await api(`/analyses/${encodeURIComponent(itemId)}`, 'PATCH', { [fieldName]: value });
     const analysis = findAnalysis(itemId);
     if (analysis) analysis[fieldName] = value;
+    markFieldUnsaved(el, false);
   } catch (e) {
     console.warn(`saveDetailField(${fieldName}):`, e);
+    markFieldUnsaved(el, true);
+    reportDetailWriteFailure(LABELS[fieldName] || fieldName, e);
   }
 }
 
 async function _patchGoals(itemId, newGoals) {
   const analysis = findAnalysis(itemId);
-  if (!analysis) return;
+  if (!analysis) return false;
   try {
     await api(`/analyses/${encodeURIComponent(itemId)}`, 'PATCH', { goals: newGoals });
     analysis.goals = newGoals;
+    return true;
   } catch (e) {
     console.warn('_patchGoals:', e);
+    reportDetailWriteFailure('Goals', e);
+    return false;
   }
 }
 async function addGoal(itemId) {
   const analysis = findAnalysis(itemId);
   if (!analysis) return;
   const goals = [...(analysis.goals || []), ''];
-  await _patchGoals(itemId, goals);
-  openDetail(analysis); // re-render
+  if (await _patchGoals(itemId, goals)) openDetail(analysis); // re-render
 }
 async function removeGoal(itemId, idx) {
   const analysis = findAnalysis(itemId);
   if (!analysis) return;
   const goals = [...(analysis.goals || [])];
   goals.splice(idx, 1);
-  await _patchGoals(itemId, goals);
-  openDetail(analysis);
+  if (await _patchGoals(itemId, goals)) openDetail(analysis);
 }
-async function saveGoalEdit(itemId, idx, value) {
+async function saveGoalEdit(itemId, idx, el) {
   // No re-render: blur fires on every keystroke-leave; preserving focus matters.
+  // The field carries the failure instead.
   const analysis = findAnalysis(itemId);
   if (!analysis) return;
   const goals = [...(analysis.goals || [])];
-  goals[idx] = value;
-  await _patchGoals(itemId, goals);
+  goals[idx] = el.value;
+  markFieldUnsaved(el, !(await _patchGoals(itemId, goals)));
 }
 
 async function _patchKeyDates(itemId, newList) {
   const analysis = findAnalysis(itemId);
-  if (!analysis) return;
+  if (!analysis) return false;
   try {
     await api(`/analyses/${encodeURIComponent(itemId)}`, 'PATCH', { key_dates: newList });
     analysis.key_dates = newList;
+    return true;
   } catch (e) {
     console.warn('_patchKeyDates:', e);
+    reportDetailWriteFailure('Key dates', e);
+    return false;
   }
 }
 async function addKeyDate(itemId) {
   const analysis = findAnalysis(itemId);
   if (!analysis) return;
   const list = [...(analysis.key_dates || []), { date: '', description: '' }];
-  await _patchKeyDates(itemId, list);
-  openDetail(analysis);
+  if (await _patchKeyDates(itemId, list)) openDetail(analysis);
 }
 async function removeKeyDate(itemId, idx) {
   const analysis = findAnalysis(itemId);
   if (!analysis) return;
   const list = [...(analysis.key_dates || [])];
   list.splice(idx, 1);
-  await _patchKeyDates(itemId, list);
-  openDetail(analysis);
+  if (await _patchKeyDates(itemId, list)) openDetail(analysis);
 }
-async function saveKeyDateEdit(itemId, idx, field, value) {
+async function saveKeyDateEdit(itemId, idx, field, el) {
   // No re-render: blur fires on every input-leave; preserving focus matters.
+  // The field carries the failure instead.
   const analysis = findAnalysis(itemId);
   if (!analysis) return;
   const list = [...(analysis.key_dates || [])];
-  list[idx] = { ...list[idx], [field]: value };
-  await _patchKeyDates(itemId, list);
+  list[idx] = { ...list[idx], [field]: el.value };
+  markFieldUnsaved(el, !(await _patchKeyDates(itemId, list)));
 }
 
 // Issue #85: linked-todo CRUD inside the card detail panel.
@@ -4725,6 +4762,7 @@ async function addLinkedTodo(itemId) {
     if (typeof loadStats === 'function') loadStats();
   } catch (e) {
     console.warn('addLinkedTodo:', e);
+    reportDetailWriteFailure('New task', e);
   }
 }
 
@@ -4735,8 +4773,11 @@ async function saveLinkedTodoField(el, fieldName) {
     await api(`/todos/${docId}`, 'PATCH', { [fieldName]: value });
     const idx = allTodos.findIndex(t => t.doc_id === docId);
     if (idx >= 0) allTodos[idx] = { ...allTodos[idx], [fieldName]: value };
+    markFieldUnsaved(el, false);
   } catch (e) {
     console.warn('saveLinkedTodoField:', e);
+    markFieldUnsaved(el, true);
+    reportDetailWriteFailure(fieldName === 'deadline' ? 'Task deadline' : 'Task description', e);
   }
 }
 
@@ -4749,6 +4790,7 @@ async function deleteLinkedTodo(docId, itemId) {
     if (typeof loadStats === 'function') loadStats();
   } catch (e) {
     console.warn('deleteLinkedTodo:', e);
+    reportDetailWriteFailure('Task removal', e);
   }
 }
 

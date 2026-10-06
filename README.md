@@ -513,6 +513,8 @@ Both sidecars POST to `/page/api/ingest`. The API deduplicates by message ID so 
 
 Todos appear as **cards** in the right-hand detail panel. Every card — manual or LLM-generated — exposes the same editable surface: title, summary, body/notes, priority, category, project tag, goals, key dates, linked tasks, and "why this priority". Edits on generated cards are preserved across reanalysis via `user_edited_fields`.
 
+Text fields save on blur; the Tasks, Goals, and Key Dates rows save when added, edited, or removed. A write the API rejects is reported in the status bar, naming the field that did not save, and the field keeps a red border until it saves — so a value that is only on screen is never mistaken for one the record holds. The typed text is left in place to be retried rather than overwritten with the stored value. An add or remove that fails leaves the panel as it was instead of repainting it, so the control does not read as inert.
+
 Click **+ New card** in the Todos toolbar to create a manual card. A blank card is inserted (`source='manual'`, `item_id='manual_<doc_id>'`) and the detail panel opens straight into editing. Manual cards are skipped by the reanalyze orchestrator, so the LLM never touches them.
 
 ## Look-ahead board

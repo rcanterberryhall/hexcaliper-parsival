@@ -12,6 +12,20 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-10 — Card detail panel write failures
+
+### Fixed
+- **Every inline edit in the card detail panel that failed to save was reported
+  only to the browser console (#104)** — `api()` throws on a non-2xx, but each
+  handler's `catch` ended at `console.warn`, so a rejected PATCH reached nothing
+  the operator could see. Notes typed into a card stayed on screen looking saved
+  and vanished at the next panel re-render. Failures now name the field in the
+  status bar and mark it with a red border until it saves, leaving the typed text
+  to be retried. The add and remove handlers for goals, key dates, and linked
+  tasks re-render only when the patch landed; previously they repainted from an
+  unchanged cache, so a failed click read as inert and destroyed any edit in
+  progress elsewhere in the panel.
+
 ## 2026-08 — Outlook calendar ingest (acquisition and proposal)
 
 ### Added
