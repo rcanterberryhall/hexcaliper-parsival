@@ -2245,6 +2245,29 @@ function toggleSrc(btn) {
   else { activeSrcs.add(s); btn.className = `src-btn on-${s}`; }
 }
 
+/**
+ * Arm the 1-second scan poll, replacing any poll already running.
+ *
+ * The `situations_pending` branch of `pollScan` re-arms the Scan and
+ * Re-analyze buttons while the poll is still live, so a second start can
+ * reach `setInterval` with `scanTimer` already set. Overwriting the handle
+ * put the first interval beyond the reach of the only `clearInterval` call,
+ * leaving it to repaint the toolbar and reload five lists once a second for
+ * the life of the page (#106).
+ */
+function startScanPoll() {
+  stopScanPoll();
+  scanTimer = setInterval(pollScan, 1000);
+}
+
+/** Stop the scan poll if one is running. */
+function stopScanPoll() {
+  if (scanTimer) {
+    clearInterval(scanTimer);
+    scanTimer = null;
+  }
+}
+
 async function startReanalyze() {
   try {
     const { count } = await api('/reanalyze/count');
@@ -2254,7 +2277,7 @@ async function startReanalyze() {
     $('reanalyzeBtn').onclick     = stopScan;  // reuses same cancel endpoint
     $('spin').classList.add('on');
     setStatus('scanning');
-    scanTimer = setInterval(pollScan, 1000);
+    startScanPoll();
   } catch (e) { setStatus('error'); $('statusMsg').textContent = `Re-analyze failed: ${e.message}`; }
 }
 
@@ -2266,7 +2289,7 @@ async function startScan() {
     $('scanBtn').onclick     = stopScan;
     $('spin').classList.add('on');
     setStatus('scanning');
-    scanTimer = setInterval(pollScan, 1000);
+    startScanPoll();
   } catch (e) { setStatus('error'); $('statusMsg').textContent = `Scan failed: ${e.message}`; }
 }
 
@@ -2315,8 +2338,7 @@ async function pollScan() {
       $('reanalyzeBtn').onclick     = startReanalyze;
     } else {
       // Fully done
-      clearInterval(scanTimer);
-      scanTimer = null;
+      stopScanPoll();
       $('scanBtn').textContent      = '▶ Scan';
       $('scanBtn').onclick          = startScan;
       $('reanalyzeBtn').textContent = '↺ Re-analyze';
@@ -5721,7 +5743,7 @@ async function pollStatus() {
       }
       $('spin').classList.add('on');
       setStatus('scanning');
-      scanTimer = setInterval(pollScan, 1000);
+      startScanPoll();
     } else if (pending > 0) {
       $('spin').classList.add('on');
       $('statusMsg').textContent = `Analyzing ${pending} item${pending !== 1 ? 's' : ''}…`;

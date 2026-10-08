@@ -12,6 +12,24 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-10 — Scan poll timer
+
+### Fixed
+- **A scan started while situations were still forming orphaned the 1-second
+  poll (#106)** — `scanTimer` is a single handle, but three sites assigned
+  `setInterval(pollScan, 1000)` to it and only one cleared it. `pollScan`'s
+  `situations_pending` branch deliberately re-arms the Scan and Re-analyze
+  buttons while the poll is still live, so clicking either one overwrote the
+  handle and left the first interval unreachable: it then destroyed the new
+  scan's poll on completion and, with `scanTimer` back to `null` and
+  `clearInterval(null)` a no-op, re-ran the completion branch every second for
+  the life of the page — resetting the toolbar, overwriting any status message
+  within a second of it appearing, and reloading five lists at six requests a
+  second. Arming now goes through `startScanPoll()`, which clears any poll
+  already running before it assigns, and the completion branch stops the poll
+  through `stopScanPoll()`. The re-armed buttons are unchanged: starting work
+  during situation synthesis is intended.
+
 ## 2026-08 — Outlook calendar ingest (acquisition and proposal)
 
 ### Added
