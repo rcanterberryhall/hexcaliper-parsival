@@ -12,6 +12,37 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-10 — Contacts pane
+
+### Fixed
+- **A search keystroke blanked the pane holding the search box and the open
+  editor (#108)** — `renderContactsView` built the whole Contacts view into
+  `#contacts-view`, and `loadContacts` began by assigning `innerHTML` to that
+  same container. Since assigning `innerHTML` detaches the nodes already
+  inside, the debounced `oninput` reload destroyed the very input that fired
+  it: focus fell to `<body>`, so at any typing pace slower than the 200 ms
+  debounce only the first character ever landed, and refining a search needed a
+  deliberate click back into the box. The same reload — or any of the four
+  unrelated reload sites — silently destroyed an open contact editor together
+  with its unsaved field values, and the failure path replaced the pane with a
+  single error line, leaving no control to retry with. The search input, the
+  four action buttons and `#contactsEditor` are now static markup inside
+  `#contacts-view`, and both `loadContacts` and `renderContactsView` repaint
+  `#contactsTable` alone.
+- **A slow Contacts load could render over a newer search (#108)** —
+  `loadContacts` had no generation token, so two overlapping loads rendered in
+  completion order. Clearing the box issues the broadest query and so the
+  slowest one, which could land last and draw its rows under a narrower search
+  typed after it. A sequence number taken before the request is now compared
+  after it and before the first render, so an overtaken load returns without
+  drawing.
+- **Sorting the Contacts table rewrote the contact total (#108)** — the footer
+  reads `N of M contacts`, where `M` is the backend's unfiltered
+  `count_contacts()`. The sort path passed `_contactsCache.length` instead, so
+  clicking a column header turned `7 of 214 contacts` into `7 of 7 contacts` —
+  the same rows, now claiming the database held only those that matched. The
+  load's total is kept in `_contactsTotal` and reused by the sort path.
+
 ## 2026-08 — Outlook calendar ingest (acquisition and proposal)
 
 ### Added

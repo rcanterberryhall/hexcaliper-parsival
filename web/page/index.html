@@ -327,6 +327,20 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .contacts-th-sortable.sort-asc .sort-arrow,
 .contacts-th-sortable.sort-desc .sort-arrow { opacity: 1; color: var(--accent); }
 
+/* The toolbar is static markup inside #contacts-view, so a reload repaints
+   #contactsTable underneath it and never detaches the focused search box. */
+.contacts-toolbar {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  padding: 14px 16px; border-bottom: 1px solid var(--border2);
+}
+.contacts-toolbar input[type="search"] {
+  flex: 1; min-width: 200px; padding: 6px 10px; background: var(--bg);
+  border: 1px solid var(--border2); border-radius: var(--r);
+  color: var(--text); font-size: 12px;
+}
+.contacts-toolbar button { padding: 4px 12px; font-size: 12px; }
+.contacts-toolbar #contactsCount { font-size: 11px; color: var(--muted); margin-left: auto; }
+
 /* ── Empty state ── */
 .empty      { text-align: center; padding: 60px 20px; color: var(--muted); }
 .empty-icon { font-size: 32px; opacity: .2; margin-bottom: 10px; }
@@ -1437,7 +1451,18 @@ tr.attn-low  { opacity:0.65; }
       <div id="items-view"><div class="loading-placeholder"><div class="spinner-lg"></div><div>Loading items…</div></div></div>
       <div id="situations-view"><div class="loading-placeholder"><div class="spinner-lg"></div><div>Loading situations…</div></div></div>
       <div id="assigned-view" style="display:none"></div>
-      <div id="contacts-view" style="display:none"></div>
+      <div id="contacts-view" style="display:none">
+        <div class="contacts-toolbar">
+          <input id="contactsSearch" type="search" placeholder="Search name, email, employer…"
+                 oninput="onContactsSearch(this.value)">
+          <button class="ia" onclick="newContact()">+ New contact</button>
+          <button class="ia" onclick="rebuildContacts()" title="Re-scrape every existing item's headers">↻ Rebuild from items</button>
+          <button class="ia" onclick="reparseSignatures()" title="Re-parse signatures from email bodies. Manual edits are never overwritten.">✎ Re-parse signatures</button>
+          <span id="contactsCount"></span>
+        </div>
+        <div id="contactsEditor"></div>
+        <div id="contactsTable"></div>
+      </div>
       <div id="lookahead-view" style="display:none">
         <div class="la-toolbar">
           <button class="la-mode active" id="laModeProject" onclick="setLookaheadMode('project')">Project</button>
@@ -3923,18 +3948,32 @@ function setView(v, el) {
 // Every column is manually editable per spec; the scraper only seeds the data.
 
 let _contactsCache = [];
+let _contactsTotal = 0;
 let _editingContactId = null;
+let _contactsSeq = 0;
 
+// Repaints #contactsTable only. The search box, the action buttons and
+// #contactsEditor are static markup inside #contacts-view, so a reload cannot
+// detach the input that triggered it — assigning innerHTML destroys the nodes
+// already in the container, which costs focus, the caret, anything typed while
+// the request was in flight, and an open editor's unsaved fields.
+//
+// `query` omitted means "whatever the box currently reads", so the rows and the
+// box always describe the same search.
 async function loadContacts(query) {
-  const view = $('contacts-view');
-  view.innerHTML = `<div class="loading-placeholder"><div class="spinner-lg"></div><div>Loading contacts…</div></div>`;
+  const table = $('contactsTable');
+  const q = query === undefined ? ($('contactsSearch')?.value || '') : query;
+  const seq = ++_contactsSeq;
+  table.innerHTML = `<div class="loading-placeholder"><div class="spinner-lg"></div><div>Loading contacts…</div></div>`;
   try {
-    const q = query || '';
     const { contacts, total } = await api(`/contacts?query=${encodeURIComponent(q)}`);
+    if (seq !== _contactsSeq) return;   // a later search overtook this one
     _contactsCache = contacts || [];
-    renderContactsView(_contactsCache, total, q);
+    _contactsTotal = total;
+    renderContactsView(_contactsCache, total);
   } catch (e) {
-    view.innerHTML = `<div style="padding:20px;color:var(--red)">Failed to load contacts: ${e.message}</div>`;
+    if (seq !== _contactsSeq) return;
+    table.innerHTML = `<div style="padding:20px;color:var(--red)">Failed to load contacts: ${e.message}</div>`;
   }
 }
 
@@ -3947,9 +3986,11 @@ function _toggleContactSort(key) {
   _rerenderContacts();
 }
 
+// Re-sorts what is already loaded. `_contactsTotal` is the backend's unfiltered
+// count (count_contacts in api/db.py); passing _contactsCache.length instead
+// would make a sort rewrite "7 of 214 contacts" into "7 of 7 contacts".
 function _rerenderContacts() {
-  const q = $('contactsSearch')?.value || '';
-  renderContactsView(_contactsCache, _contactsCache.length, q);
+  renderContactsView(_contactsCache, _contactsTotal);
 }
 
 function _contactSortTh(key, label) {
@@ -3959,8 +4000,8 @@ function _contactSortTh(key, label) {
   return `<th class="${cls}" style="padding:6px 12px;cursor:pointer" onclick="_toggleContactSort('${key}')">${label}<span class="sort-arrow">${arrow}</span></th>`;
 }
 
-function renderContactsView(contacts, total, query) {
-  const view = $('contacts-view');
+function renderContactsView(contacts, total) {
+  const view = $('contactsTable');
   let sorted = contacts.slice();
   if (_contactSort.key) {
     const accessors = {
@@ -3992,18 +4033,8 @@ function renderContactsView(contacts, total, query) {
     </tr>`;
   }).join('');
 
+  $('contactsCount').textContent = `${contacts.length} of ${total} contacts`;
   view.innerHTML = `
-    <div style="padding:14px 16px;border-bottom:1px solid var(--border2);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input id="contactsSearch" type="search" placeholder="Search name, email, employer…"
-             value="${escapeHtml(query || '')}"
-             oninput="onContactsSearch(this.value)"
-             style="flex:1;min-width:200px;padding:6px 10px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-size:12px">
-      <button class="ia" onclick="newContact()" style="padding:4px 12px;font-size:12px">+ New contact</button>
-      <button class="ia" onclick="rebuildContacts()" title="Re-scrape every existing item's headers" style="padding:4px 12px;font-size:12px">↻ Rebuild from items</button>
-      <button class="ia" onclick="reparseSignatures()" title="Re-parse signatures from email bodies. Manual edits are never overwritten." style="padding:4px 12px;font-size:12px">✎ Re-parse signatures</button>
-      <span style="font-size:11px;color:var(--muted);margin-left:auto">${contacts.length} of ${total} contacts</span>
-    </div>
-    <div id="contactsEditor"></div>
     <table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead>
         <tr style="border-bottom:1px solid var(--border2);background:var(--surface);text-align:left;font-size:11px;color:var(--muted)">
@@ -4155,7 +4186,7 @@ async function saveContact() {
       await api(`/contacts/${_editingContactId}`, 'PATCH', payload);
     }
     closeContactEditor();
-    loadContacts($('contactsSearch')?.value || '');
+    loadContacts();
   } catch (e) {
     alert(`Save failed: ${e.message}`);
   }
@@ -4189,7 +4220,7 @@ async function deleteContact() {
   try {
     await api(`/contacts/${_editingContactId}`, 'DELETE');
     closeContactEditor();
-    loadContacts($('contactsSearch')?.value || '');
+    loadContacts();
   } catch (e) {
     alert(`Delete failed: ${e.message}`);
   }
@@ -4207,7 +4238,7 @@ async function rebuildContacts() {
     const r = await api('/contacts/rebuild', 'POST');
     setStatus('ready');
     alert(`Rebuilt: scanned ${r.items_scanned} items, ${r.total_contacts} contacts in DB.`);
-    loadContacts($('contactsSearch')?.value || '');
+    loadContacts();
   } catch (e) {
     setStatus('error');
     alert(`Rebuild failed: ${e.message}`);
@@ -4224,7 +4255,7 @@ async function reparseSignatures() {
     const r = await api('/contacts/reparse-signatures', 'POST');
     setStatus('ready');
     alert(`Parsed: scanned ${r.items_scanned} items, enriched ${r.items_applied} contacts, wrote ${r.fields_written} fields.`);
-    loadContacts($('contactsSearch')?.value || '');
+    loadContacts();
   } catch (e) {
     setStatus('error');
     alert(`Re-parse failed: ${e.message}`);
