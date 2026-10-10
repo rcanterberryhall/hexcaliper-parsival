@@ -12,6 +12,25 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-10
+
+### Fixed
+- **Look-ahead board load identity (#110)** — a failed fetch was rendered as a
+  confirmed empty schedule, and a window or project switch could be overtaken by
+  the load before it. `_laLoadData` now claims a generation token at entry and
+  drops its result if a later load has started, builds every URL from the
+  subject captured at entry rather than from the mutable `_LA` fields, and
+  records why a load failed instead of assigning the empty value its `catch`
+  blocks used to. `renderLookahead` compares what the loaded data describes
+  against what the toolbar claims before painting, so one fortnight's cards can
+  no longer appear under another fortnight's label, and states a failure with a
+  retry control rather than "No cards in the 14-day window for <project>" —
+  wording that asserted a project had nothing scheduled and invited the operator
+  to re-enter work that already existed. A failed resource or project refresh no
+  longer empties the filter options or the project list, which had silently
+  widened the set of cards on the board. `_laSaveShift` now repaints the board it
+  reloads, which its own comment already claimed it did.
+
 ## 2026-08 — Outlook calendar ingest (acquisition and proposal)
 
 ### Added

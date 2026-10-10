@@ -1142,6 +1142,10 @@ tr.attn-low  { opacity:0.65; }
 .la-nav-btn:hover { border-color:var(--accent); }
 .la-nav-range { margin-left:6px; font-size:11px; color:var(--muted); min-width:130px; }
 .la-empty { padding:40px 20px; text-align:center; color:var(--muted); font-size:12px; }
+.la-error { padding:32px 20px; text-align:center; font-size:12px; }
+.la-error-msg  { color:var(--red); margin-bottom:8px; }
+.la-error-hint { color:var(--muted); font-size:11px; line-height:1.6; max-width:46em;
+                 margin:0 auto 12px; }
 .la-board-wrap { overflow-x:auto; padding:6px 0 12px; }
 .la-board {
   display:grid;
@@ -5951,7 +5955,44 @@ const _LA = {
   rangeEnd: null,        // YYYY-MM-DD (today + 13)
   editingCard: null,     // card being edited in modal, or null for new
   projects: [],
+  // The mode, project and window the load that produced `cards`/`overview`/
+  // `shifts` actually ran for. Compared by value before the board is painted,
+  // so a response can never land under a toolbar label it does not match.
+  dataFor: null,
+  dataError: null,       // why the last load failed, or null if it succeeded
 };
+
+// Claimed at the top of every `_laLoadData()` so a load that has been overtaken
+// by a later one can recognise itself and drop its result. The selectors commit
+// synchronously, so without this the board shows whichever response lands last.
+let _laDataSeq = 0;
+
+function _laSubject() {
+  // The subject the toolbar is currently claiming: which board, for which
+  // project, over which window.
+  return {
+    mode:       _LA.mode,
+    project:    _LA.project || null,
+    rangeStart: _LA.rangeStart,
+    rangeEnd:   _LA.rangeEnd,
+  };
+}
+
+function _laSameSubject(a, b) {
+  return !!a && !!b && a.mode === b.mode && a.project === b.project
+    && a.rangeStart === b.rangeStart && a.rangeEnd === b.rangeEnd;
+}
+
+function _laSubjectLabel(subject) {
+  // The window is unresolved until _laSetWindow has run; a throw in here would
+  // blank the pane this label exists to explain.
+  const range = (subject.rangeStart && subject.rangeEnd)
+    ? _laFmtRangeLabel(subject.rangeStart, subject.rangeEnd)
+    : 'the current window';
+  return subject.mode === 'overview'
+    ? `all projects, ${range}`
+    : `${subject.project || 'no project selected'}, ${range}`;
+}
 
 function _laToday() {
   const d = new Date();
@@ -6157,13 +6198,22 @@ async function _laRefreshProjects() {
   try {
     const ps = await api('/projects');
     _LA.projects = (ps || []).map(p => p.name).filter(Boolean);
-  } catch(e) { _LA.projects = []; }
+    return true;
+  } catch(e) {
+    // Keep the list we already had: emptying it would present a failed refresh
+    // as an account with no projects, and drop the sticky selection with it.
+    return false;
+  }
 }
 
 async function _laLoadResources() {
   try {
-    _LA.resources = await api('/lookahead/resources');
-  } catch(e) { _LA.resources = []; }
+    _LA.resources = (await api('/lookahead/resources')) || [];
+  } catch(e) {
+    // Dropping the options would silently reset the resource filter to "all
+    // resources" and widen the set of cards on the board without saying so.
+    return false;
+  }
   // Refresh the resource filter dropdown
   const sel = $('laResourceFilter');
   if (sel) {
@@ -6172,6 +6222,7 @@ async function _laLoadResources() {
       _LA.resources.map(r => `<option value="${r.id}">${esc(r.name)} (${esc(r.type)})</option>`).join('');
     sel.value = prev;
   }
+  return true;
 }
 
 async function _laLoadContacts() {
@@ -6184,22 +6235,58 @@ async function _laLoadContacts() {
 }
 
 async function _laLoadData() {
-  if (_LA.mode === 'overview') {
+  const seq     = ++_laDataSeq;
+  const subject = _laSubject();
+  // Every URL below is built from `subject`, not from the live `_LA` fields, so
+  // one load cannot issue requests for two different windows or projects.
+  const next    = {};
+  let failure   = null;
+
+  if (subject.mode === 'overview') {
     try {
-      _LA.overview = await api(`/lookahead/overview?start=${_LA.rangeStart}&end=${_LA.rangeEnd}`);
-    } catch(e) { _LA.overview = []; }
+      next.overview = (await api(
+        `/lookahead/overview?start=${subject.rangeStart}&end=${subject.rangeEnd}`)) || [];
+    } catch(e) {
+      next.overview = [];
+      failure = `The two-week overview could not be loaded: ${e.message}`;
+    }
+  } else if (!subject.project) {
+    next.cards = [];
   } else {
-    if (!_LA.project) { _LA.cards = []; return; }
+    const q = `project=${encodeURIComponent(subject.project)}` +
+              `&start=${subject.rangeStart}&end=${subject.rangeEnd}`;
     try {
-      const q = `project=${encodeURIComponent(_LA.project)}&start=${_LA.rangeStart}&end=${_LA.rangeEnd}`;
-      _LA.cards = await api('/lookahead/cards?' + q);
-    } catch(e) { _LA.cards = []; }
+      next.cards = (await api('/lookahead/cards?' + q)) || [];
+    } catch(e) {
+      next.cards = [];
+      failure = `The cards for ${subject.project} could not be loaded: ${e.message}`;
+    }
+    next.shifts = {};
     try {
-      const shifts = await api(`/lookahead/shifts?project=${encodeURIComponent(_LA.project)}`);
-      _LA.shifts = {};
-      for (const s of shifts || []) _LA.shifts[s.shift_num] = s;
-    } catch(e) { _LA.shifts = {}; }
+      const shifts = await api(
+        `/lookahead/shifts?project=${encodeURIComponent(subject.project)}`);
+      for (const s of shifts || []) next.shifts[s.shift_num] = s;
+    } catch(e) {
+      if (!failure) {
+        failure = `The shift schedule for ${subject.project} could not be loaded: ${e.message}`;
+      }
+    }
   }
+
+  // A later load claimed the counter while this one was in flight, so the
+  // toolbar is no longer showing this subject. Touching the board's data, its
+  // subject record or its error line here is what paints one fortnight's cards
+  // under another fortnight's label.
+  if (seq !== _laDataSeq) return false;
+
+  Object.assign(_LA, next);
+  _LA.dataFor   = subject;
+  _LA.dataError = failure;
+  return !failure;
+}
+
+function _laRetryLoad() {
+  _laLoadData().then(renderLookahead);
 }
 
 function setLookaheadMode(mode, skipRender) {
@@ -6223,12 +6310,38 @@ function onLookaheadProjectChange(name) {
 function renderLookahead() {
   const wrap = $('laBoardWrap');
   if (!wrap) return;
-  if (_LA.mode === 'overview') {
-    wrap.innerHTML = _laRenderOverviewBoard();
+  const subject = _laSubject();
+
+  // Nothing to load, and so nothing to be stale about, until a project is picked.
+  if (subject.mode !== 'overview' && !subject.project) {
+    wrap.innerHTML = '<div class="la-empty">Pick a project from the selector to see its look-ahead.</div>';
     return;
   }
-  if (!_LA.project) {
-    wrap.innerHTML = '<div class="la-empty">Pick a project from the selector to see its look-ahead.</div>';
+
+  // The cards on hand describe a different subject than the toolbar claims, so
+  // a load for the current one is still in flight. The filter controls reach
+  // this function directly, so this is reachable without a race at all.
+  if (!_laSameSubject(_LA.dataFor, subject)) {
+    wrap.innerHTML = `<div class="la-empty">Loading ${esc(_laSubjectLabel(subject))}…</div>`;
+    return;
+  }
+
+  // A load that failed must not be spelled "no cards": that wording asserts a
+  // project has nothing scheduled and invites the operator to re-enter work
+  // that already exists.
+  if (_LA.dataError) {
+    wrap.innerHTML =
+      `<div class="la-error">
+         <div class="la-error-msg">${esc(_LA.dataError)}</div>
+         <div class="la-error-hint">This is a load failure, not an empty window —
+           the board is not showing a schedule for ${esc(_laSubjectLabel(subject))}.</div>
+         <button class="ia" onclick="_laRetryLoad()">↻ Retry</button>
+       </div>`;
+    return;
+  }
+
+  if (subject.mode === 'overview') {
+    wrap.innerHTML = _laRenderOverviewBoard();
     return;
   }
   wrap.innerHTML = _laRenderProjectBoard();
@@ -7050,6 +7163,7 @@ async function _laSaveShift(n) {
     $('statusMsg').textContent = `Shift ${n} saved.`;
     // Refresh the board so shift chips pick up new labels.
     await _laLoadData();
+    renderLookahead();
   } catch(e) { alert('Save failed: ' + e.message); }
 }
 
