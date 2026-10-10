@@ -521,6 +521,8 @@ A two-week planning view that sits alongside todos, situations, and intel. Each 
 
 A color legend below the toolbar explains the visual encoding: card status is shown as a colored left border (gray = planned, blue = in progress, green = done, red = blocked), today's column has an amber tint, overdue cards sit in a red-bordered gutter, and missing-resource chips use a red highlight.
 
+When a board's cards, overview or shift schedule cannot be loaded, the pane states the reason and offers a retry. An empty board therefore always means the window genuinely holds no cards, never that a request failed.
+
 - **Dependencies** — other look-ahead cards that must finish first
 - **Links** — cross-system references to `todo`, `situation`, or `key_date` targets
 - **Resources (BOM)** — entries from the global resource catalog with a per-card status of `needed` / `secured` / `consumed`
