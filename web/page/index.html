@@ -331,6 +331,18 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .empty      { text-align: center; padding: 60px 20px; color: var(--muted); }
 .empty-icon { font-size: 32px; opacity: .2; margin-bottom: 10px; }
 .empty-msg  { font-size: 11px; line-height: 2.2; letter-spacing: .04em; white-space: pre-line; }
+/* A pane that could not be loaded. Shares .empty's geometry so a failure sits
+   where the content would have been, but is coloured and opaque so it does not
+   read as "nothing here". */
+.empty.load-error .empty-icon { color: var(--red); opacity: .75; }
+.empty.load-error .empty-msg  { color: var(--red); }
+.load-error-retry { margin-top: 14px; }
+/* A reload that failed while a previous list is still on screen: keep the list
+   and say it is stale, rather than destroying the operator's place. */
+.stale-banner { margin: 0 0 10px; padding: 7px 12px; border: 1px solid var(--red);
+                border-radius: 3px; color: var(--red); font-size: 11px;
+                display: flex; align-items: center; gap: 10px; }
+.stale-banner span { flex: 1; }
 
 /* ── Seed modal overlay ── */
 .modal-overlay {
@@ -1996,6 +2008,17 @@ let allTodos        = [];
 let allAnalyses     = [];
 let allSituations   = [];
 let allIntel        = [];
+// Load identity and failure state for the Situations, Assigned and Briefing
+// views. _sitApplied holds the filter state the situations on screen were
+// actually fetched under, and stays null until a load has succeeded — which is
+// also how the renderer tells "never loaded" from "loaded and genuinely empty".
+let _sitSeq         = 0;
+let _sitApplied     = null;
+let _sitLoadError   = null;
+let _assignedSeq    = 0;
+let _assignedError  = null;
+let _intelSeq       = 0;
+let _intelApplied   = null;
 let ingestWasActive = false;
 let allProjects  = [];
 let knownSenders = [];
@@ -3103,15 +3126,42 @@ function onDateFilter(val) {
   renderItems(allAnalyses);
 }
 
+// A pane that could not be loaded states the server's reason and carries its
+// own retry, so no view is left holding a spinner, a blank, or an empty state
+// that reads as a fact. Mirrors the reporting the situation write paths already
+// do onto #statusMsg.
+function _loadErrorHtml(what, reason, retryCall) {
+  return `<div class="empty load-error"><div class="empty-icon">⚠</div>
+    <div class="empty-msg">Could not load ${esc(what)}.\n${esc(reason)}</div>
+    <button class="btn load-error-retry" onclick="${retryCall}">↺ Retry</button></div>`;
+}
+
+function _staleBannerHtml(what, reason, retryCall) {
+  return `<div class="stale-banner">⚠ <span>Showing the ${esc(what)} from before the last
+    refresh failed — ${esc(reason)}</span>
+    <button class="btn" onclick="${retryCall}">↺ Retry</button></div>`;
+}
+
 // ── Situations ────────────────────────────────────────────────────────────────
 
 async function loadAssigned() {
+  const seq = ++_assignedSeq;
   try {
     const todos = await api('/todos');
+    if (seq !== _assignedSeq) return;
     const open  = todos.filter(t => t.status === 'assigned' && t.assigned_to && !t.done);
+    _assignedError = null;
     renderAssigned(open);
     updateAssignedBadge(open.length);
-  } catch(e) { console.warn('assigned:', e); }
+  } catch(e) {
+    if (seq !== _assignedSeq) return;
+    // #assigned-view ships empty, so without this the tab is simply blank.
+    // The badge is left alone: it is a secondary indicator with its own
+    // deliberately silent refresh path.
+    _assignedError = e.message;
+    renderAssigned([]);
+    $('statusMsg').textContent = 'Assigned tasks failed to load: ' + e.message;
+  }
 }
 
 function updateAssignedBadge(n) {
@@ -3124,6 +3174,10 @@ function updateAssignedBadge(n) {
 function renderAssigned(todos) {
   const el = $('assigned-view');
   if (!el) return;
+  if (_assignedError !== null) {
+    el.innerHTML = _loadErrorHtml('assigned tasks', _assignedError, 'loadAssigned()');
+    return;
+  }
   if (!todos.length) {
     el.innerHTML = `<div class="empty"><div class="empty-icon">⇒</div>
       <div class="empty-msg">No assigned tasks.\nUse the ⇒ button on any action item to assign it to a colleague.</div></div>`;
@@ -3160,20 +3214,52 @@ function renderAssigned(todos) {
   }).join('');
 }
 
-async function loadSituations() {
+async function loadSituations(opts = {}) {
+  // The filters are captured here, not re-read after the await: include_resolved
+  // widens the lifecycle set the endpoint allows, so it returns more rows and is
+  // the slower query — the one an operator abandons. Without the token below,
+  // ticking the box and unticking it renders the ticked result last.
+  const seq     = ++_sitSeq;
+  const filters = { hidden: showHidden, resolved: !!$('showResolved')?.checked };
+  const params  = new URLSearchParams();
+  if (filters.hidden)   params.set('include_dismissed', 'true');
+  if (filters.resolved) params.set('include_resolved', 'true');
+  const qs = params.toString() ? '?' + params.toString() : '';
   try {
-    const params = new URLSearchParams();
-    if (showHidden)   params.set('include_dismissed', 'true');
-    if ($('showResolved')?.checked) params.set('include_resolved', 'true');
-    const qs = params.toString() ? '?' + params.toString() : '';
-    allSituations = await api('/situations' + qs);
+    const sits = await api('/situations' + qs);
+    if (seq !== _sitSeq) return;
+    allSituations = sits;
+    _sitApplied   = filters;
+    _sitLoadError = null;
     renderSituations(allSituations);
     const el = $('st-situations');
     if (el) el.textContent = allSituations.filter(s => s.lifecycle_status !== 'dismissed').length;
-  } catch(e) { console.warn('situations:', e); }
+  } catch(e) {
+    if (seq !== _sitSeq) return;
+    // An empty list is a legitimate answer from /situations, so a failure must
+    // never be collapsed into one — the empty state asserts that no situation
+    // has ever formed.
+    _sitLoadError = e.message;
+    if (opts.fromFilter) _revertSituationFilters();
+    renderSituations(allSituations);
+    $('statusMsg').textContent = 'Situations failed to load: ' + e.message;
+  }
 }
 
-function onShowResolved() { loadSituations(); }
+// A checkbox moves to the operator's choice natively, so after a failed reload
+// it would assert a filter the list on screen was never built with — and
+// "Show resolved ✓" over a list holding no resolved rows reads as "there is no
+// resolved work". Put the controls back to what the displayed data describes.
+function _revertSituationFilters() {
+  const applied = _sitApplied || { hidden: false, resolved: false };
+  const hiddenCb = $('showHidden');
+  if (hiddenCb) hiddenCb.checked = applied.hidden;
+  showHidden = applied.hidden;
+  const resolvedCb = $('showResolved');
+  if (resolvedCb) resolvedCb.checked = applied.resolved;
+}
+
+function onShowResolved() { loadSituations({fromFilter: true}); }
 
 function scoreClass(score) {
   if (score >= 1.8) return 'score-critical';
@@ -3190,6 +3276,17 @@ const srcColors = {
 function renderSituations(situations) {
   const el = $('situations-view');
   if (!el) return;
+  // #situations-view ships a "Loading situations…" spinner, so a loader that
+  // merely skips its render leaves that spinner turning for the life of the
+  // page. Resolve the pane on every call: with nothing ever loaded the pane IS
+  // the failure; with a previous list on hand keep it and mark it stale.
+  if (_sitLoadError !== null && _sitApplied === null) {
+    el.innerHTML = _loadErrorHtml('situations', _sitLoadError, 'loadSituations()');
+    return;
+  }
+  const banner = _sitLoadError === null
+    ? ''
+    : _staleBannerHtml('situations', _sitLoadError, 'loadSituations()');
   let visible = situations; // server already filtered by lifecycle_status
   if (projectFilter !== 'all') {
     visible = visible.filter(s =>
@@ -3202,11 +3299,18 @@ function renderSituations(situations) {
   else if (sortBy === 'followup') visible.sort((a,b) => (a.follow_up_date||'9999').localeCompare(b.follow_up_date||'9999') || b.score - a.score);
   else /* score */           visible.sort((a,b) => b.score - a.score);
   if (!visible.length) {
-    el.innerHTML = `<div class="empty"><div class="empty-icon">◈</div>
-      <div class="empty-msg">No situations detected yet.\nSituations form when items from multiple sources\nrefer to the same real-world event.</div></div>`;
+    // Two cases, as renderTodos and renderItems already distinguish: nothing
+    // has formed, or nothing survives the current filter. One message for both
+    // tells a filtered operator that no situation exists.
+    el.innerHTML = banner + `<div class="empty"><div class="empty-icon">◈</div>
+      <div class="empty-msg">${
+        situations.length === 0
+          ? 'No situations detected yet.\nSituations form when items from multiple sources\nrefer to the same real-world event.'
+          : 'Nothing matches this filter.'
+      }</div></div>`;
     return;
   }
-  el.innerHTML = visible.map(s => situationCard(s)).join('');
+  el.innerHTML = banner + visible.map(s => situationCard(s)).join('');
   hydrateLancellmotChips();
 }
 
@@ -3631,15 +3735,35 @@ function _pollSituationDeepAnalysis(jobId, sitId, btn) {
 
 // ── Briefing (Current State) ───────────────────────────────────────────────────
 
-async function loadIntel() {
+async function loadIntel(opts = {}) {
   // Load intel for stats counter, then show briefing in the view.
+  const seq    = ++_intelSeq;
+  const hidden = showHidden;
   try {
-    const qs = showHidden ? '?include_dismissed=true' : '';
-    allIntel = await api('/intel' + qs);
-    const el = $('st-intel');
-    if (el) el.textContent = allIntel.filter(i => !i.dismissed).length;
-  } catch(e) { console.warn('intel:', e); }
+    const qs = hidden ? '?include_dismissed=true' : '';
+    const intel = await api('/intel' + qs);
+    if (seq === _intelSeq) {
+      allIntel      = intel;
+      _intelApplied = hidden;
+      const el = $('st-intel');
+      if (el) el.textContent = allIntel.filter(i => !i.dismissed).length;
+    }
+  } catch(e) {
+    if (seq === _intelSeq) {
+      // The Intel Items stat keeps its previous value, which is why the failure
+      // has to be stated somewhere: otherwise a stale count reads as current.
+      if (opts.fromFilter) _revertIntelFilter();
+      $('statusMsg').textContent = 'Intel failed to load: ' + e.message;
+    }
+  }
   await loadBriefing();
+}
+
+function _revertIntelFilter() {
+  const hidden   = _intelApplied === null ? false : _intelApplied;
+  const hiddenCb = $('showHidden');
+  if (hiddenCb) hiddenCb.checked = hidden;
+  showHidden = hidden;
 }
 
 function renderIntel() {
@@ -3656,7 +3780,7 @@ async function loadBriefing() {
     _currentBriefing = await api('/briefing');
     renderBriefing(_currentBriefing);
   } catch(e) {
-    el.innerHTML = `<div class="empty"><div class="empty-icon">◻</div><div class="empty-msg">Could not load briefing.</div></div>`;
+    el.innerHTML = _loadErrorHtml('the briefing', e.message, 'loadBriefing()');
     console.warn('briefing:', e);
   }
 }
@@ -3881,8 +4005,8 @@ function onShowHidden() {
   showHidden = $('showHidden').checked;
   if (currentView === 'items')           { renderItems(allAnalyses); }
   else if (currentView === 'todos')      { const v = _filterTodos(allTodos); renderTodos(v); updateCounts(v); }
-  else if (currentView === 'intel')      { loadIntel(); }
-  else if (currentView === 'situations') { loadSituations(); }
+  else if (currentView === 'intel')      { loadIntel({fromFilter: true}); }
+  else if (currentView === 'situations') { loadSituations({fromFilter: true}); }
 }
 
 function reviewNoise() {

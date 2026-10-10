@@ -12,6 +12,35 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-10
+
+### Fixed
+- **Situations, Assigned and Briefing load failures (#112)** — all three
+  loaders ended in a `catch` that reported only to `console.warn` and skipped
+  their render, so what the operator saw was decided by each pane's static
+  markup: a failed Situations or Briefing load left the shipped
+  "Loading situations…" spinner turning for the life of the page, and a failed
+  Assigned load left that tab completely blank. Worse, `setProject` and
+  `onSortChange` paint from `allSituations` directly, so the first click after a
+  failure printed "No situations detected yet. Situations form when items from
+  multiple sources refer to the same real-world event." — asserting that no
+  cross-source situation existed, when none had ever been fetched. `GET
+  /situations` legitimately answers with an empty list when nothing has formed,
+  so the frontend had discarded the only thing separating "none" from "the
+  request failed". Each pane is now resolved on every load: painted, or cleared
+  with the server's reason and a retry control, reported onto `#statusMsg` the
+  way every situation write in the same region already did. `renderSituations`
+  distinguishes "nothing has formed" from "nothing matches this filter", as
+  `renderTodos` and `renderItems` already did. `loadSituations` claims a
+  generation token at entry and checks it between the fetch and the first
+  write — `include_resolved` widens the lifecycle set the endpoint allows, so
+  it returns more rows and is the slower query, meaning the abandoned load was
+  the one that rendered last. A failed filter-driven reload puts `Show hidden`
+  and `Show resolved` back to the state the displayed list was actually fetched
+  under, since a checkbox moves natively and would otherwise assert a filter
+  nobody applied; a reload that fails with a previous list on hand keeps that
+  list and marks it stale rather than destroying the operator's place.
+
 ## 2026-08 — Outlook calendar ingest (acquisition and proposal)
 
 ### Added

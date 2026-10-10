@@ -650,6 +650,8 @@ Interactive docs: `http://localhost:8001/docs`
 
 Situations are cross-source groupings of related analyses identified automatically by the correlation layer. Each situation has a composite urgency score, a lifecycle status, optional follow-up date, and a list of open actions.
 
+When the situations, assigned-task or briefing panes cannot be loaded, each states the server's reason and offers a retry, and a reload that fails while a list is already on screen keeps that list and marks it stale. An empty situations pane therefore always means no situation has formed — never that a request failed — and it says "Nothing matches this filter" when the project filter rather than the data is what emptied it. A failed filter-driven reload also puts `Show hidden` and `Show resolved` back, so neither checkbox can claim a filter the displayed list was not built with.
+
 The narrative synthesizer is aware of completed work: when a situation is formed or re-synthesized, done todos attached to the cluster's items are fed into the prompt under a "Completed actions (treat as already done; do not re-raise)" block, so the `summary` reflects the current state instead of restating finished work as still pending, and `open_actions` no longer surfaces items the user has already closed.
 
 | Method   | Path                                  | Description                                                                        |
