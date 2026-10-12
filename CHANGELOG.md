@@ -12,6 +12,27 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-10
+
+### Fixed
+- **Connect Slack and Connect Teams no longer enter the OAuth flow after a
+  failed settings save (#114)** — both buttons persist the Settings form first
+  so the connect endpoint can read the credentials back out of the running
+  config, and both discarded that failure in an empty `catch` and redirected
+  regardless. `/slack/connect` refuses with HTTP 400 `"SLACK_CLIENT_ID not
+  configured — save it in Settings first"` unless `config` carries the client
+  id, and `/teams/connect` refuses the same way for `TEAMS_CLIENT_ID`, so the
+  redirect could only land on advice about the step that had just failed —
+  while leaving the page discarded the operator's typed client secret, which is
+  sent only when its input is non-empty. Both paths now share
+  `_saveSettingsForConnect`, which reports the server's reason into the same
+  `#settings-msg` span `saveSettings` already reports into and keeps the
+  operator on the form with their entries intact. The message states that
+  saving failed without claiming nothing was stored, because `save_settings`
+  commits the record before the project-tag sync and the
+  `config.apply_overrides` reload, so a 500 can leave the value in SQLite and
+  out of `config`.
+
 ## 2026-08 — Outlook calendar ingest (acquisition and proposal)
 
 ### Added

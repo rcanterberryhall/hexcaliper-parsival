@@ -5059,11 +5059,43 @@ async function disconnectTeams(accountId) {
   catch(e) { console.warn('disconnectTeams:', e); }
 }
 
-async function connectTeams() {
+// Persist the Settings form so the connect endpoint can read the credentials
+// back out of the running config. This is a precondition rather than a
+// courtesy: /slack/connect refuses with HTTP 400 "SLACK_CLIENT_ID not
+// configured — save it in Settings first" unless config carries the client id,
+// and /teams/connect refuses the same way for TEAMS_CLIENT_ID. Only
+// config.apply_overrides() at the end of save_settings makes a just-typed id
+// live, so a rejected POST means the redirect can land on nothing but that 400.
+//
+// Navigating is therefore what has to be withheld, not just the error that has
+// to be shown: leaving the page discards the form, and a secret is only sent
+// when its input is non-empty, so a pasted client secret that failed to save is
+// gone and has to be fetched from the provider's admin console again.
+//
+// The message states that the save failed without claiming nothing was written
+// — save_settings commits the record before the project-tag sync and the config
+// reload, so a 500 can leave the value in SQLite and out of config.
+//
+// Returns true when the caller may proceed to the OAuth redirect.
+async function _saveSettingsForConnect(provider) {
   const body = {};
   SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el && (!SECRET_FIELDS.has(f) || el.value)) body[f] = el.value; });
   body.projects = readProjects();
-  try { await api('/settings', 'POST', body); } catch(e) {}
+  const msg = $('settings-msg');
+  msg.textContent = '';
+  try {
+    await api('/settings', 'POST', body);
+    return true;
+  } catch(e) {
+    msg.className   = 'settings-msg err';
+    msg.textContent = `Saving settings failed, so ${provider} was not contacted: `
+      + `${e.message}. Your entries are still on this page — press Save settings to retry.`;
+    return false;
+  }
+}
+
+async function connectTeams() {
+  if (!await _saveSettingsForConnect('Teams')) return;
   window.location.href = '/page/api/teams/connect';
 }
 
@@ -5364,11 +5396,7 @@ async function seedSkipScan() {
 }
 
 async function connectSlack() {
-  // Persist settings first so the callback endpoint can use them
-  const body = {};
-  SETTINGS_FIELDS.forEach(f => { const el = $('s-' + f); if (el && (!SECRET_FIELDS.has(f) || el.value)) body[f] = el.value; });
-  body.projects = readProjects();
-  try { await api('/settings', 'POST', body); } catch(e) {}
+  if (!await _saveSettingsForConnect('Slack')) return;
   window.location.href = '/page/api/slack/connect';
 }
 
