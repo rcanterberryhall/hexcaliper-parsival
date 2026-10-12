@@ -371,6 +371,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 .seed-project-row .sp-del { align-self: start; }
 .seed-topic-chip { display:inline-flex;align-items:center;gap:4px;background:rgba(64,184,255,.08);border:1px solid rgba(64,184,255,.2);color:var(--blue);border-radius:12px;padding:2px 8px;font-size:10px;margin:2px; }
 .seed-topic-chip button { background:none;border:none;color:var(--muted);cursor:pointer;padding:0;line-height:1; }
+.seed-apply-err { margin: 0 0 10px; padding: 6px 8px; font-size: 12px; color: var(--red); background: rgba(255,64,64,.1); border: 1px solid rgba(255,64,64,.2); border-radius: var(--r); }
 
 /* ── Help button ── */
 .help-btn {
@@ -5157,7 +5158,16 @@ function renderSeedState(st) {
     case 'review': {
       const projects = st.projects || [];
       const topics   = st.topics   || [];
-      let html = `<p style="margin:0 0 10px;font-size:12px;color:var(--muted)">
+      // A reason is present only when an apply failed and this form was rebuilt
+      // from the operator's own edits. apply() persists settings and calls
+      // config.apply_overrides before the per-item retag loop, so a timeout can
+      // land part of the work: the wording states that a retry merges rather
+      // than claiming nothing was written.
+      let html = st.error
+        ? `<p class="seed-apply-err">Apply failed: ${esc(st.error)} — your edits below were kept.
+           Applying again merges by project name, so a retry is safe.</p>`
+        : '';
+      html += `<p style="margin:0 0 10px;font-size:12px;color:var(--muted)">
         Review the suggested projects and topics. Edit names, descriptions, keywords, parent, and senders before applying.</p>`;
 
       html += `<div class="seed-section">
@@ -5282,16 +5292,20 @@ async function startSeedProcess() {
 }
 
 async function applySeedConfig() {
+  // Every row is collected, including one left unnamed: `edited` is what the
+  // form is rebuilt from if the apply fails, so the payload's name filter below
+  // stays a separate step and a half-typed row survives without being sent.
   const projectRows = document.querySelectorAll('#seedProjectList .seed-project-row');
-  const projects = [];
+  const edited = [];
   projectRows.forEach(row => {
     const name    = (row.querySelector('.sp-name')    || {}).value?.trim() || '';
     const parent  = (row.querySelector('.sp-parent')  || {}).value?.trim() || '';
     const desc    = (row.querySelector('.sp-desc')    || {}).value?.trim() || '';
     const kws     = ((row.querySelector('.sp-kw')     || {}).value || '').split(',').map(s => s.trim()).filter(Boolean);
     const senders = ((row.querySelector('.sp-senders') || {}).value || '').split(',').map(s => s.trim()).filter(Boolean);
-    if (name) projects.push({ name, parent, description: desc, keywords: kws, senders });
+    edited.push({ name, parent, description: desc, keywords: kws, senders });
   });
+  const projects = edited.filter(p => p.name);
   const topicChips = document.querySelectorAll('#seedTopicList .seed-topic-chip');
   const topics = Array.from(topicChips).map(c => c.textContent.replace('✕','').trim()).filter(Boolean);
 
@@ -5302,7 +5316,12 @@ async function applySeedConfig() {
     // Backend transitions to reanalyzing automatically; poll for it
     startSeedPolling();
   } catch(e) {
-    renderSeedState({ state: 'error', progress: e.message });
+    // The 'applying' repaint above cleared #seedBody, so these edits exist
+    // nowhere else: /seed/status reports the model's original suggestions, not
+    // the operator's revisions of them. Rebuild the form from what was read
+    // before the repaint, so Apply retries the apply rather than the 'error'
+    // screen's Try Again restarting the seed and the whole map-reduce pass.
+    renderSeedState({ state: 'review', projects: edited, topics, error: e.message });
   }
 }
 

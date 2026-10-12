@@ -12,6 +12,34 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-10
+
+### Fixed
+- **A failed seed Apply keeps the reviewed projects and topics (#116)** — the
+  seed review screen exists so the operator can edit the model's suggested
+  project names, parents, descriptions, keyword lists and sender lists, add and
+  delete rows, and curate the topic chips. `applySeedConfig` repainted
+  `#seedBody` to the `applying` progress screen *before* issuing
+  `POST /seed/apply`, so the form holding all of that was already destroyed by
+  the time the request could fail — and the `catch` rendered the terminal
+  `error` screen, whose "Try Again" button calls
+  `renderSeedState({state:'start'})` and restarts the seed from the beginning,
+  re-running the whole map-reduce LLM pass. The edits existed nowhere else:
+  `GET /seed/status` reports the model's original suggestions, not the
+  operator's revisions. The failure is a realistic one, because `seeder.apply`
+  retags the corpus synchronously inside the request — `db.get_all_items()`, a
+  keyword scan per item per new project, then a per-item write loop under
+  `db.lock` — which is the slowest write the Settings area issues and the one a
+  proxy timeout reaches first. The failure path now rebuilds the review form
+  from the values collected before the repaint and names the server's reason on
+  it, so **Apply & Re-analyse** retries the apply instead of restarting the
+  workflow. Collection and the payload filter are separate steps, so a row left
+  unnamed survives the failure without being sent. The message does not claim
+  nothing was applied, because settings are persisted and `config.apply_overrides`
+  has run before the retag loop, so a timeout can leave part of the work
+  committed; it states instead that applying again merges by project name, which
+  is what makes the retry safe.
+
 ## 2026-08 — Outlook calendar ingest (acquisition and proposal)
 
 ### Added

@@ -596,7 +596,7 @@ The seed workflow bootstraps project intelligence from existing data when you fi
 2. **Start seed** (`POST /seed`) — the job enters `waiting_for_ingest` and polls until items arrive. An optional free-text `context` field in the request body is passed to the LLM to help identify projects. The context can be updated while waiting via `PATCH /seed/context`.
 3. **Analysis** — the LLM reads a sample of stored items and proposes a list of projects and focus topics.
 4. **Review** (`GET /seed/status`) — the frontend polls status and displays proposed projects/topics for the user to edit.
-5. **Apply** (`POST /seed/apply`) — confirmed projects and topics are merged into settings. Existing analyses are re-tagged by keyword match. Embeddings are built and the situation layer is warmed.
+5. **Apply** (`POST /seed/apply`) — confirmed projects and topics are merged into settings. Existing analyses are re-tagged by keyword match. Embeddings are built and the situation layer is warmed. Re-tagging runs synchronously inside the request, so this is the slowest call in the flow; if it fails, the UI returns to **Review** with your edits intact and the server's reason on screen. Applying again merges by project name rather than adding a second copy, so retrying after a timeout that may have partly landed is safe.
 6. **Re-analysis** — all stored items are re-run through the LLM with the new project list (`POST /reanalyze` equivalent).
 7. **Optional scan** (`POST /seed/scan`) — run a live connector scan to pull fresh items. Or skip it with `POST /seed/skip_scan`.
 
