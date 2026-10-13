@@ -12,6 +12,36 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-10
+
+### Fixed
+- **A failed alias read no longer reads as "this project is not mapped" (#118)**
+  — `populateLancellmotDropdowns` issues two requests, and only one of them
+  reported failure. A failed `GET /lancellmot/projects` disables the select
+  behind a visible `lancellmot unreachable` option, but the alias read was
+  `try { aliases = await api('/lancellmot/aliases'); } catch (_) {}`, which
+  turned a 500, an nginx 502, a proxy timeout and a network throw alike into an
+  empty alias list. Every project's select was then left on `— none —` while
+  the project list had loaded fine, so an enabled, fully populated control
+  asserted that nothing was mapped — from the endpoint whose own docstring
+  calls it the Settings audit. The board disagreed in the same breath, because
+  `GET /lancellmot/docs-for-tag` resolves the alias server-side and so kept
+  rendering `Line7 · 3 docs`; clicking that chip opens Settings focused on the
+  very dropdown denying the mapping. The two requests fail independently, which
+  is what makes it reachable: the projects route is a network proxy taking no
+  lock, while the alias read is a local SQLite query taken under `db.lock`, so
+  a seed retag or `/reset` stalls the request carrying the mapping while the
+  other answers in milliseconds. It also disarmed the fix this control was
+  hardened with (#96): `sel.dataset.current`, documented as "what the server
+  actually holds" and used to put the control back when a write is refused, was
+  recording `''` for a project the server had mapped, so a refused save reverted
+  to a value the server never held. The alias load now carries a reason, and on
+  failure the select holds a disabled `— mapping unavailable —` option naming
+  it, rather than a claim about the mapping. The control stays enabled, since
+  the project list arrived and a mapping is still settable — picking `— none —`
+  still sends the delete — and the placeholder is refused by the change handler,
+  because the endpoint stores whatever project id it is handed.
+
 ## 2026-08 — Outlook calendar ingest (acquisition and proposal)
 
 ### Added

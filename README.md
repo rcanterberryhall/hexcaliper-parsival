@@ -574,6 +574,13 @@ the forcing function that keeps project naming disciplined.
   `http://host.docker.internal:8080`).
 - **Mapping.** Open Settings → Projects and pick a lancellmot project from the
   dropdown on each project row. The choice persists immediately.
+- **Unread mapping.** The dropdown only ever states a mapping it has read. The
+  alias read is a local SQLite query taken under `db.lock`, so a long seed retag
+  or `/reset` can stall it while the project list still loads; when that
+  happens the row selects a disabled `— mapping unavailable —` option carrying
+  the reason instead of showing `— none —` and claiming the project is
+  unmapped. The select stays usable — a mapping can still be set, and picking
+  `— none —` still clears one. Reopen Settings to retry.
 - **Resolved chip.** A situation tagged with a mapped project shows a chip with
   the document count; hover it for a popover listing the top filenames.
 - **Unmapped chip.** A tag with no mapping shows a dashed `Map →` chip; clicking

@@ -5553,10 +5553,27 @@ function loadProjects(projects) {
   populateLancellmotDropdowns();
 }
 
+// Selected when the alias read failed, so the control holds a value meaning
+// "this mapping was not read" rather than '', which reads as "not mapped".
+// It is never a legal payload: the option carrying it is disabled, and the
+// change handler refuses it outright (parsival#118).
+const LMOT_ALIAS_UNRESOLVED = '__alias_unresolved__';
+
 // Populate every project row's lancellmot dropdown from /lancellmot/projects
 // and select the current alias for each. If lancellmot is unreachable the
 // dropdown disables itself with a visible "unreachable" option rather than
 // silently rendering empty (parsival#43).
+//
+// Neither load may be rendered as an answer it did not give (parsival#118).
+// The two requests fail independently: /lancellmot/projects is a network proxy
+// that takes no lock, while /lancellmot/aliases is a local SQLite read taken
+// under db.lock, so it is the one that blocks while a seed retag or /reset
+// holds the lock and the projects proxy answers anyway. Collapsing that into
+// an empty alias list would leave an enabled, fully populated select reading
+// "— none —" for every project — a claim that nothing is mapped, from the
+// endpoint whose own docstring calls it the Settings audit — and would write
+// '' into dataset.current below, which parsival#96's refused-save revert reads
+// as the last value the server confirmed.
 async function populateLancellmotDropdowns() {
   let projects = null;
   try {
@@ -5567,7 +5584,12 @@ async function populateLancellmotDropdowns() {
     projects = null;
   }
   let aliases = [];
-  try { aliases = await api('/lancellmot/aliases'); } catch (_) {}
+  let aliasError = null;
+  try {
+    aliases = await api('/lancellmot/aliases');
+  } catch (e) {
+    aliasError = e.message || 'unreachable';
+  }
   const aliasByTag = {};
   for (const a of aliases) aliasByTag[a.parsival_project] = a;
 
@@ -5588,6 +5610,16 @@ async function populateLancellmotDropdowns() {
       return;
     }
     sel.disabled = false;
+    // The select stays enabled on an alias-load failure: the project list
+    // arrived, so a mapping is still settable, and picking "— none —" still
+    // sends the delete. Only the claim about the *current* mapping is withheld.
+    if (aliasError) {
+      const unresolved = document.createElement('option');
+      unresolved.value = LMOT_ALIAS_UNRESOLVED;
+      unresolved.textContent = '— mapping unavailable —';
+      unresolved.disabled = true;
+      sel.appendChild(unresolved);
+    }
     for (const p of projects) {
       const o = document.createElement('option');
       o.value = p.id;
@@ -5595,10 +5627,21 @@ async function populateLancellmotDropdowns() {
       o.dataset.name = p.name;
       sel.appendChild(o);
     }
-    const current = aliasByTag[parsivalProj];
-    if (current) sel.value = current.lancellmot_project_id;
+    if (aliasError) {
+      sel.value = LMOT_ALIAS_UNRESOLVED;
+      sel.title = `Could not read this project's lancellmot mapping: ${aliasError}. `
+                + 'Reopen Settings to retry.';
+    } else {
+      const current = aliasByTag[parsivalProj];
+      if (current) sel.value = current.lancellmot_project_id;
+      // Restored explicitly: a later successful load must not leave the
+      // failure text from an earlier one on a select that can now state it.
+      sel.title = 'Map this project to a lancellmot project';
+    }
     // Remember what the server actually holds, so a rejected save can put the
-    // control back instead of leaving it showing a mapping that was never stored.
+    // control back instead of leaving it showing a mapping that was never
+    // stored. On an alias-load failure that is the unresolved placeholder, so
+    // the revert target is "not read" rather than a fabricated "not mapped".
     sel.dataset.current = sel.value;
     if (!sel.dataset.wired) {
       sel.dataset.wired = '1';
@@ -5620,6 +5663,10 @@ async function onLancellmotSelectChange(sel) {
   const row = sel.closest('.project-row');
   const parsivalProj = ((row && (row.querySelector('.proj-name') || {}).value) || '').trim();
   if (!parsivalProj) return;
+  // The unresolved placeholder is not a project id. The endpoint stores
+  // whatever string it is given, so refuse it here rather than writing a
+  // sentinel into the alias table (parsival#118).
+  if (sel.value === LMOT_ALIAS_UNRESOLVED) return;
 
   const msg = $('settings-msg');
   const previous = sel.dataset.current || '';
