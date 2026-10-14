@@ -7127,19 +7127,19 @@ function _laRenderTemplateEditor() {
   $('laModalBody').innerHTML = `
     <div class="la-field-row">
       <div class="la-field" style="flex:2"><label>Name</label>
-        <input type="text" id="laTplName" value="${esc(t.name || '')}" placeholder="e.g. Weekly inspection"></div>
+        <input type="text" id="laTplName" value="${esc(t.name || '')}" oninput="_laTplEditHeader('name',this.value)" placeholder="e.g. Weekly inspection"></div>
       <div class="la-field"><label>Owner</label>
-        <input type="text" id="laTplOwner" value="${esc(t.owner || '')}"></div>
+        <input type="text" id="laTplOwner" value="${esc(t.owner || '')}" oninput="_laTplEditHeader('owner',this.value)"></div>
       <div class="la-field"><label>Default project</label>
-        <input type="text" id="laTplProject" value="${esc(t.default_project_tag || '')}"></div>
+        <input type="text" id="laTplProject" value="${esc(t.default_project_tag || '')}" oninput="_laTplEditHeader('default_project_tag',this.value)"></div>
       <div class="la-field"><label>Duration unit</label>
-        <select id="laTplUnit">
+        <select id="laTplUnit" onchange="_laTplEditHeader('duration_unit',this.value)">
           <option value="calendar_days" ${t.duration_unit==='calendar_days'?'selected':''}>calendar days</option>
           <option value="business_days" ${t.duration_unit==='business_days'?'selected':''}>business days</option>
         </select></div>
     </div>
     <div class="la-field" style="margin-top:6px"><label>Description</label>
-      <input type="text" id="laTplDesc" value="${esc(t.description || '')}"></div>
+      <input type="text" id="laTplDesc" value="${esc(t.description || '')}" oninput="_laTplEditHeader('description',this.value)"></div>
     <div style="margin-top:14px;font-weight:500;font-size:11px;color:var(--muted)">Tasks</div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:4px">
       <thead><tr style="border-bottom:1px solid var(--border2);text-align:left;color:var(--muted);font-size:10px">
@@ -7178,6 +7178,15 @@ function _laRenderTaskResources(taskIdx, task) {
 
 function _laTplEditField(idx, field, value) {
   _LA.editingTemplate.tasks[idx][field] = value;
+}
+
+// The header fields describe the template itself rather than one of its tasks,
+// but they live in the same body _laRenderTemplateEditor rebuilds whenever a
+// task is added, removed, given a resource or re-scheduled. They write through
+// on input for the same reason the task fields do: the re-render reads
+// _LA.editingTemplate, so anything only the DOM knows is lost at the next one.
+function _laTplEditHeader(field, value) {
+  _LA.editingTemplate[field] = value;
 }
 
 function _laTplWorkDaysCell(idx, task) {
@@ -7254,11 +7263,14 @@ function _laTplRemoveReq(taskIdx, reqIdx) {
 
 async function _laSaveTemplate() {
   const t = _LA.editingTemplate;
-  t.name                = $('laTplName').value.trim();
-  t.description         = $('laTplDesc').value;
-  t.owner               = $('laTplOwner').value.trim();
-  t.default_project_tag = $('laTplProject').value.trim();
-  t.duration_unit       = $('laTplUnit').value;
+  // Every header control writes through on input, so the state already holds
+  // what is on screen — reading the DOM here would reintroduce the revert these
+  // fields used to suffer whenever a task edit re-rendered the body.
+  t.name                = (t.name || '').trim();
+  t.description         = t.description || '';
+  t.owner               = (t.owner || '').trim();
+  t.default_project_tag = (t.default_project_tag || '').trim();
+  t.duration_unit       = t.duration_unit || 'calendar_days';
   if (!t.name) { alert('Name is required.'); return; }
   try {
     if (t.id) {

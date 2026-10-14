@@ -12,6 +12,38 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-10
+
+### Fixed
+- **A task edit no longer reverts the template editor's name, owner, project
+  and duration unit (#120)** — the look-ahead template editor keeps its working
+  state in `_LA.editingTemplate`, and `_laRenderTemplateEditor` rebuilds the
+  whole modal body from that object. Every task control wrote through to it on
+  input, but the five header controls did not: they were rendered from the
+  state and read back only at save time, out of the DOM. So the six ordinary
+  actions that re-render the body — adding a task, removing one, picking or
+  removing a resource, changing a work-days preset, and cancelling the custom
+  work-mask prompt — each reverted Name, Owner, Default project, Description
+  and Duration unit to whatever they were when the editor opened. The header
+  sits above the task table and a template is useless without tasks, so filling
+  the header in first and then pressing **+ Add task** is the order the form
+  itself invites, and it was the order that lost the work. On a new template
+  the revert emptied the name and `_laSaveTemplate`'s own guard then refused
+  the save with `Name is required.` while the operator looked at a name field
+  they had filled in; the only sequence that worked was every task first and
+  the header last, which nothing on screen said. On an existing template it was
+  silent and worse: the header reverted to the stored values and the save
+  succeeded with them, and since `db.update_template` patches `name`,
+  `description`, `owner`, `duration_unit` and `default_project_tag` whenever
+  they are present in the body, a rename plus any task edit stored the old name
+  and relisted the template under it, reading as a rename the server had
+  refused. `duration_unit` reverting cost more than a label, because
+  `db.instantiate_template` reads it to choose calendar-day or business-day
+  date math for every card it schedules. The five header controls now write
+  through on input exactly as the task controls do, and `_laSaveTemplate` reads
+  the editor state rather than the DOM, so no repaint — including one added
+  later — can revert them.
+
 ## 2026-08 — Outlook calendar ingest (acquisition and proposal)
 
 ### Added
