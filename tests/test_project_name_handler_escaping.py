@@ -110,10 +110,10 @@ def test_a_rendered_apostrophe_name_keeps_the_handler_free_of_operator_text():
     name = "Murphy's Bay"
     # What the fixed sidebar site emits for this name: esc() escapes the
     # attribute, and the handler body is a fixed string.
+    escaped = name.replace("'", "&#39;")
     markup = (
-        '<div class="srow" data-project="%s" '
+        f'<div class="srow" data-project="{escaped}" '
         'onclick="setProject(this.dataset.project,this)"></div>'
-        % name.replace("'", "&#39;")
     )
 
     captured = {}
