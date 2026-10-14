@@ -12,6 +12,34 @@ Everything before `v0.1-standards` was reconstructed from git history when
 this file was introduced, summarised at feature granularity. From here on,
 entries are written in the same change set as the change they describe.
 
+## 2026-10
+
+### Fixed
+- **An apostrophe in a project name no longer makes its own controls dead
+  clicks (#122)** — four render sites interpolated an operator-typed project
+  name through `esc` into a single-quoted JS string literal inside an `onclick`
+  attribute: the sidebar project row, the project picker's tag and untag
+  button, and the look-ahead overview board's lane label and card. A name like
+  `Murphy's Bay` or `O'Brien Line` rendered as `setProject('Murphy's Bay',this)`,
+  which ends the string literal early, so the handler failed to compile and the
+  control did nothing at all — that project could not be selected as a filter,
+  tagged, untagged, or jumped to from the board, while every other project's
+  controls worked. Nothing reported it: an inline handler's body is compiled
+  when the click fires rather than when the markup is parsed, so there was no
+  render-time error and no console output until someone clicked. Project names
+  are free text typed in Settings and stored verbatim — `readProjects` only
+  trims them and nothing server-side restricts the character set — and the name
+  is the project's identity everywhere else in the UI, so one ordinary
+  character in it disabled its own controls with no hint of why. Escaping `'`
+  as `&#39;` inside `esc`, which the file's other escaper `escapeHtml` already
+  does, would not have fixed this: the parser decodes an attribute's value
+  before the handler body reaches the JS parser, so the entity arrives there as
+  a bare apostrophe and ends the string exactly as before. The name now travels
+  in a `data-project` attribute and each handler reads it back through
+  `this.dataset.project`, so it never enters a JS parsing context and no
+  per-site quoting rule has to be chosen correctly. `esc` is unchanged and now
+  carries a note that it cannot defend a JS string literal in a handler.
+
 ## 2026-08 — Outlook calendar ingest (acquisition and proposal)
 
 ### Added
