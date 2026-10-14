@@ -2077,7 +2077,8 @@ function showProjectPicker(itemId, anchorEl) {
   } else {
     picker.innerHTML = allProjects.map(p => {
       const tagged = currentTags.includes(p.name);
-      return `<button onclick="${tagged ? `untagProject('${esc(p.name)}','${esc(String(itemId))}',event)` : `tagToProject('${esc(p.name)}','${esc(String(itemId))}',event)`}">${tagged ? '✓ ' : ''}${esc(p.name)}</button>`;
+      const handler = tagged ? 'untagProject' : 'tagToProject';
+      return `<button data-project="${esc(p.name)}" data-item-id="${esc(String(itemId))}" onclick="${handler}(this.dataset.project,this.dataset.itemId,event)">${tagged ? '✓ ' : ''}${esc(p.name)}</button>`;
     }).join('');
   }
   const rect = anchorEl.getBoundingClientRect();
@@ -2211,6 +2212,12 @@ function setStatus(state) {
   dot.className = 'hb' + (state !== 'ready' ? ' ' + state : '');
   word.textContent = state.toUpperCase();
 }
+// An HTML escaper, and only that. The parser decodes an attribute's value
+// before an inline handler's body is compiled as JS, so escaping here cannot
+// protect a value sitting inside a JS string literal in an onclick: &#39;
+// arrives at the JS parser as a bare apostrophe and ends the string early.
+// Operator-typed text goes through a data- attribute, read back with
+// this.dataset.* (parsival#122).
 const esc = s  => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
 /** Parse project_tag column (string, JSON array string, or null) into a list */
@@ -2888,7 +2895,7 @@ function renderSidebarProjects(items) {
     <div class="sdot sdot-all"></div><span style="font-size:12px">All</span><span class="sc">${(items || allAnalyses).length}</span></div>`;
   allProjects.forEach(p => {
     const active = projectFilter === p.name ? 'active-all' : '';
-    html += `<div class="srow ${active}" onclick="setProject('${esc(p.name)}',this)">
+    html += `<div class="srow ${active}" data-project="${esc(p.name)}" onclick="setProject(this.dataset.project,this)">
       <div class="sdot" style="background:var(--accent)"></div>
       <span style="font-size:12px">${esc(p.name)}</span>
       <span class="sc">${counts[p.name] || 0}</span></div>`;
@@ -6499,7 +6506,7 @@ function _laRenderOverviewBoard() {
     const startRow = rowCursor;
     const endRow   = rowCursor + subrowCount;
     const span = `grid-row:${startRow} / ${endRow}`;
-    body += `<div class="la-lane-label" title="${esc(row.project)}" onclick="_laJumpToProject('${esc(row.project)}')" style="${span};cursor:pointer">${esc(row.project)}</div>`;
+    body += `<div class="la-lane-label" title="${esc(row.project)}" data-project="${esc(row.project)}" onclick="_laJumpToProject(this.dataset.project)" style="${span};cursor:pointer">${esc(row.project)}</div>`;
     for (let i = 0; i < 14; i++) {
       const iso = _laAddDays(_LA.rangeStart, i);
       const cls = iso === todayISO ? 'la-day-cell today' : 'la-day-cell';
@@ -6516,7 +6523,8 @@ function _laRenderOverviewBoard() {
       const shifted = style.replace(/grid-column: (\d+) \/ (\d+)/, (_m, s, e) =>
         `grid-column: ${Number(s)-1} / ${Number(e)-1}`);
       body += `<div class="${cls}" style="${shifted}" title="${esc(card.title)} — ${esc(card.assignee||'')}"
-                   onclick="_laJumpToProject('${esc(row.project)}','${esc(card.id)}')">${esc(card.title)}</div>`;
+                   data-project="${esc(row.project)}" data-card-id="${esc(card.id)}"
+                   onclick="_laJumpToProject(this.dataset.project,this.dataset.cardId)">${esc(card.title)}</div>`;
     });
     rowCursor = endRow;
   });
